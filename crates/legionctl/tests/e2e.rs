@@ -1052,12 +1052,12 @@ fn an_agent_finds_describes_and_runs_operations_through_three_mcp_tools() {
 
     skills_are_listed_with_their_plugin_folder(&mut mcp, &home);
 
-    // an agent's relative path is its own working directory, not the operator's
-    let (listed, _) = mcp.run("agents.list", &json!({"project": "some-project"}));
+    // an agent's call works in its own working directory, not the operator's
+    let (listed, _) = mcp.run("agents.list", &json!({}));
     let text = listed.to_string();
     let here = std::env::current_dir()
         .unwrap()
-        .join("some-project/.claude/settings.json");
+        .join(".claude/settings.json");
     assert!(text.contains(&here.display().to_string()), "{text}");
 }
 
@@ -1889,6 +1889,62 @@ fn every_operation_speaks_to_you_without_builder_text() {
     );
 }
 
+/// One context (DESIGN-20 rule 7, user 2026-10-17: "if I set the repo once in the app, all things that use the repo
+/// must know"): a call works in the folder of its caller (the CLI's folder, the app's project, the hook's `cwd`, a
+/// session's own workspace), so no operation takes its own repository, project or working folder. A path field is a
+/// file or a folder that is not the project, and each one is listed here with its reason; a new one fails until it
+/// is listed (or until it uses the call's folder).
+#[test]
+fn no_operation_takes_its_own_project_folder() {
+    let allowed: &[(&str, &str, &str)] = &[
+        ("profile", "*", "the machine profile file, not a project"),
+        ("dir", "record", "the new folder of the recording"),
+        ("dir", "replay", "the folder of a recording"),
+        (
+            "config_fragment",
+            "kernel.build",
+            "a file of kernel options",
+        ),
+        (
+            "index",
+            "code.tests.review",
+            "git's index file of the pre-commit hook",
+        ),
+    ];
+    let place = [
+        "repo",
+        "project",
+        "folder",
+        "cwd",
+        "workdir",
+        "worktree",
+        "root",
+        "workspace",
+    ];
+    let mut wrong = Vec::new();
+    for op in legionctl_api::OPS {
+        let schema = (op.input)();
+        for (field, prop) in schema["properties"].as_object().into_iter().flatten() {
+            let path = prop["format"] == "path"
+                || prop["anyOf"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|s| s["format"] == "path"));
+            let named = place.contains(&field.as_str()) && prop["type"] != "boolean";
+            let listed = allowed
+                .iter()
+                .any(|(f, o, _)| f == field && (*o == "*" || *o == op.name));
+            if (path || named) && !listed {
+                wrong.push(format!("{} {field}", op.name));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "fields that name a folder the call's own folder gives (use Ctx::folder, or list it with its reason):\n{}",
+        wrong.join("\n")
+    );
+}
+
 /// The wire format is reviewed: `docs/api/schema.json` holds every operation's class, visibility, input and output
 /// schema, and the code must match it, so a change to a type on the wire shows up as a diff of that file
 /// (`LEGIONCTL_WRITE_SCHEMA=1` writes it after a deliberate change). The schemas of the planning files
@@ -2353,8 +2409,8 @@ fn close_deletes_merged_topic_branches(
     assert_eq!(git(home, repo, &["branch", "--list", "legionctl/*"]), "");
 }
 
-/// Close acts on the workspace that holds `--repo`, never on the caller's own (todo-172, EV-review-10 S1): two
-/// dossiers in one repository; s1 points close at s2's worktree, with --force, while s1's own workspace has an
+/// Close acts on the workspace that holds the call's folder, never on the caller's own (todo-172, EV-review-10 S1): two
+/// dossiers in one repository; s1 runs close in s2's worktree, with --force, while s1's own workspace has an
 /// uncommitted file. Before, s1's workspace was closed and the file deleted. Now the close is refused with the
 /// workspace and dossier it would touch, and both stay; a dry run names s1's workspace and the changes it would drop.
 #[test]
@@ -2372,12 +2428,8 @@ fn close_of_another_dossiers_worktree_is_refused_and_keeps_the_callers_work() {
     );
     write(&demo.join("p.txt"), "not committed");
 
-    let target = other.to_str().unwrap();
-    let (closed, why) = run(
-        "s1",
-        &demo,
-        &["workspace", "close", "--repo", target, "--force"],
-    );
+    // s1 in the other dossier's workspace: the call's folder is that workspace, not s1's own
+    let (closed, why) = run("s1", &other, &["workspace", "close", "--force"]);
     assert!(
         !closed
             && why.contains(&format!(
@@ -3093,15 +3145,12 @@ fn a_test_run_records_each_test_with_its_file_result_and_ref() {
 /// `code tests list` and `show` give back each recorded test, and the job shows its progress.
 fn recorded_tests_and_the_job(op: &Operator, home: &Path, repo: &Path) {
     let head = git(home, repo, &["rev-parse", "HEAD"]);
-    let list: Value = serde_json::from_str(&op.ok(&[
-        "code",
-        "tests",
-        "list",
-        "--repo",
-        repo.to_str().unwrap(),
-        "--json",
-    ]))
-    .unwrap();
+    let in_repo = |args: &[&str]| -> Value {
+        let out = op.cli_in(repo, args);
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let list = in_repo(&["code", "tests", "list", "--json"]);
     let rows: Vec<(&str, &str, &str, &str)> = list
         .as_array()
         .unwrap()
@@ -3139,16 +3188,7 @@ fn recorded_tests_and_the_job(op: &Operator, home: &Path, repo: &Path) {
             ),
         ]
     );
-    let shown: Value = serde_json::from_str(&op.ok(&[
-        "code",
-        "tests",
-        "show",
-        "c_needs_root",
-        "--repo",
-        repo.to_str().unwrap(),
-        "--json",
-    ]))
-    .unwrap();
+    let shown = in_repo(&["code", "tests", "show", "c_needs_root", "--json"]);
     assert_eq!(
         shown["runs"][0]["result"], "ignored",
         "the function name finds libtest's name: {shown}"

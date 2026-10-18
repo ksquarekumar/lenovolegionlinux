@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use anyhow::{Context, Result, bail, ensure};
 use legionctl_api::{
     Class, Ctx, Engine, IntoWire, Lines, OPS, ViewData, ViewInfo, ViewPlaceIn, ViewRenderIn,
-    ViewSaveIn, ViewTextIn, ViewVersionIn, ViewsListIn,
+    ViewSaveIn, ViewTextIn, ViewVersionIn,
 };
 use legionctl_core::facts::{self, New, Scope};
 use legionctl_core::views::{Part, Placed, Rendered, Source, View, Widget};
@@ -152,8 +152,8 @@ fn version(name: &str, repo: &Path) -> Result<Option<u32>> {
         .transpose()
 }
 
-pub fn list(input: &ViewsListIn) -> Result<Vec<ViewInfo>> {
-    Ok(legionctl_core::views::list(Some(input.repo.get()?))
+pub fn list(dir: &Path) -> Vec<ViewInfo> {
+    legionctl_core::views::list(Some(dir))
         .into_iter()
         .map(|(layer, file, view)| {
             let name = file
@@ -181,7 +181,7 @@ pub fn list(input: &ViewsListIn) -> Result<Vec<ViewInfo>> {
                 error,
             }
         })
-        .collect())
+        .collect()
 }
 
 pub fn check_text(input: &ViewTextIn) -> Result<Lines> {
@@ -234,7 +234,11 @@ fn show_version(
 }
 
 pub fn save(ctx: &Ctx, input: &ViewSaveIn) -> Result<Lines> {
-    let repo = input.repo.as_ref().map(|r| r.get()).transpose()?;
+    let repo = if input.project {
+        Some(ctx.folder()?)
+    } else {
+        None
+    };
     let view = parsed(&input.content.0, repo)?;
     let (file, version) = legionctl_core::views::save(&view, &input.content.0, repo)?;
     // the user's own save into a repository is the user's answer for that content; an agent's waits for one
@@ -256,7 +260,7 @@ pub fn save(ctx: &Ctx, input: &ViewSaveIn) -> Result<Lines> {
 /// Undo, redo, reset (to the pinned version, else the seed), pin (the version that shows is the one reset goes back
 /// to) or a version number.
 pub fn version_op(ctx: &Ctx, input: &ViewVersionIn) -> Result<Lines> {
-    let repo = input.repo.get()?;
+    let repo = ctx.folder()?;
     let name = &input.name;
     let saved = legionctl_core::views::versions(name, Some(repo));
     let seed = legionctl_core::views::seed(name).is_some();
@@ -576,7 +580,7 @@ impl Pass<'_> {
 }
 
 pub fn render(engine: &dyn Engine, ctx: &Ctx, input: &ViewRenderIn) -> Result<ViewData> {
-    let repo = input.repo.get()?;
+    let repo = ctx.folder()?;
     let given = params(&input.params)?;
     let shown = version(&input.name, repo)?;
     let view = legionctl_core::views::find(&input.name, shown, Some(repo))?;
@@ -600,8 +604,7 @@ pub fn render(engine: &dyn Engine, ctx: &Ctx, input: &ViewRenderIn) -> Result<Vi
     Ok(out.into_wire())
 }
 
-pub fn place(input: &ViewPlaceIn) -> Result<Lines> {
-    let repo = input.repo.get()?;
+pub fn place(repo: &Path, input: &ViewPlaceIn) -> Result<Lines> {
     let placed = Placed {
         name: input.name.clone(),
         params: params(&input.params)?,
@@ -721,7 +724,6 @@ fn rlcd_pick(engine: &dyn Engine, ctx: &Ctx, intent: &str, repo: &Path, min: f64
             questions: vec![question],
             backend: None,
             key: None,
-            repo: legionctl_api::ClientPath(repo.to_path_buf()),
         },
     )?;
     let tokens = u64::try_from(decision.input_tokens).unwrap_or(0);
@@ -795,7 +797,6 @@ fn rlcd_version(
             questions: vec![question],
             backend: None,
             key: None,
-            repo: legionctl_api::ClientPath(repo.to_path_buf()),
         },
     )?;
     let tokens = u64::try_from(decision.input_tokens).unwrap_or(0);
@@ -869,9 +870,12 @@ fn library(repo: &Path, want: Option<&[String]>) -> Result<Vec<(legionctl_api::P
         .collect())
 }
 
-pub fn parts(input: &legionctl_api::ViewPartsIn) -> Result<Vec<legionctl_api::PartInfo>> {
+pub fn parts(
+    dir: &Path,
+    input: &legionctl_api::ViewPartsIn,
+) -> Result<Vec<legionctl_api::PartInfo>> {
     let want = input.intent.as_deref().map(stems);
-    Ok(library(input.repo.get()?, want.as_deref())?
+    Ok(library(dir, want.as_deref())?
         .into_iter()
         .map(|(info, _)| info)
         .collect())
@@ -1278,15 +1282,14 @@ const COMPOSER_TOOLS: [&str; 6] = [
     "views.place",
 ];
 
-/// A path field of `op`'s input resolves against `repo`, as a client resolves it against its folder: a given one,
-/// and one whose default is the client's folder (".").
+/// A path field of `op`'s input resolves against `repo`, as a client resolves it against its folder.
 fn resolve_paths(op: &legionctl_api::OpInfo, input: &mut Value, repo: &Path) {
     if let Some(map) = input.as_object_mut() {
         let schema = (op.input)();
         for (name, prop) in schema["properties"].as_object().into_iter().flatten() {
             let given = map.get(name).and_then(Value::as_str).map(String::from);
-            if prop["format"] == "path" && (given.is_some() || prop["default"] == ".") {
-                let path = repo.join(given.unwrap_or_default());
+            if let (true, Some(given)) = (prop["format"] == "path", given) {
+                let path = repo.join(given);
                 map.insert(
                     name.clone(),
                     Value::from(path.to_string_lossy().into_owned()),
@@ -1456,13 +1459,12 @@ fn composer_run(
     let folder = root.join("composer");
     std::fs::create_dir_all(&folder).with_context(|| format!("making {}", folder.display()))?;
     engine.session_run(
-        ctx,
+        &ctx.at(&folder),
         legionctl_api::SessionRunIn {
             agent: agent.to_string(),
             prompt: prompt.to_string(),
             dossier: input.dossier.clone(),
             steal: false,
-            repo: legionctl_api::ClientPath(folder),
             account: input.account.clone(),
             inside: legionctl_api::Inside::Host,
             gpu: false,
@@ -1499,7 +1501,6 @@ fn tab_view(
                 &ViewRenderIn {
                     name: name.clone(),
                     params: input.params.clone(),
-                    repo: legionctl_api::ClientPath(repo.to_path_buf()),
                 },
             );
             (
@@ -1567,7 +1568,7 @@ fn route(
     intent: &str,
     steps: &mut Vec<legionctl_api::AskStep>,
 ) -> Result<legionctl_api::ViewAnswer> {
-    let repo = input.repo.get()?;
+    let repo = ctx.folder()?;
     let resolved =
         legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), Some(repo))?;
     let cfg = &resolved.config;
@@ -1579,7 +1580,6 @@ fn route(
             &ViewRenderIn {
                 name: name.to_string(),
                 params: input.params.clone(),
-                repo: legionctl_api::ClientPath(repo.to_path_buf()),
             },
         )
     };
@@ -1647,7 +1647,6 @@ fn route(
                 &ViewVersionIn {
                     name: name.clone(),
                     to,
-                    repo: legionctl_api::ClientPath(repo.to_path_buf()),
                 },
             )?;
             return found("rlcd", name.clone());
@@ -1682,7 +1681,7 @@ fn compose(
     cfg: &legionctl_core::config::Config,
     done: &mut legionctl_api::AskStep,
 ) -> Result<legionctl_api::ViewAnswer> {
-    let repo = input.repo.get()?;
+    let repo = ctx.folder()?;
     let agent = input
         .agent
         .clone()
@@ -1758,7 +1757,6 @@ fn compose(
         &ViewRenderIn {
             name: name.clone(),
             params: input.params.clone(),
-            repo: legionctl_api::ClientPath(repo.to_path_buf()),
         },
     )?;
     answer.data = Some(render_view);

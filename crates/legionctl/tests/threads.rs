@@ -1823,7 +1823,7 @@ fn repository_layer_below_the_users(lab: &Lab, members: &str) {
         )
     };
     let shared = members.replace(r#"["name", "archetype"]"#, r#"["name"]"#);
-    let out = run(&["views", "save", "--repo", "."], &shared);
+    let out = run(&["views", "save", "--project"], &shared);
     assert!(
         out.status.success(),
         "{}",

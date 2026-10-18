@@ -46,7 +46,7 @@ repository's `.legionctl/views/`, the user's `~/.config/legionctl/views/`, the s
 | Command | What it does |
 | --- | --- |
 | `views check < file.jsonc` | Check the format, a widget of the closed set, a read operation as the source, the operations of the buttons, the parameters. |
-| `views save [--repo <dir>] < file.jsonc` | Check, then save as the next version into `~/.config/legionctl/views/` (or the repository's `.legionctl/views/`); that version shows. |
+| `views save [--project] < file.jsonc` | Check, then save as the next version into `~/.config/legionctl/views/` (or the repository's `.legionctl/views/`); that version shows. |
 | `views version <name> undo\|redo\|reset\|pin\|<n>` | Show another version: reset goes to the pinned version, else the seed; pin keeps the version that shows as the one reset goes to. |
 | `views list`, `views render <name> [name=value...]` | The views of the layers and the seeds (title, intent); one view with its data, as text (counts first, one line each). |
 | `views place <thread> <name> [name=value...]` | Open the view as a tab of the thread's screens (a `views.place` row of its log). |

@@ -215,7 +215,6 @@ impl LegionApp {
                         .into_iter()
                         .map(|(k, v)| format!("{k}={v}"))
                         .collect(),
-                    repo: legionctl_api::ClientPath(self.tab_repo()),
                 };
                 let task =
                     self.operator(

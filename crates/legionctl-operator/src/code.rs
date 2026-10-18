@@ -9,7 +9,7 @@ use anyhow::Result;
 use legionctl_api::{
     AnnotateIn, Annotation, AnnotationsIn, ChangeSet, CodeNodes, Ctx, GraphChangesIn, GraphHookIn,
     GraphImpactIn, GraphPruneIn, GraphQueryIn, GraphRefreshIn, GraphRefs, HookAction, IntoWire,
-    Lines, PlanCheck, PlanCheckIn, PlanStatus, PlanStatusIn, RepoIn,
+    Lines, PlanCheck, PlanCheckIn, PlanStatus, PlanStatusIn,
 };
 use legionctl_core::db::Db;
 use legionctl_core::workspace::git_common_dir;
@@ -112,8 +112,7 @@ pub fn trigger(dir: &Path) {
     }
 }
 
-pub fn refresh(input: &GraphRefreshIn) -> Result<Lines> {
-    let dir = input.repo.get()?;
+pub fn refresh(dir: &Path, input: &GraphRefreshIn) -> Result<Lines> {
     if input.background {
         let job = spawn(dir, &input.rev)?;
         return Ok(Lines {
@@ -128,27 +127,19 @@ pub fn refresh(input: &GraphRefreshIn) -> Result<Lines> {
     out
 }
 
-pub fn refs(input: &RepoIn) -> Result<GraphRefs> {
-    Ok(codegraph::refs(&dossiers()?, input.repo.get()?)?.into_wire())
+pub fn refs(dir: &Path) -> Result<GraphRefs> {
+    Ok(codegraph::refs(&dossiers()?, dir)?.into_wire())
 }
 
-pub fn query(input: &GraphQueryIn) -> Result<CodeNodes> {
-    Ok(codegraph::query(input.repo.get()?, &input.text, &input.rev, input.build)?.into_wire())
+pub fn query(dir: &Path, input: &GraphQueryIn) -> Result<CodeNodes> {
+    Ok(codegraph::query(dir, &input.text, &input.rev, input.build)?.into_wire())
 }
 
-pub fn impact(input: &GraphImpactIn) -> Result<CodeNodes> {
-    Ok(codegraph::impact(
-        input.repo.get()?,
-        &input.key,
-        &input.rev,
-        input.depth,
-        input.build,
-    )?
-    .into_wire())
+pub fn impact(dir: &Path, input: &GraphImpactIn) -> Result<CodeNodes> {
+    Ok(codegraph::impact(dir, &input.key, &input.rev, input.depth, input.build)?.into_wire())
 }
 
-pub fn changes(input: &GraphChangesIn) -> Result<Vec<ChangeSet>> {
-    let dir = input.repo.get()?;
+pub fn changes(dir: &Path, input: &GraphChangesIn) -> Result<Vec<ChangeSet>> {
     let mut sets = if input.three_way {
         let [base, ours, theirs] = input.refs.as_slice() else {
             anyhow::bail!("--three-way takes three refs: <base> <ours> <theirs>");
@@ -170,10 +161,10 @@ pub fn changes(input: &GraphChangesIn) -> Result<Vec<ChangeSet>> {
     Ok(sets.into_wire())
 }
 
-pub fn annotate(ctx: &Ctx, input: &AnnotateIn) -> Result<Lines> {
+pub fn annotate(dir: &Path, ctx: &Ctx, input: &AnnotateIn) -> Result<Lines> {
     let id = codegraph::annotate(
         &dossiers()?,
-        input.repo.get()?,
+        dir,
         (&input.key, &input.kind, &input.value),
         &input.rev,
         (&input.session.0, &ctx.actor),
@@ -183,42 +174,32 @@ pub fn annotate(ctx: &Ctx, input: &AnnotateIn) -> Result<Lines> {
     })
 }
 
-pub fn annotations(input: &AnnotationsIn) -> Result<Vec<Annotation>> {
-    Ok(codegraph::annotations(
-        &dossiers()?,
-        input.repo.get()?,
-        input.key.as_deref(),
-        &input.refs,
-    )?
-    .into_wire())
+pub fn annotations(dir: &Path, input: &AnnotationsIn) -> Result<Vec<Annotation>> {
+    Ok(codegraph::annotations(&dossiers()?, dir, input.key.as_deref(), &input.refs)?.into_wire())
 }
 
-pub fn prune(input: &GraphPruneIn) -> Result<Lines> {
+pub fn prune(dir: &Path, input: &GraphPruneIn) -> Result<Lines> {
     Ok(Lines {
-        lines: codegraph::prune(&dossiers()?, input.repo.get()?, input.dry_run)?,
+        lines: codegraph::prune(&dossiers()?, dir, input.dry_run)?,
     })
 }
 
-pub fn hook(input: &GraphHookIn) -> Result<Lines> {
+pub fn hook(dir: &Path, input: &GraphHookIn) -> Result<Lines> {
     // the client beside this operator: the hook runs it with the checkout as its working directory
     let legionctl = std::env::current_exe()?.with_file_name("legionctl");
     Ok(Lines {
-        lines: codegraph::hook(
-            input.repo.get()?,
-            &legionctl,
-            input.action == HookAction::Install,
-        )?,
+        lines: codegraph::hook(dir, &legionctl, input.action == HookAction::Install)?,
     })
 }
 
-pub fn plan_check(input: &PlanCheckIn) -> Result<PlanCheck> {
-    Ok(planning::check(input.repo.get()?, &input.rev, input.build)?.into_wire())
+pub fn plan_check(dir: &Path, input: &PlanCheckIn) -> Result<PlanCheck> {
+    Ok(planning::check(dir, &input.rev, input.build)?.into_wire())
 }
 
-pub fn plan_status(input: &PlanStatusIn) -> Result<PlanStatus> {
+pub fn plan_status(dir: &Path, input: &PlanStatusIn) -> Result<PlanStatus> {
     Ok(planning::status(
         &dossiers()?,
-        input.repo.get()?,
+        dir,
         input.feature.as_deref(),
         &input.rev,
         input.since.as_deref(),

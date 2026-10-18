@@ -258,10 +258,10 @@ fn detect_proposes_the_checks_of_each_language_from_the_language_files() {
     let mut rust_text = String::new();
     for (name, files, tools, expected) in LANGUAGE_CASES {
         let repo = lab.repo(name, files);
-        // from anywhere, with the repository named
+        // from anywhere, with the repository as the call's folder
         let proposed = lab
             .op
-            .ok(&["code", "checks", "detect", "--repo", repo.to_str().unwrap()]);
+            .ok(&["-C", repo.to_str().unwrap(), "code", "checks", "detect"]);
         assert!(proposed.contains(tools), "{proposed}");
         let rows: Vec<(String, String, String)> = proposal(&proposed)["checks"]
             .as_object()
@@ -566,7 +566,7 @@ async fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_g
     checkpoint_after_the_users_answer(&lab, &ws, "drop the gate");
     let refused = lab.run(&ws, &["workspace", "merge"]);
     let command = format!(
-        "legionctl workspace merge --repo {} --dossier ships",
+        "legionctl -C {} workspace merge --dossier ships",
         repo.canonicalize().unwrap().display()
     );
     assert!(

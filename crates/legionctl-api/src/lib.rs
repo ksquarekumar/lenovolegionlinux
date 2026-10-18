@@ -18,9 +18,9 @@ mod render;
 mod wire;
 
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::de::DeserializeOwned;
@@ -98,6 +98,9 @@ pub fn session_from_env() -> Option<String> {
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
 }
 
+/// HTTP header with the folder a call works in (an absolute path, [`Ctx::folder`]): the CLI's working folder, the
+/// app's project, the hook's `cwd`.
+pub const FOLDER_HEADER: &str = "x-legionctl-folder";
 /// HTTP header with which a client that runs for an agent (its MCP server, its hooks, the CLI in its shell) names
 /// that agent's session; the user token then acts as [`Principal::Agent`].
 pub const AGENT_HEADER: &str = "x-legionctl-agent";
@@ -235,12 +238,41 @@ fn words(value: &Value) -> String {
     }
 }
 
-/// Who made a call; the operator records it with every call that is not a read.
+/// Who made a call, and where it works; the operator records it with every call that is not a read.
 #[derive(Debug, Clone)]
 pub struct Ctx {
     /// The surface: cli, mcp, app, hook, gate, mcp-proxy.
     pub actor: String,
     pub principal: Principal,
+    /// The call's one context (DESIGN-20 rule 7): the folder it works in, which gives its project (the repository
+    /// or plain folder), the project's config layer, dossier, ref and code graph. The operator resolves it once
+    /// from the caller: the CLI's working folder, the app's project, the hook's `cwd`, a sandboxed session's own
+    /// workspace. No operation has its own repository or project path field (the guard test
+    /// `no_operation_takes_its_own_project_folder`).
+    pub folder: Option<PathBuf>,
+}
+
+impl Ctx {
+    /// The folder the call works in.
+    ///
+    /// # Errors
+    /// The caller sent no folder (a client that is not legionctl's).
+    pub fn folder(&self) -> Result<&Path> {
+        self.folder.as_deref().with_context(|| {
+            format!(
+                "the call names no folder: send the {FOLDER_HEADER} header with an absolute path"
+            )
+        })
+    }
+
+    /// The same caller, working in `folder`: a thread's or a session's own folder.
+    #[must_use]
+    pub fn at(&self, folder: &Path) -> Ctx {
+        Ctx {
+            folder: Some(folder.to_path_buf()),
+            ..self.clone()
+        }
+    }
 }
 
 /// Whose token a call carries (DESIGN/03).
@@ -528,7 +560,7 @@ operations! {
     /// removes conflicting packages. A human approves it in the polkit dialog.
     cleanup / Cleanup = "cleanup", Machine, CleanupIn => Changes;
     /// Claude Code and Codex settings files (user and project): present, valid, which top-level sections.
-    agents_list / AgentsList = "agents.list", Read, ProjectIn => ConfigFiles;
+    agents_list / AgentsList = "agents.list", Read, Empty => ConfigFiles;
     /// Set one key of an agent's settings file (dotted: `permissions.defaultMode`, `mcp_servers.ctx.command`): the
     /// changed lines, a backup of the file, then the write; with `--dry-run` only the changed lines.
     agents_set / AgentsSet = "agents.set", Workspace, AgentSetIn => Edit;
@@ -590,16 +622,16 @@ operations! {
     code_tests_run / CodeTestsRun = "code.tests.run", Session, TestsRunIn => Lines;
     /// Propose a `.legionctl/checks.jsonc` for the repository from the language files (Rust, Node with bun, Python
     /// with uv) whose manifest is in its top folder, with each language's tools. It writes nothing.
-    code_checks_detect / CodeChecksDetect = "code.checks.detect", Read, RepoIn => Lines;
+    code_checks_detect / CodeChecksDetect = "code.checks.detect", Read, Empty => Lines;
     /// The repository's checks: kind, gate, command, the file that set it, and its last run.
-    code_checks_list / CodeChecksList = "code.checks.list", Read, RepoIn => Lines;
+    code_checks_list / CodeChecksList = "code.checks.list", Read, Empty => Lines;
     /// Run checks (none named: each but deploy and install) as a job in the workspace; each run keeps its log and
     /// profile (wall and CPU time, memory peak, IO) in the dossier home, `.state/runs/<run>/`.
     code_checks_run / CodeChecksRun = "code.checks.run", Session, ChecksRunIn => Lines;
     /// One check run: its command, exit code, tree and profile, and the last lines of its log.
     code_checks_show / CodeChecksShow = "code.checks.show", Read, CheckShowIn => Lines;
     /// The tests of the repository with their last run and their kills.
-    code_tests_list / CodeTestsList = "code.tests.list", Read, RepoIn => Vec<TestRow>;
+    code_tests_list / CodeTestsList = "code.tests.list", Read, Empty => Vec<TestRow>;
     /// One test: its runs, the mutants it killed, and its accepts.
     code_tests_show / CodeTestsShow = "code.tests.show", Read, TestShowIn => TestDetail;
     /// The new and changed tests against HEAD (`--staged`: the index): assertions, kills, duplicates, and the reasons
@@ -627,7 +659,7 @@ operations! {
     /// legionctl-system.
     setup_turn_on / SetupTurnOn = "setup.turn-on", Workspace, ServiceIn => Changes;
     /// Reminders that hooks inject into agent sessions, with on/off state and when they fire.
-    reminders_list / RemindersList = "reminders.list", Read, ProjectIn => Reminders;
+    reminders_list / RemindersList = "reminders.list", Read, Empty => Reminders;
     /// Turn a reminder on.
     reminders_on / RemindersOn = "reminders.on", Workspace, IdIn => Reminders;
     /// Turn a reminder off.
@@ -637,7 +669,7 @@ operations! {
     /// Remove a reminder you added.
     reminders_rm / RemindersRm = "reminders.rm", Workspace, IdIn => Reminders;
     /// Hook actions (built-in and your commands) and what runs, in order, for each event.
-    hooks_list / HooksList = "hooks.list", Read, ProjectIn => HookTable;
+    hooks_list / HooksList = "hooks.list", Read, Empty => HookTable;
     /// Run an action when an event fires, after the ones already bound.
     hooks_bind / HooksBind = "hooks.bind", Workspace, HookBindIn => HookTable;
     /// Stop running an action for an event.
@@ -653,7 +685,7 @@ operations! {
     /// dossier yourself, review adversarially, keep messages short and link the dossier; empty without a dossier.
     hooks_delegate / HooksDelegate = "internal.hooks.delegate", Read, SessionIn => HookReply;
     /// legionctl skills: where each agent has them and whether the reminder that keeps each in force is on.
-    skills / Skills = "skills", Read, ProjectIn => SkillList;
+    skills / Skills = "skills", Read, Empty => SkillList;
     /// Telemetry: package and GPU power, temperatures, clocks, PSI, fan RPM and throttle reasons, one line per sample.
     monitor / Monitor = "monitor", Read, MonitorIn => Samples;
     /// Every sensor in one table with its unit and source: hwmon, the firmware (fan RPM), the NVIDIA GPU (only while
@@ -752,11 +784,11 @@ operations! {
     /// (base images, lockfiles); with `--write`, into the repository's `.legionctl/`.
     images_scan / ImagesScan = "images.scan", Workspace, ImagesScanIn => Scan;
     /// Build every service's image (`localhost/<repo>/<service>:<commit>`) with docker buildx.
-    images_build / ImagesBuild = "images.build", Workspace, RepoIn => Lines;
+    images_build / ImagesBuild = "images.build", Workspace, Empty => Lines;
     /// Write `.legionctl/compose.json` from the scan and start the services with docker compose.
-    images_run / ImagesRun = "images.run", Workspace, RepoIn => Lines;
+    images_run / ImagesRun = "images.run", Workspace, Empty => Lines;
     /// The repository's compose containers: state and health.
-    images_status / ImagesStatus = "images.status", Read, RepoIn => Vec<ServiceState>;
+    images_status / ImagesStatus = "images.status", Read, Empty => Vec<ServiceState>;
     /// Virtualization, containers and emulation: each capability with its provider and health, the containers and VMs
     /// (`WinBoat` recognized), and what is wrong.
     virt_status / VirtStatusOp = "virt.status", Read, Empty => VirtStatus;
@@ -880,7 +912,7 @@ operations! {
     tune / Tune = "tune", Machine, TuneIn => TuneReport;
     /// Two bench runs side by side: scores, telemetry and the knobs that differ.
     bench_compare / BenchCompareOp = "bench.compare", Read, BenchCompareIn => BenchCompare;
-    /// Make a new dossier (its home in ~/agentWorkspaces), linked into a folder when one is given; a name in use is
+    /// Make a new dossier (its home in ~/agentWorkspaces), linked into this folder with `--link`; a name in use is
     /// refused. It binds nothing: choose it with dossier use.
     dossier_create / DossierCreate = "dossier.create", Workspace, DossierCreateIn => Lines;
     /// Bind this session to a dossier (one writable dossier per session); a new name makes it from the pattern. With
@@ -962,13 +994,13 @@ operations! {
     gates_check / GatesCheck = "internal.gates.check", Read, GateIn => Guard;
     /// The merged config (defaults, /etc/legionctl, ~/.config/legionctl, the repository's .legionctl) and the files
     /// or keys that were not used.
-    config_show / ConfigShow = "config.show", Read, ProjectIn => ConfigView;
+    config_show / ConfigShow = "config.show", Read, Empty => ConfigView;
     /// Which file set a key, the values it overrode, and whether /etc/legionctl locks it.
     config_explain / ConfigExplain = "config.explain", Read, ExplainIn => Explanation;
     /// Every setting: what it does, its value, where the value comes from, and its built-in default.
-    config_settings / ConfigSettings = "config.settings", Read, ProjectIn => SettingsView;
+    config_settings / ConfigSettings = "config.settings", Read, Empty => SettingsView;
     /// The config layers in merge order, their files, and the locked keys.
-    config_layers / ConfigLayers = "config.layers", Read, ProjectIn => LayerList;
+    config_layers / ConfigLayers = "config.layers", Read, Empty => LayerList;
     /// Each resource of the machine (VMs, GPU, mounts, configsets, sessions and workspaces): its state, what uses it,
     /// and its actions with the operation each runs.
     resources_list / ResourcesList = "resources.list", Read, Empty => ResourceList;
@@ -980,7 +1012,7 @@ operations! {
     /// then prune.
     code_graph_refresh / CodeGraphRefresh = "code.graph.refresh", Session, GraphRefreshIn => Lines;
     /// HEAD and each branch with its tree and whether it has a code graph, and each graph snapshot.
-    code_graph_refs / CodeGraphRefs = "code.graph.refs", Read, RepoIn => GraphRefs;
+    code_graph_refs / CodeGraphRefs = "code.graph.refs", Read, Empty => GraphRefs;
     /// Find symbols in the code graph of a ref; each has its stable key.
     code_graph_query / CodeGraphQuery = "code.graph.query", Read, GraphQueryIn => CodeNodes;
     /// What depends on a symbol (by its stable key) in the code graph of a ref.
@@ -1010,8 +1042,8 @@ operations! {
     /// a Codex one as Codex subagents, any other agent gets them as operator sessions that wake on their triggers.
     /// With no session (the app, a terminal) it is your own thread (a chat) on the dossier that `--dossier` names.
     thread_start / ThreadStart = "thread.start", Workspace, ThreadStartIn => Lines;
-    /// Your thread (a chat) works on a repository (its own worktree on a branch from a base ref) or a plain folder (an
-    /// overlay); its next runs work there. A thread starts with none (a scratch folder).
+    /// Your thread (a chat) works on this folder: its repository (its own worktree on a branch from a base ref) or the
+    /// plain folder (an overlay); its next runs work there. A thread starts with none (a scratch folder).
     thread_repo / ThreadRepo = "thread.repo", Workspace, ThreadRepoIn => Lines;
     /// Every thread, newest first.
     thread_list / ThreadList = "thread.list", Read, Empty => Vec<ThreadInfo>;
@@ -1061,10 +1093,10 @@ operations! {
     /// The anchored facts whose code changed (stale) or went away (absent) at a ref.
     facts_stale / FactsStale = "facts.stale", Read, FactsAtIn => Vec<Fact>;
     /// The view files of the repository's layer and yours; a higher layer hides the same name.
-    views_list / ViewsList = "views.list", Read, ViewsListIn => Vec<ViewInfo>;
+    views_list / ViewsList = "views.list", Read, Empty => Vec<ViewInfo>;
     /// Check a view file: the format, a widget of the closed set, a read operation as its source, its parameters.
     views_check / ViewsCheck = "views.check", Read, ViewTextIn => Lines;
-    /// Check a view file and save it into your layer, or the repository's (`--repo`), as the next version of the
+    /// Check a view file and save it into your layer, or the project's (`--project`), as the next version of the
     /// view of that name; that version shows, and the screens that show the view read it again.
     views_save / ViewsSave = "views.save", Workspace, ViewSaveIn => Lines;
     /// An intent's view. With `--view` (a tab's message), the composer answers with that view's next version or words,

@@ -122,7 +122,6 @@ impl LegionApp {
         let client = self.client.clone();
         let input = FactsAtIn {
             entity: Some("app".into()),
-            repo: legionctl_api::ClientPath(self.screen.repo.clone()),
             dossier: None,
             thread: None,
             time: None,
@@ -193,7 +192,6 @@ impl LegionApp {
             attribute: attribute.into(),
             value: value.to_string(),
             scope: legionctl_api::FactScope::Global,
-            repo: legionctl_api::ClientPath(self.screen.repo.clone()),
             dossier: None,
             thread: None,
             // the time of the change, not of the write: writes run in parallel and may arrive out of order
@@ -610,13 +608,9 @@ impl LegionApp {
     /// The views that the navigator lists (`views.list`): the seeds and the saved views with their space.
     pub(crate) fn read_views(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
-        let input = legionctl_api::ViewsListIn {
-            repo: legionctl_api::ClientPath(self.screen.repo.clone()),
-        };
-        let task = self.operator(
-            cx,
-            async move { client.call::<op::ViewsList>(&input).await },
-        );
+        let task = self.operator(cx, async move {
+            client.call::<op::ViewsList>(&legionctl_api::Empty {}).await
+        });
         self.finish(cx, task, |app, views| app.screen.views = views);
     }
 
@@ -813,7 +807,7 @@ impl LegionApp {
                         format!("{name}@{branch}")
                     }
                     (Some(folder), None) => folder.clone(),
-                    _ => "no folder".into(),
+                    _ => "new folder".into(),
                 };
                 (
                     format!("dossier {} · chat {} · {repo} · sandbox", th.dossier, th.id),
@@ -821,15 +815,13 @@ impl LegionApp {
                 )
             }
             (Some(d), None) if self.tab() == Some(&Tab::Chat) => {
-                let folder = self.screen.chat_place.as_ref().map_or_else(
-                    || "no folder".to_string(),
-                    |(f, _)| {
-                        f.file_name().map_or_else(
-                            || f.display().to_string(),
-                            |n| n.to_string_lossy().into_owned(),
-                        )
-                    },
-                );
+                let folder = match self.screen.chat_place {
+                    Some(_) => self.screen.repo.file_name().map_or_else(
+                        || self.screen.repo.display().to_string(),
+                        |n| n.to_string_lossy().into_owned(),
+                    ),
+                    None => "new folder".to_string(),
+                };
                 (
                     format!("dossier {d} · new chat · {folder} · sandbox"),
                     t.accent,

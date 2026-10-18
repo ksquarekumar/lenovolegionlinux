@@ -8,7 +8,7 @@ use blake2::digest::consts::U16;
 use blake2::{Blake2b, Digest};
 use legionctl_api::client::Client;
 use legionctl_api::{
-    CacheGetIn, CachePutIn, CachedCall, CallBeginIn, CallEndIn, CallStart, ClientPath, Outcome, op,
+    CacheGetIn, CachePutIn, CachedCall, CallBeginIn, CallEndIn, CallStart, Outcome, op,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
@@ -79,15 +79,7 @@ impl Proxy {
             tool: tool.into(),
             args: serde_json::to_value(&request.arguments)
                 .map_err(|e| failed(format!("the arguments of {tool}: {e}")))?,
-            workspace: if rule.workspace {
-                Some(ClientPath(std::env::current_dir().map_err(|e| {
-                    failed(format!(
-                        "cannot read the working folder for {tool}'s workspace cache key: {e}"
-                    ))
-                })?))
-            } else {
-                None
-            },
+            workspace: rule.workspace,
         }))
     }
 

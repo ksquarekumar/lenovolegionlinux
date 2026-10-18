@@ -1774,15 +1774,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory: its agent settings and its repository's .legionctl config layer apply.",
-          "default": "."
-        }
-      },
-      "title": "ProjectIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -1877,12 +1869,6 @@
           "type": "string",
           "description": "JSON (`true`, `3`, `[\"a\"]`, `{\"k\": 1}`) or plain text. Not kept in the audit: it can be a token.",
           "x-secret": true
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "The project whose settings files project and project-local mean.",
-          "default": "."
         },
         "dry_run": {
           "type": "boolean",
@@ -2364,12 +2350,6 @@
             }
           ],
           "description": "Where Claude Code records the plugin: user, project or project-local."
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "The project for the project scopes.",
-          "default": "."
         }
       },
       "required": [
@@ -2419,12 +2399,6 @@
           ],
           "description": "The harness of the main agent: claude (members are teammates) or codex (members are Codex subagents).",
           "default": "claude"
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "The project whose repository's .legionctl config layer and teams apply.",
-          "default": "."
         }
       },
       "title": "RunnablesCheckIn",
@@ -2773,12 +2747,6 @@
     "input": {
       "type": "object",
       "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository (its main checkout or any worktree of it).",
-          "default": "."
-        },
         "base": {
           "type": [
             "string",
@@ -2851,12 +2819,6 @@
     "input": {
       "type": "object",
       "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a workspace or in the repository.",
-          "default": "."
-        },
         "topic": {
           "type": [
             "string",
@@ -3030,12 +2992,6 @@
           "type": "string",
           "description": "Commit message: what this change set does (from the plan entry)."
         },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a workspace or in the repository.",
-          "default": "."
-        },
         "topic": {
           "type": [
             "string",
@@ -3106,12 +3062,6 @@
           ],
           "description": "Only the tests whose name contains this (libtest's filter).",
           "default": null
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "title": "TestsRunIn",
@@ -3140,15 +3090,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "The repository.",
-          "default": "."
-        }
-      },
-      "title": "RepoIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -3174,15 +3116,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "The repository.",
-          "default": "."
-        }
-      },
-      "title": "RepoIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -3216,12 +3150,6 @@
           },
           "description": "The checks by name (`code checks list`); none: each check but deploy and install.",
           "default": []
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the workspace or repository.",
-          "default": "."
         },
         "session": {
           "type": "string",
@@ -3260,12 +3188,6 @@
         "run": {
           "type": "string",
           "description": "The run's id (`<job>-<check>`)."
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "required": [
@@ -3297,15 +3219,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "The repository.",
-          "default": "."
-        }
-      },
-      "title": "RepoIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -3359,12 +3273,6 @@
         "name": {
           "type": "string",
           "description": "The test function's name (or libtest's, with its module path)."
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "required": [
@@ -3562,12 +3470,6 @@
           "description": "With `--staged`: the index file of a running `git commit` (`commit -a` and `commit <path>` use a file of their\nown). The client fills it from its `GIT_INDEX_FILE`, which git sets for the pre-commit hook.",
           "default": null,
           "x-env": "GIT_INDEX_FILE"
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository or workspace.",
-          "default": "."
         }
       },
       "title": "TestReviewIn",
@@ -3678,12 +3580,6 @@
           },
           "description": "The tests that failed with the mutation; none when it survived.",
           "default": []
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "required": [
@@ -3718,12 +3614,6 @@
     "input": {
       "type": "object",
       "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a workspace or in the repository.",
-          "default": "."
-        },
         "topic": {
           "type": [
             "string",
@@ -3767,12 +3657,6 @@
     "input": {
       "type": "object",
       "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a workspace or in the repository.",
-          "default": "."
-        },
         "topic": {
           "type": [
             "string",
@@ -3833,12 +3717,6 @@
           "description": "Show the workspace that close would remove and what it would discard; change nothing.",
           "default": false
         },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a workspace or in the repository.",
-          "default": "."
-        },
         "topic": {
           "type": [
             "string",
@@ -3881,12 +3759,6 @@
     "input": {
       "type": "object",
       "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "The repository.",
-          "default": "."
-        },
         "service": {
           "type": [
             "string",
@@ -4072,15 +3944,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory: its agent settings and its repository's .legionctl config layer apply.",
-          "default": "."
-        }
-      },
-      "title": "ProjectIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -4143,12 +4007,6 @@
         "id": {
           "type": "string",
           "description": "The reminder's or hook action's id (`reminders list`, `hooks list`)."
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory; its repository's .legionctl layer applies.",
-          "default": "."
         }
       },
       "required": [
@@ -4217,12 +4075,6 @@
         "id": {
           "type": "string",
           "description": "The reminder's or hook action's id (`reminders list`, `hooks list`)."
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory; its repository's .legionctl layer applies.",
-          "default": "."
         }
       },
       "required": [
@@ -4316,12 +4168,6 @@
           ],
           "description": "When to inject it; prompt fires on every turn, so keep those short.",
           "default": "session-start"
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory; its repository's .legionctl layer applies.",
-          "default": "."
         }
       },
       "required": [
@@ -4391,12 +4237,6 @@
         "id": {
           "type": "string",
           "description": "The reminder's or hook action's id (`reminders list`, `hooks list`)."
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory; its repository's .legionctl layer applies.",
-          "default": "."
         }
       },
       "required": [
@@ -4461,15 +4301,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory: its agent settings and its repository's .legionctl config layer apply.",
-          "default": "."
-        }
-      },
-      "title": "ProjectIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -4584,12 +4416,6 @@
         "action": {
           "type": "string",
           "description": "Action id: a built-in (reminders, load, load-if-busy, setup-check) or one you defined."
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory; its repository's .legionctl layer applies.",
-          "default": "."
         }
       },
       "required": [
@@ -4711,12 +4537,6 @@
         "action": {
           "type": "string",
           "description": "Action id: a built-in (reminders, load, load-if-busy, setup-check) or one you defined."
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory; its repository's .legionctl layer applies.",
-          "default": "."
         }
       },
       "required": [
@@ -4829,12 +4649,6 @@
           "minimum": 0,
           "description": "Seconds before it is stopped (1-30); the agent waits for hooks.",
           "default": 5
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory; its repository's .legionctl layer applies.",
-          "default": "."
         }
       },
       "required": [
@@ -4936,12 +4750,6 @@
         "id": {
           "type": "string",
           "description": "The reminder's or hook action's id (`reminders list`, `hooks list`)."
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory; its repository's .legionctl layer applies.",
-          "default": "."
         }
       },
       "required": [
@@ -5059,12 +4867,6 @@
           ],
           "description": "Hook event: session-start, prompt or stop."
         },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory; its repository's .legionctl layer applies.",
-          "default": "."
-        },
         "session": {
           "type": [
             "string",
@@ -5165,15 +4967,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory: its agent settings and its repository's .legionctl config layer apply.",
-          "default": "."
-        }
-      },
-      "title": "ProjectIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -7829,13 +7623,9 @@
           "description": "The call's arguments."
         },
         "workspace": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "path",
-          "description": "The folder whose git state the result depends on, for a tool that reads the working copy.",
-          "default": null
+          "type": "boolean",
+          "description": "The result depends on the git state of the call's folder (a tool that reads the working copy).",
+          "default": false
         }
       },
       "required": [
@@ -7843,7 +7633,7 @@
         "tool",
         "args"
       ],
-      "description": "A tool call as the cache knows it (DESIGN/03): the operator builds the key from these, from the git state of\n`workspace`, and from the caller's session, so one sandbox cannot put entries under another's keys.",
+      "description": "A tool call as the cache knows it (DESIGN/03): the operator builds the key from these, from the git state of the\ncall's folder for a `workspace` tool, and from the caller's session, so one sandbox cannot put entries under another's keys.",
       "title": "CacheGetIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
@@ -7879,13 +7669,9 @@
           "description": "The call's arguments."
         },
         "workspace": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "path",
-          "description": "The folder whose git state the result depends on, for a tool that reads the working copy.",
-          "default": null
+          "type": "boolean",
+          "description": "The result depends on the git state of the call's folder (a tool that reads the working copy).",
+          "default": false
         },
         "value": {
           "type": "string",
@@ -7905,7 +7691,7 @@
         "value",
         "ttl_s"
       ],
-      "description": "A tool call as the cache knows it (DESIGN/03): the operator builds the key from these, from the git state of\n`workspace`, and from the caller's session, so one sandbox cannot put entries under another's keys.",
+      "description": "A tool call as the cache knows it (DESIGN/03): the operator builds the key from these, from the git state of the\ncall's folder for a `workspace` tool, and from the caller's session, so one sandbox cannot put entries under another's keys.",
       "title": "CachePutIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
@@ -8320,12 +8106,6 @@
     "input": {
       "type": "object",
       "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "The repository.",
-          "default": "."
-        },
         "write": {
           "type": "boolean",
           "description": "Write `.legionctl/docker-compose-services.json` and `docker-compose-cache.json` in the repository.",
@@ -8510,15 +8290,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "The repository.",
-          "default": "."
-        }
-      },
-      "title": "RepoIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -8544,15 +8316,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "The repository.",
-          "default": "."
-        }
-      },
-      "title": "RepoIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -8578,15 +8342,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "The repository.",
-          "default": "."
-        }
-      },
-      "title": "RepoIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -12213,14 +11969,10 @@
           "type": "string",
           "description": "Dossier name: a-z, 0-9 and '-', starting with a letter or digit; a name in use is refused."
         },
-        "folder": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "path",
-          "description": "A folder (a repository) where the home is linked as `agentWorkspaces`.",
-          "default": null
+        "link": {
+          "type": "boolean",
+          "description": "Link the dossier's home into the project as `agentWorkspaces`.",
+          "default": false
         }
       },
       "required": [
@@ -12268,12 +12020,6 @@
           "format": "session",
           "description": "Agent session id; the client fills it.",
           "default": ""
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository the session works in; the next session there gets this dossier if it is free.",
-          "default": "."
         }
       },
       "required": [
@@ -13413,12 +13159,6 @@
           "description": "Take the dossier over from another live session.",
           "default": false
         },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository to work on.",
-          "default": "."
-        },
         "account": {
           "type": [
             "string",
@@ -13576,12 +13316,6 @@
           "type": "boolean",
           "description": "Take the dossier over from another live session.",
           "default": false
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository to work on.",
-          "default": "."
         },
         "account": {
           "type": [
@@ -14152,12 +13886,6 @@
           },
           "description": "The git arguments, as the command got them.",
           "x-argv": true
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Where the command runs; its repository's config layer and aliases apply.",
-          "default": "."
         }
       },
       "required": [
@@ -14186,15 +13914,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory: its agent settings and its repository's .legionctl config layer apply.",
-          "default": "."
-        }
-      },
-      "title": "ProjectIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -14226,12 +13946,6 @@
         "key": {
           "type": "string",
           "description": "Dotted key, such as hooks.bindings.prompt or load.busy."
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory; its repository's .legionctl layer applies.",
-          "default": "."
         }
       },
       "required": [
@@ -14311,15 +14025,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory: its agent settings and its repository's .legionctl config layer apply.",
-          "default": "."
-        }
-      },
-      "title": "ProjectIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -14399,15 +14105,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "Project directory: its agent settings and its repository's .legionctl config layer apply.",
-          "default": "."
-        }
-      },
-      "title": "ProjectIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -14649,12 +14347,6 @@
           "type": "boolean",
           "description": "Return at once; the graph is made in the background (a job). The git hook uses it.",
           "default": false
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository (its main checkout or a worktree).",
-          "default": "."
         }
       },
       "title": "GraphRefreshIn",
@@ -14683,15 +14375,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "The repository.",
-          "default": "."
-        }
-      },
-      "title": "RepoIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -14790,12 +14474,6 @@
           "type": "boolean",
           "description": "Make the graph of the ref when it has none.",
           "default": false
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "required": [
@@ -14883,12 +14561,6 @@
           "type": "boolean",
           "description": "Make the graph of the ref when it has none.",
           "default": false
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "required": [
@@ -14969,12 +14641,6 @@
           "type": "boolean",
           "description": "Make the graph of the ref when it has none.",
           "default": false
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "title": "GraphTreeIn",
@@ -15085,12 +14751,6 @@
           "type": "boolean",
           "description": "List every entity in the text; else the entities that are not code are a count per file.",
           "default": false
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "title": "GraphChangesIn",
@@ -15268,12 +14928,6 @@
           "description": "The ref where the symbol is as you annotate it; HEAD when not given.",
           "default": "HEAD"
         },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
-        },
         "session": {
           "type": "string",
           "format": "session",
@@ -15327,12 +14981,6 @@
           ],
           "description": "Only the annotations of this stable key.",
           "default": null
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "title": "AnnotationsIn",
@@ -15424,12 +15072,6 @@
           "type": "boolean",
           "description": "Show what would be removed; remove nothing.",
           "default": false
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "title": "GraphPruneIn",
@@ -15472,12 +15114,6 @@
               "description": "Remove the refresh line; the other lines of each hook stay."
             }
           ]
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "required": [
@@ -15519,12 +15155,6 @@
           "type": "boolean",
           "description": "Make the graph of the ref when it has none.",
           "default": false
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "title": "PlanCheckIn",
@@ -15589,12 +15219,6 @@
           "type": "boolean",
           "description": "Make the graphs of the refs that have none.",
           "default": false
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository.",
-          "default": "."
         }
       },
       "title": "PlanStatusIn",
@@ -15834,12 +15458,6 @@
           "description": "A team file (`vanilla`): its members join the thread and its flow applies.",
           "default": null
         },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "Where the main agent works: the members' checks see this folder.",
-          "default": "."
-        },
         "session": {
           "type": "string",
           "format": "session",
@@ -15882,11 +15500,6 @@
           "format": "int64",
           "description": "The user's thread (`thread list`)."
         },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in the repository to work on (the thread gets its own worktree), or a plain folder (an overlay)."
-        },
         "base": {
           "type": [
             "string",
@@ -15897,8 +15510,7 @@
         }
       },
       "required": [
-        "thread",
-        "repo"
+        "thread"
       ],
       "title": "ThreadRepoIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -15984,6 +15596,13 @@
           },
           "branch": {
             "description": "The branch of the thread's own worktree; none for a plain folder (an overlay) or no repository.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "folder": {
+            "description": "The folder its runs work in: its worktree, its overlay of the plain folder, or its scratch folder.",
             "type": [
               "string",
               "null"
@@ -16079,6 +15698,13 @@
                 "null"
               ],
               "description": "The branch of the thread's own worktree; none for a plain folder (an overlay) or no repository."
+            },
+            "folder": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The folder its runs work in: its worktree, its overlay of the plain folder, or its scratch folder."
             }
           },
           "required": [
@@ -17351,14 +16977,8 @@
             "workspace",
             "thread"
           ],
-          "description": "Where it holds: global (all your work), project (the repository of --repo), workspace (its worktree), dossier\n(--dossier) or thread (--thread).",
+          "description": "Where it holds: global (all your work), project (the repository of this folder), workspace (its worktree), dossier\n(--dossier) or thread (--thread).",
           "default": "global"
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.",
-          "default": "."
         },
         "dossier": {
           "type": [
@@ -17481,12 +17101,6 @@
           ],
           "description": "An entity, or a prefix with `*` at its end (`view:*`); default all.",
           "default": null
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.",
-          "default": "."
         },
         "dossier": {
           "type": [
@@ -17839,12 +17453,6 @@
           "description": "An entity, or a prefix with `*` at its end; default all.",
           "default": null
         },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.",
-          "default": "."
-        },
         "dossier": {
           "type": [
             "string",
@@ -17935,12 +17543,6 @@
           ],
           "description": "An entity, or a prefix with `*` at its end (`view:*`); default all.",
           "default": null
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.",
-          "default": "."
         },
         "dossier": {
           "type": [
@@ -18133,15 +17735,7 @@
     "internal": false,
     "input": {
       "type": "object",
-      "properties": {
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a repository: its layer comes first.",
-          "default": "."
-        }
-      },
-      "title": "ViewsListIn",
+      "title": "Empty",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -18267,14 +17861,10 @@
           "format": "stdin",
           "description": "The view file's JSONC text (stdin when not given)."
         },
-        "repo": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "path",
-          "description": "Save into this repository's layer (`.legionctl/views/`), shared with the code; default: your layer.",
-          "default": null
+        "project": {
+          "type": "boolean",
+          "description": "Save into the project's views (`.legionctl/views/`), shared with its code; default: your views.",
+          "default": false
         }
       },
       "required": [
@@ -18361,12 +17951,6 @@
           "type": "boolean",
           "description": "Only a stored view answers (its intent, or rlcd's pick): the composer does not run.",
           "default": false
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a repository: its views layer and config apply.",
-          "default": "."
         }
       },
       "required": [
@@ -19353,12 +18937,6 @@
         "to": {
           "type": "string",
           "description": "undo, redo, reset (to the pinned version, or else the original), pin (reset goes back to the version that shows), or\na version number."
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a repository: its layer comes first.",
-          "default": "."
         }
       },
       "required": [
@@ -19403,12 +18981,6 @@
           },
           "description": "The view's parameters as `name=value`.",
           "default": []
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a repository: its layer comes first.",
-          "default": "."
         }
       },
       "required": [
@@ -19881,12 +19453,6 @@
           },
           "description": "The view's parameters as `name=value`.",
           "default": []
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a repository: its layer comes first.",
-          "default": "."
         }
       },
       "required": [
@@ -19927,12 +19493,6 @@
           ],
           "description": "What the parts are for, in words: the parts that fit it come first, and only those that share a word.",
           "default": null
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a repository: its layer comes first.",
-          "default": "."
         }
       },
       "title": "ViewPartsIn",
@@ -20088,12 +19648,6 @@
         "agent": {
           "type": "string",
           "description": "A name of config `session.acp`."
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "A folder in a repository: its config layer applies.",
-          "default": "."
         }
       },
       "required": [
@@ -20203,12 +19757,6 @@
           "format": "int64",
           "description": "Peers that are members of this thread.",
           "default": null
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "Where the caller works.",
-          "default": "."
         },
         "session": {
           "type": "string",
@@ -20347,12 +19895,6 @@
         "peer": {
           "type": "string",
           "description": "A peer's id (`thread peers`: a session id, or `<session>/<agent id>` for a subagent), or a member name in one\nof the caller's threads."
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "Where the caller works.",
-          "default": "."
         },
         "session": {
           "type": "string",
@@ -20551,12 +20093,6 @@
           ],
           "description": "The subagent's type (Claude Code's `agent_type`, for example `Explore`).",
           "default": null
-        },
-        "project": {
-          "type": "string",
-          "format": "path",
-          "description": "The agent's working directory.",
-          "default": "."
         },
         "tool": {
           "type": "string"
@@ -20843,12 +20379,6 @@
           "default": null,
           "x-secret": true,
           "x-from-env": true
-        },
-        "repo": {
-          "type": "string",
-          "format": "path",
-          "description": "Where the caller works: its repository layer can select the backend.",
-          "default": "."
         }
       },
       "required": [

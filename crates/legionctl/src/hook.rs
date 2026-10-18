@@ -22,8 +22,8 @@
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    AgentToolIn, ClientPath, CompactIn, DossierReleaseIn, Event, Guard, GuardIn, HookReply,
-    HookRunIn, SessionId, SessionIn, TeammateIn, ThreadGateIn, op,
+    AgentToolIn, CompactIn, DossierReleaseIn, Event, Guard, GuardIn, HookReply, HookRunIn,
+    SessionId, SessionIn, TeammateIn, ThreadGateIn, op,
 };
 use serde_json::{Value, json};
 
@@ -36,28 +36,38 @@ enum Answer {
     KeepWorking(String),
 }
 
-/// The project of the hook input: its `cwd`, which Claude Code always sends.
-fn project(input: &Value) -> Result<ClientPath> {
-    Ok(ClientPath(
-        input["cwd"]
-            .as_str()
-            .context("the hook input has no cwd")?
-            .into(),
-    ))
+/// The hook's client: its calls work in the agent's folder, the hook input's `cwd` (Claude Code and Codex always send
+/// it). The events of `internal.hooks.run` need it; the others take it when it is a folder (the presence of a
+/// post-tool call names it).
+fn client(event: &str, input: &Value) -> Result<Client> {
+    let client = Client::new("hook")?;
+    let cwd = input["cwd"].as_str().map(std::path::Path::new);
+    if !matches!(event, "session-start" | "prompt" | "stop") {
+        if let Some(cwd) = cwd.filter(|c| c.is_absolute()) {
+            client.set_folder(cwd);
+        }
+        return Ok(client);
+    }
+    let cwd = cwd.context("the hook input has no cwd")?;
+    anyhow::ensure!(
+        cwd.is_absolute(),
+        "the hook input's cwd '{}' is not absolute",
+        cwd.display()
+    );
+    client.set_folder(cwd);
+    Ok(client)
 }
 
 async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
-    let client = Client::new("hook")?;
+    let client = client(event, input)?;
     // in a legionctl session the dossier is bound to its id, not to the id of the agent inside the sandbox
     let session = std::env::var("LEGIONCTL_SESSION")
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| input["session_id"].as_str().map(String::from))
         .map(SessionId);
-    let project = project(input)?;
     let run = |event: Event| HookRunIn {
         event,
-        project: project.clone(),
         session: session.clone(),
         prompt: input["prompt"].as_str().map(String::from),
         // Claude Code sets stop_hook_active when a stop hook already made the agent go on in this reply
@@ -123,7 +133,7 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
             None
         }
         "post-tool" => match session {
-            Some(session) => post_tool(&client, session, project, input, path).await?,
+            Some(session) => post_tool(&client, session, input, path).await?,
             None => None,
         },
         "stop" => client
@@ -224,7 +234,6 @@ async fn team_mode(
 async fn post_tool(
     client: &Client,
     session: SessionId,
-    project: ClientPath,
     input: &Value,
     path: Option<String>,
 ) -> Result<Option<String>> {
@@ -234,7 +243,6 @@ async fn post_tool(
             session,
             agent: input["agent_id"].as_str().map(String::from),
             agent_type: input["agent_type"].as_str().map(String::from),
-            project,
             tool: tool_of(input),
             path,
             command: text("command"),

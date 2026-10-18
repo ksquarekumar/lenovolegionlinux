@@ -283,6 +283,13 @@ pub fn command(client_only: Vec<Command>) -> Command {
                 .global(true)
                 .action(ArgAction::SetTrue)
                 .help("Print the operation's JSON output"),
+        )
+        .arg(
+            Arg::new("folder")
+                .short('C')
+                .global(true)
+                .value_name("FOLDER")
+                .help("Work in this folder, as if legionctl started there: its project, config and dossier apply"),
         );
     let mut tree = Node::default();
     for op in OPS.iter().filter(|op| !op.internal()) {

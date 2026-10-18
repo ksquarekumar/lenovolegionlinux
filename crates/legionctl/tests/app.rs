@@ -11,6 +11,8 @@ mod common;
 mod plain;
 #[path = "common/portal.rs"]
 mod portal;
+#[path = "common/trust.rs"]
+mod trust;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -606,7 +608,7 @@ fn choose_the_repository(
     wait(cx, app, "the folder's form", |a| a.state.form.is_some());
     cx.update(|window, cx| {
         window.render_frame(cx);
-        window.click("form-field-repo", cx);
+        window.click("form-field-folder", cx);
         window.input(repo.to_str().unwrap(), cx);
         window.click("form-submit", cx);
     });
@@ -626,6 +628,224 @@ fn choose_the_repository(
         );
         cx.run_until_parked();
     }
+}
+
+/// `op` with `input` through `legionctl_run` of an agent's MCP server that runs in `cwd` (Claude Code starts it in the
+/// agent's folder, with the agent's session): the answer's text and whether it is an error.
+fn agent_run(
+    op: &Operator,
+    home: &Path,
+    cwd: &Path,
+    name: &str,
+    input: &serde_json::Value,
+) -> (String, bool) {
+    use std::io::{BufRead as _, Write as _};
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_legionctl"))
+        .arg("mcp")
+        .current_dir(cwd)
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &*op.runtime)
+        .env("HOME", home)
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("CLAUDE_CODE_SESSION_ID", "agent-once")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let init = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params":
+        {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "app", "version": "0"}}});
+    let call = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "legionctl_run", "arguments": {"op": name, "input": input}}});
+    let mut line = String::new();
+    writeln!(stdin, "{init}").unwrap();
+    out.read_line(&mut line).unwrap();
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc": "2.0", "method": "notifications/initialized"}}"#
+    )
+    .unwrap();
+    writeln!(stdin, "{call}").unwrap();
+    line.clear();
+    out.read_line(&mut line).unwrap();
+    drop(stdin);
+    child.wait().unwrap();
+    let result = serde_json::from_str::<serde_json::Value>(&line).unwrap()["result"].clone();
+    (
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        result["isError"] == true,
+    )
+}
+
+/// A graph query on the chat bar of the app whose project is `repo`: the same answer as the CLI in that folder and an
+/// agent's `legionctl_run` there; a call that names a folder of its own is one plain sentence.
+fn the_query_on_the_chat_bar_is_the_projects_on_every_surface(
+    cx: &mut VisualTestContext,
+    app: &Entity<LegionApp>,
+    op: &Operator,
+    (home, repo): (&Path, &Path),
+) {
+    send(cx, "/code graph query add");
+    let shown_query = ended(cx, app, "the chat bar's graph query");
+    let cli = user_cli(op, home, repo, &["code", "graph", "query", "add"]);
+    assert!(cli.contains("add"), "{cli}");
+    assert_eq!(shown_query.trim(), cli.trim());
+    let input = serde_json::json!({"text": "add"});
+    let (ran, failed) = agent_run(op, home, repo, "code.graph.query", &input);
+    let cli: serde_json::Value = serde_json::from_str(&user_cli(
+        op,
+        home,
+        repo,
+        &["code", "graph", "query", "add", "--json"],
+    ))
+    .unwrap();
+    assert!(!failed, "{ran}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&ran).unwrap(),
+        cli
+    );
+    let mut elsewhere = input.clone();
+    elsewhere["repo"] = serde_json::json!(home);
+    let (why, failed) = agent_run(op, home, repo, "code.graph.query", &elsewhere);
+    assert!(failed, "{why}");
+    let why: serde_json::Value = serde_json::from_str(&why).unwrap();
+    assert_eq!(
+        why["error"]["message"],
+        "code.graph.query works in the folder of the call and takes no repo: run it in that folder, or give \
+         legionctl -C <folder>"
+    );
+}
+
+/// The chat's own folder gives its config, from any caller (EV-review-16 A1): an agent that only the config of the
+/// project `repo` has runs chat `id`, asked from the home folder.
+fn the_chat_runs_with_the_config_of_its_folder(op: &Operator, home: &Path, repo: &Path, id: i64) {
+    let agent =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    let layer = repo.join(".legionctl/agents.jsonc");
+    write(
+        &layer,
+        &serde_json::json!({"session": {"acp": {"local": ["python3", agent, "local"]}}})
+            .to_string(),
+    );
+    trust::allow(home, &layer);
+    let id = id.to_string();
+    user_cli(op, home, home, &["thread", "agent", &id, "local"]);
+    let answer = user_cli(
+        op,
+        home,
+        home,
+        &["session", "run", "local", "again", "--thread", &id],
+    );
+    assert!(answer.contains("agent: local"), "{answer}");
+    assert!(
+        agent_folder(&answer).ends_with(&format!("worktrees/project/notes--thread-{id}")),
+        "the chat's worktree: {answer}"
+    );
+}
+
+/// The last run of the chat bar ended well; its message.
+fn ended(cx: &mut VisualTestContext, app: &Entity<LegionApp>, what: &str) -> String {
+    wait(cx, app, what, |a| {
+        a.screen.runs.last().is_some_and(|(_, ok)| ok.is_some())
+    });
+    app.read_with(cx, |a, _| {
+        let message = a.state.message.clone().unwrap_or_default();
+        assert_eq!(
+            a.screen.runs.last().unwrap().1,
+            Some(true),
+            "{what}: {message}"
+        );
+        message
+    })
+}
+
+/// One context (DESIGN-20 rule 7, EV-review-16 A1, walk r368 F3; user 2026-10-17: "if I set the repo once in the app,
+/// all things that use the repo must know"). The app starts in the home folder, as from the desktop menu; the user
+/// chooses the repository once, in the code view. Then the view shows its code; a graph query on the chat bar gives
+/// what the CLI in that folder and an agent's `legionctl_run` there give; a dossier made on the chat bar is linked into
+/// it (a repository that no dossier used before); a new chat works in it at once, and the chat's line names the folder the agent works in. No step shows an
+/// error, and a call that names a folder of its own is one plain sentence.
+#[gpui_kit::test]
+fn the_project_chosen_once_in_the_app_is_the_folder_of_its_views_chats_and_calls(
+    cx: &mut TestAppContext,
+) {
+    let (op, home, _) = thread_lab("once");
+    // a repository that no dossier and no session used yet
+    let repo = home.join("project");
+    std::fs::create_dir_all(&repo).unwrap();
+    lab_git(&home, &repo, &["init", "--quiet"]);
+    graph_repo(&home, &repo);
+    refresh_with_standin(&op, &home, &repo);
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &home)));
+    let cx = &mut vcx;
+    let click = |cx: &mut VisualTestContext, id: &str| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(SharedString::from(id.to_string()), cx);
+        });
+    };
+    click(cx, "space-work");
+    wait(cx, &app, "the views", |a| {
+        a.screen.views.iter().any(|v| v.name == "code-graph")
+    });
+    click(cx, "nav-code-graph");
+    choose_the_repository(cx, &app, &op, &repo);
+
+    // the view: the project's code, with no question and no error
+    wait(cx, &app, "the project's tree", |a| {
+        shown(a, "code-tree").is_some_and(|v| !v.nodes.is_empty())
+    });
+    app.read_with(cx, |a, _| {
+        let tree = shown(a, "code-tree").unwrap();
+        assert!(tree.error.is_none() && !tree.needs_repository, "{tree:?}");
+    });
+
+    the_query_on_the_chat_bar_is_the_projects_on_every_surface(cx, &app, &op, (&home, &repo));
+
+    // a dossier made on the chat bar is linked into the project
+    let link = repo.join("agentWorkspaces");
+    assert!(!link.exists());
+    send(cx, "/dossier create notes --link");
+    cx.run_until_parked();
+    if app.read_with(cx, |a, _| a.state.pending.is_some()) {
+        click(cx, "apply");
+    }
+    let made = ended(cx, &app, "the dossier");
+    assert!(link.is_symlink(), "{made}");
+    wait(cx, &app, "the new dossier as the user's", |a| {
+        a.screen.dossier.as_deref() == Some("notes")
+    });
+
+    // a new chat works in the project from its first message; its line names the agent's own folder
+    app.update(cx, |a, cx| a.open_tab(Tab::Chat, cx));
+    send(cx, "commit");
+    wait(cx, &app, "the chat's first answer", |a| {
+        !said(a, "thread.answer").is_empty()
+    });
+    app.read_with(cx, |a, _| {
+        let answer = &said(a, "thread.answer")[0];
+        assert!(answer.contains("COMMIT_OK"), "{answer}");
+        let th = &a.screen.thread.as_ref().unwrap().thread;
+        assert_eq!(th.repo.as_deref(), repo.to_str());
+        assert_eq!(
+            legionctl_app::thread::place_line(th),
+            format!(
+                "Works in {}, on branch legionctl/notes--thread-{} of {}",
+                agent_folder(answer),
+                th.id,
+                repo.display()
+            )
+        );
+        assert!(a.screen.thread_error.is_none());
+    });
+
+    let id = app.read_with(cx, |a, _| a.screen.thread.as_ref().unwrap().thread.id);
+    the_chat_runs_with_the_config_of_its_folder(&op, &home, &repo, id);
+    drop(runtime);
 }
 
 /// The code graph seed (DESIGN-09 G4, todo-141) on a repository with the ctx stand-in: on branch work, the commit
@@ -3043,36 +3263,31 @@ fn wait_for_the_tab_fact(
     }
 }
 
-/// "Change where the chat works" in the thread tab: the environment step (thread.repo) (the repository given or `prefilled` with the
-/// dossier's), base main, the inline confirm; then the thread has its branch.
-fn attach_repository(
-    cx: &mut VisualTestContext,
-    app: &Entity<LegionApp>,
-    repo: &Path,
-    prefilled: bool,
-) {
+/// The folder that the stand-in agent says it works in now (its last line `folder: <path>`: an answer can quote the
+/// conversation before it).
+fn agent_folder(answer: &str) -> String {
+    answer
+        .lines()
+        .filter_map(|l| l.strip_prefix("folder: "))
+        .next_back()
+        .unwrap_or_else(|| panic!("no folder line: {answer}"))
+        .to_string()
+}
+
+/// "Change where the chat works" in the thread tab: the environment step with the app's project in it (`repo`, the
+/// folder the app started in), base main, the inline confirm of thread.repo; then the thread has its branch.
+fn attach_repository(cx: &mut VisualTestContext, app: &Entity<LegionApp>, repo: &Path) {
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("thread-repo", cx);
     });
-    wait(cx, app, "the form of thread.repo", |a| {
-        a.state.form.is_some()
-    });
-    // the second chat's form has the dossier's repository (the first chat's) already
+    wait(cx, app, "the environment step", |a| a.state.form.is_some());
     let given = app.read_with(cx, |a, _| {
-        a.state.form.as_ref().unwrap().values.get("repo").cloned()
+        a.state.form.as_ref().unwrap().values.get("folder").cloned()
     });
-    assert_eq!(
-        given.as_deref(),
-        prefilled.then(|| repo.to_str().unwrap()),
-        "the dossier's repository first"
-    );
+    assert_eq!(given.as_deref(), repo.to_str(), "the app's project first");
     cx.update(|window, cx| {
         window.render_frame(cx);
-        if given.is_none() {
-            window.click("form-field-repo", cx);
-            window.input(repo.to_str().unwrap(), cx);
-        }
         window.click("form-field-base", cx);
         window.input("main", cx);
         window.click("form-submit", cx);
@@ -3252,9 +3467,9 @@ fn a_chat_chooses_where_it_works_first(
     wait(cx, app, "the environment step", |a| a.state.form.is_some());
     app.read_with(cx, |a, _| {
         let form = a.state.form.as_ref().unwrap();
-        assert_eq!(form.values.get("repo").map(String::as_str), repo.to_str());
+        assert_eq!(form.values.get("folder").map(String::as_str), repo.to_str());
         let shown: Vec<&str> = form.fields.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(shown, ["repo", "base"], "no thread number to type");
+        assert_eq!(shown, ["folder", "base"], "no thread number to type");
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -3263,10 +3478,8 @@ fn a_chat_chooses_where_it_works_first(
         window.click("form-submit", cx);
     });
     app.read_with(cx, |a, _| {
-        assert_eq!(
-            a.screen.chat_place,
-            Some((repo.to_path_buf(), "main".to_string()))
-        );
+        assert_eq!(a.screen.repo, repo, "the app's project");
+        assert_eq!(a.screen.chat_place.as_deref(), Some("main"));
         assert!(
             a.state.pending.is_none(),
             "the user's choice is the step itself"
@@ -3286,67 +3499,122 @@ fn a_chat_chooses_where_it_works_first(
     (id, branch)
 }
 
-/// todo-174, the thread and code (approved 2026-10-17): a chat starts with no repository (its runs work in a scratch
-/// folder: the stand-in cannot commit there). "Change where the chat works" opens the environment step; with the lab's
-/// repository and base main, the thread gets its own worktree on its own branch, the title names repository@branch,
-/// and the next run commits there, not on main (the agent gets the conversation so far: it has no session in the new
-/// folder). A second chat's form has that repository first (the dossier's linked one), and it gets a second worktree;
-/// a third chat chooses it before its first message.
+/// Chat one, before the user chooses a project: it works in a new folder of its own, and its line names the folder
+/// the agent works in (walk r368 F3: the line said "No folder" while the agent named its folder). The environment
+/// step moves it to the app's project `repo` from base main: the next run commits in its own worktree. Its thread and
+/// branch.
+fn the_first_chat_moves_to_the_project(
+    cx: &mut VisualTestContext,
+    app: &Entity<LegionApp>,
+    repo: &Path,
+) -> (i64, String) {
+    app.update(cx, |a, cx| a.open_tab(Tab::Chat, cx));
+    send(cx, "one");
+    wait(cx, app, "the scratch answer", |a| {
+        !said(a, "thread.answer").is_empty()
+    });
+    app.read_with(cx, |a, _| {
+        let answer = &said(a, "thread.answer")[0];
+        assert!(
+            answer.contains("COMMIT_FAILED"),
+            "no repository yet: {answer}"
+        );
+        let th = &a.screen.thread.as_ref().unwrap().thread;
+        let folder = agent_folder(answer);
+        assert!(
+            folder.ends_with(&format!("threads/thread-{}", th.id)),
+            "{answer}"
+        );
+        assert_eq!(
+            legionctl_app::thread::place_line(th),
+            format!("Works in {folder}, a new folder of this chat")
+        );
+    });
+    // the user chooses the project once (the chat's environment step): the chat moves there
+    attach_repository(cx, app, repo);
+    send(cx, "commit");
+    wait(cx, app, "the answer in the worktree", |a| {
+        said(a, "thread.answer").len() == 2
+    });
+    let (id, branch) = app.read_with(cx, |a, _| {
+        let answer = &said(a, "thread.answer")[1];
+        assert!(answer.contains("COMMIT_OK"), "{answer}");
+        assert!(
+            answer.contains("prompt: The conversation of this thread so far")
+                && answer.contains("user: one"),
+            "a new session in the worktree gets the conversation: {answer}"
+        );
+        let th = &a.screen.thread.as_ref().unwrap().thread;
+        let branch = th.branch.clone().unwrap();
+        assert_eq!(
+            legionctl_app::thread::place_line(th),
+            format!(
+                "Works in {}, on branch {branch} of {}",
+                agent_folder(answer),
+                repo.display()
+            ),
+            "{answer}"
+        );
+        (th.id, branch)
+    });
+    assert_eq!(branch, format!("legionctl/chat--thread-{id}"));
+    // the timeline says where the thread works, as a sentence
+    app.read_with(cx, |a, _| {
+        let row = a
+            .screen
+            .thread
+            .as_ref()
+            .unwrap()
+            .log
+            .iter()
+            .find(|r| r.kind == "thread.repo")
+            .cloned();
+        assert_eq!(
+            legionctl_api::chat::log_detail(&row.unwrap()),
+            format!("works on {} at {branch} (from main)", repo.display())
+        );
+    });
+    (id, branch)
+}
+
+/// todo-174 and DESIGN-20 rule 7, the thread and code: before the user chooses a project, a chat works in a scratch
+/// folder (the stand-in cannot commit there), and its line names the folder the agent works in (walk r368 F3).
+/// "Change where the chat works" opens the environment step with the app's project in it; with base main the folder
+/// becomes the app's project, the thread gets its own worktree on its own branch, and the next run commits there, not
+/// on main (the agent gets the conversation so far: it has no session in the new folder). The project is set once: a
+/// second chat works in it from its first message, in a second worktree; a third chat chooses its base ref before its
+/// first message.
 #[gpui_kit::test]
 fn a_chat_gets_a_repository_once_and_each_chat_works_in_its_own_worktree(cx: &mut TestAppContext) {
     let (op, home, repo) = thread_lab("code");
     let (app, mut vcx, runtime) = open_app(cx, &op, 1400., Some((&home, &repo)));
     let cx = &mut vcx;
     wait(cx, &app, "the dossier", |a| a.screen.dossier.is_some());
-    let mut threads = Vec::new();
-    for first in ["one", "two"] {
-        app.update(cx, |a, cx| a.open_tab(Tab::Chat, cx));
-        send(cx, first);
-        wait(cx, &app, "the scratch answer", |a| {
-            !said(a, "thread.answer").is_empty()
-        });
-        app.read_with(cx, |a, _| {
-            let answer = &said(a, "thread.answer")[0];
-            assert!(
-                answer.contains("COMMIT_FAILED"),
-                "no repository yet: {answer}"
-            );
-        });
-        attach_repository(cx, &app, &repo, first != "one");
-        send(cx, "commit");
-        wait(cx, &app, "the answer in the worktree", |a| {
-            said(a, "thread.answer").len() == 2
-        });
-        let (id, branch) = app.read_with(cx, |a, _| {
-            let answer = &said(a, "thread.answer")[1];
-            assert!(answer.contains("COMMIT_OK"), "{answer}");
-            assert!(
-                answer.contains("prompt: The conversation of this thread so far")
-                    && answer.contains(&format!("user: {first}")),
-                "a new session in the worktree gets the conversation: {answer}"
-            );
-            let t = &a.screen.thread.as_ref().unwrap().thread;
-            (t.id, t.branch.clone().unwrap())
-        });
-        assert_eq!(branch, format!("legionctl/chat--thread-{id}"));
-        // the timeline says where the thread works, as a sentence
-        app.read_with(cx, |a, _| {
-            let row = a
-                .screen
-                .thread
-                .as_ref()
-                .unwrap()
-                .log
-                .iter()
-                .find(|r| r.kind == "thread.repo")
-                .cloned();
-            assert_eq!(
-                legionctl_api::chat::log_detail(&row.unwrap()),
-                format!("works on {} at {branch} (from main)", repo.display())
-            );
-        });
-        threads.push((id, branch));
-    }
+    let mut threads = vec![the_first_chat_moves_to_the_project(cx, &app, &repo)];
+    let id = threads[0].0;
+    // set once, known everywhere: the next chat works in the project from its first message, in its own worktree
+    app.update(cx, |a, cx| a.open_tab(Tab::Chat, cx));
+    send(cx, "two");
+    wait(cx, &app, "the second chat's first answer", |a| {
+        a.screen.thread.as_ref().is_some_and(|t| t.thread.id != id)
+            && !said(a, "thread.answer").is_empty()
+    });
+    let (two, branch) = app.read_with(cx, |a, _| {
+        let answer = &said(a, "thread.answer")[0];
+        assert!(
+            answer.contains("COMMIT_OK"),
+            "in the project at once: {answer}"
+        );
+        let th = &a.screen.thread.as_ref().unwrap().thread;
+        assert!(
+            legionctl_app::thread::place_line(th)
+                .starts_with(&format!("Works in {},", agent_folder(answer))),
+            "{answer}"
+        );
+        (th.id, th.branch.clone().unwrap())
+    });
+    assert_eq!(branch, format!("legionctl/chat--thread-{two}"));
+    threads.push((two, branch));
     let (id, branch) = a_chat_chooses_where_it_works_first(cx, &app, &repo);
     threads.push((id, branch));
     cx.update(|window, cx| {

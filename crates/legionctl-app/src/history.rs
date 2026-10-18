@@ -78,7 +78,6 @@ impl LegionApp {
             attribute: "line".into(),
             value: serde_json::Value::from(line).to_string(),
             scope: legionctl_api::FactScope::Global,
-            repo: legionctl_api::ClientPath(self.screen.repo.clone()),
             dossier: None,
             thread: None,
             valid_from: Some(now_ms()),

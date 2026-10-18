@@ -3,7 +3,7 @@
 
 On a prompt it announces a tool call, asks one permission, commits a file and tries a push in its working folder
 (inside the session's sandbox), then answers with what it saw: the prompt, its ACP session (new, or loaded), the MCP
-servers from session/new, the permission outcome, and whether the commit and the push went through. The answer comes
+servers from session/new, the permission outcome, whether the commit and the push went through, and its folder. The answer comes
 line by line, 0.1 s apart; a prompt that starts with WAIT holds after the first line until a file `release` is in the
 working folder, or the file $FAKE_ACP_RELEASE when that is set (at most 30 s), and one that starts with SLOW waits 30 s first (a long run, for the test that stops the
 operator in the middle of one), one that starts with SILENT ends its turn with no words, and one that starts with
@@ -173,6 +173,7 @@ def prompt(params):
         "COMMIT_OK" if committed else "COMMIT_FAILED",
         "PUSH_REFUSED" if (not pushed and "gates.git.deny" in push_output) else "PUSH_NOT_REFUSED",
         "inside: " + where(),
+        "folder: " + os.getcwd(),
         "bound: " + json.dumps({"mcp": [{k: s.get(k) for k in ("name", "command", "args")} for s in mcp_servers], "meta": meta,
                                 "codex_home": codex_home()}),
     ]

@@ -21,8 +21,8 @@ use gpui_kit::{
 };
 use legionctl_api::chat::{self, Action, Entry};
 use legionctl_api::{
-    AgentCommand, ClientPath, EventRow, ProjectIn, RunOutput, SessionIdIn, ThreadIdIn, ThreadInfo,
-    ThreadLogRow, ThreadView, ViewAnswer, ViewData, ViewRenderIn, op,
+    AgentCommand, EventRow, RunOutput, SessionIdIn, ThreadIdIn, ThreadInfo, ThreadLogRow,
+    ThreadView, ViewAnswer, ViewData, ViewRenderIn, op,
 };
 use serde_json::{Value, json};
 
@@ -74,12 +74,13 @@ pub struct Screen {
     pub dossiers: Vec<String>,
     /// The screen's newest `/agent` pick: a new chat and a view tab's run take it (a thread keeps its own pick).
     pub draft_agent: Option<String>,
-    /// The new chat's environment: a folder (a git repository or a plain folder) and the base ref; none: a scratch
-    /// folder of the chat.
-    pub chat_place: Option<(PathBuf, String)>,
+    /// A new chat works in the app's project from this base ref (empty: the current branch); none: in a new folder
+    /// of its own. The user's choice of the project sets it.
+    pub chat_place: Option<String>,
     /// The answer of a thread's run as it comes (`session.output` of its tag), by thread: (tag, text so far).
     pub live: BTreeMap<i64, (String, String)>,
-    /// The folder of the views' repository layer and of the config.
+    /// The app's project (DESIGN-20 rule 7): the folder of every call (its config layer, views, code and facts) and
+    /// the folder of new chats; the start folder until the user chooses one (the fact `app` `project`).
     pub repo: PathBuf,
     /// The data of each view tab (by its key), and when it was read.
     pub view_data: BTreeMap<String, ViewData>,
@@ -338,14 +339,24 @@ impl Screen {
     }
 }
 
+/// The chat's line of where it works: the folder of its runs, which the agent names too.
+#[must_use]
+pub fn place_line(th: &ThreadInfo) -> String {
+    let folder = th.folder.as_deref().unwrap_or_default();
+    match (&th.repo, &th.branch) {
+        (Some(repo), Some(branch)) => format!("Works in {folder}, on branch {branch} of {repo}"),
+        (Some(repo), None) => {
+            format!("Works in {folder}, a copy of {repo}: its changes stay in the copy")
+        }
+        _ => format!("Works in {folder}, a new folder of this chat"),
+    }
+}
+
 impl LegionApp {
     /// Read the threads, the thread of each thread tab, the chat bar's thread (the tab's, else the newest open one)
     /// and its agents (config `session.acp`, `app.agent`), and apply a new placement of a view.
     pub(crate) fn read_thread(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
-        let project = ProjectIn {
-            project: ClientPath(self.screen.repo.clone()),
-        };
         let wanted: BTreeSet<i64> = self
             .screen
             .tabs
@@ -360,7 +371,10 @@ impl LegionApp {
             _ => None,
         };
         let task = self.operator(cx, async move {
-            let config = client.call::<op::ConfigShow>(&project).await?.value;
+            let config = client
+                .call::<op::ConfigShow>(&legionctl_api::Empty {})
+                .await?
+                .value;
             let threads = client
                 .call::<op::ThreadList>(&legionctl_api::Empty {})
                 .await?;
@@ -370,7 +384,6 @@ impl LegionApp {
             let facts = client
                 .call::<op::FactsAt>(&legionctl_api::FactsAtIn {
                     entity: Some("app".into()),
-                    repo: project.project.clone(),
                     dossier: None,
                     thread: None,
                     time: None,
@@ -406,8 +419,10 @@ impl LegionApp {
                         Ok((threads, shown, chat, config, (dossier, dossiers, project))) => {
                             app.screen.dossier = dossier;
                             // the project chosen before, while it is still a folder
-                            if let Some(p) = project.map(PathBuf::from).filter(|p| p.is_dir()) {
-                                app.screen.repo = p;
+                            if let Some(p) = project.map(PathBuf::from).filter(|p| p.is_dir())
+                                && p != app.screen.repo
+                            {
+                                app.use_project(&p);
                             }
                             app.screen.dossiers = dossiers;
                             app.screen.agents = config["session"]["acp"]
@@ -479,13 +494,11 @@ impl LegionApp {
     /// Read the Dossiers view for the new chat's dossier picker.
     pub(crate) fn load_picker(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
-        let repo = self.screen.repo.clone();
         let task = self.operator(cx, async move {
             client
                 .call::<op::ViewsRender>(&ViewRenderIn {
                     name: "dossiers".into(),
                     params: Vec::new(),
-                    repo: ClientPath(repo),
                 })
                 .await
         });
@@ -501,18 +514,9 @@ impl LegionApp {
         };
         let key = self.tab_key();
         let client = self.client.clone();
-        let repo = self.tab_repo();
-        let params = params
-            .into_iter()
-            .filter(|p| !p.starts_with(REPO_PARAM))
-            .collect();
         let task = self.operator(cx, async move {
             client
-                .call::<op::ViewsRender>(&ViewRenderIn {
-                    name,
-                    params,
-                    repo: ClientPath(repo),
-                })
+                .call::<op::ViewsRender>(&ViewRenderIn { name, params })
                 .await
         });
         self.finish(cx, task, move |app, data| {
@@ -693,8 +697,7 @@ impl LegionApp {
                     if self.screen.agents.iter().any(|a| a == name) {
                         self.screen.draft_agent = Some(name.to_string());
                     }
-                    let input =
-                        json!({"thread": t.thread.id, "agent": name, "repo": self.screen.repo});
+                    let input = json!({"thread": t.thread.id, "agent": name});
                     self.start("thread.agent", input, format!("/agent {name}"), cx);
                 }
                 // a new chat or a view tab: the pick holds for this screen until a thread keeps it
@@ -794,7 +797,6 @@ impl LegionApp {
             .take(60)
             .collect();
         let client = self.client.clone();
-        let repo = ClientPath(self.screen.repo.clone());
         let place = self.screen.chat_place.clone();
         let (who, words) = (agent.clone(), prompt.to_string());
         let task = self.operator(cx, async move {
@@ -802,7 +804,6 @@ impl LegionApp {
                 title: title.clone(),
                 dossier: Some(dossier.clone()),
                 team: None,
-                repo: repo.clone(),
                 session: legionctl_api::SessionId::default(),
             };
             client.call::<op::ThreadStart>(&start).await?;
@@ -820,15 +821,13 @@ impl LegionApp {
                 .call::<op::ThreadAgent>(&legionctl_api::ThreadAgentIn {
                     thread: id,
                     agent: who,
-                    repo,
                 })
                 .await?;
-            // the environment step's folder: the user chose it for this chat
-            if let Some((folder, base)) = place {
+            // the app's project: the chat works in it (the call's folder), as the user chose it once
+            if let Some(base) = place {
                 client
                     .call::<op::ThreadRepo>(&legionctl_api::ThreadRepoIn {
                         thread: id,
-                        repo: ClientPath(folder),
                         base: (!base.is_empty()).then_some(base),
                     })
                     .await?;
@@ -838,7 +837,10 @@ impl LegionApp {
         self.state.message = Some("Starting the chat…".into());
         self.finish_with(cx, task, move |app, id: i64, cx| {
             app.state.message = None;
-            app.screen.chat_place = None;
+            // the next chat works in the project too, from its current branch
+            if let Some(base) = &mut app.screen.chat_place {
+                base.clear();
+            }
             if let Some(i) = app.screen.tabs.iter().position(|t| *t == Tab::Chat) {
                 app.screen.tabs[i] = Tab::Thread { id };
                 app.screen.active = i;
@@ -857,7 +859,7 @@ impl LegionApp {
         let row = self.screen.runs.len() - 1;
         let account = self.screen.chat_account();
         let input = json!({
-            "agent": agent, "prompt": prompt, "thread": id, "tag": tag, "repo": self.screen.repo,
+            "agent": agent, "prompt": prompt, "thread": id, "tag": tag,
             "account": account,
         });
         let client = self.client.clone();
@@ -911,12 +913,7 @@ impl LegionApp {
             "dossier.create" => {
                 if let Some(name) = input["name"].as_str() {
                     let line = format!("/dossier use {name}");
-                    self.start(
-                        "dossier.use",
-                        json!({"name": name, "repo": self.screen.repo}),
-                        line,
-                        cx,
-                    );
+                    self.start("dossier.use", json!({"name": name}), line, cx);
                 }
             }
             "dossier.use" | "dossier.release" => self.read_thread(cx),
@@ -933,14 +930,10 @@ impl LegionApp {
         let Some(Tab::View { name, params }) = self.tab().cloned() else {
             return;
         };
-        let params: Vec<String> = params
-            .into_iter()
-            .filter(|p| !p.starts_with(REPO_PARAM))
-            .collect();
         // no ACP session to go on in: the chat bar's last run may be a chat's, whose session is no composer's
         let input = json!({
             "intent": words, "view": name, "params": params, "agent": self.screen.agent(),
-            "dossier": self.screen.dossier, "repo": self.tab_repo(),
+            "dossier": self.screen.dossier,
             "account": self.screen.chat_account(),
         });
         self.start("ask", input, line, cx);
@@ -1052,9 +1045,6 @@ pub(crate) const SHOWN: usize = 12;
 
 /// The key of the Dossiers view that a new chat shows when the user has no dossier: choose one or make one there.
 pub(crate) const PICKER: &str = "view:dossiers:";
-
-/// A view tab's own folder of code, in its parameters (the app takes it out before it reads the view).
-const REPO_PARAM: &str = "repo=";
 
 impl LegionApp {
     /// Scroll the tab's body by `by` (up is positive), within its content.
@@ -1563,13 +1553,7 @@ impl LegionApp {
     /// Where the user's thread works: its scratch folder, a repository at its own branch, or a plain folder, and
     /// the environment of its runs; a button attaches a repository or changes it (the form of `thread.repo`).
     fn thread_place(th: &ThreadInfo, t: &Tokens, cx: &mut Context<Self>) -> Div {
-        let text = match (&th.repo, &th.branch) {
-            (Some(repo), Some(branch)) => format!("Works in {repo} on branch {branch}"),
-            (Some(folder), None) => {
-                format!("Works on a copy of {folder}: its changes stay in the copy")
-            }
-            _ => "No folder: the agent works in a new empty folder".into(),
-        };
+        let text = place_line(th);
         let id = th.id;
         let label = "Change where the chat works";
         div()
@@ -1586,111 +1570,94 @@ impl LegionApp {
                     .outline()
                     .label(label)
                     .on_click(cx.listener(move |app, _, _, cx| {
-                        app.choose_place(crate::Then::Run, Some(id), cx);
+                        app.choose_place(crate::Then::ChatPlace, Some(id), cx);
                     })),
             )
     }
 
-    /// The folder of the view tab's code: the app's project (one for every tab and chat, DESIGN-20 rule 7).
-    pub(crate) fn tab_repo(&self) -> PathBuf {
-        self.screen.repo.clone()
-    }
-
     /// Make `path` the app's project: every view, chat and button uses it, and the app keeps it after a restart.
     pub(crate) fn set_project(&mut self, path: &Path, cx: &mut Context<Self>) {
-        path.clone_into(&mut self.screen.repo);
+        self.use_project(path);
         self.remember("project", &json!(path), cx);
     }
 
-    /// The environment step (DESIGN-15): the form of a folder (the dossier's linked repository first) and, for a
-    /// chat, the base ref. `then` says what Continue does; for an existing thread (`Then::Run`) it is `thread.repo`
-    /// with its approval.
+    /// `path` is the folder of every call from now on (the client sends it with each), and new chats work in it.
+    pub(crate) fn use_project(&mut self, path: &Path) {
+        path.clone_into(&mut self.screen.repo);
+        self.client.set_folder(path);
+        self.screen.chat_place.get_or_insert_default();
+    }
+
+    /// The environment step (DESIGN-15): the form of a folder (for a chat, the app's project first) and, for a chat,
+    /// the base ref. The folder becomes the app's project (DESIGN-20 rule 7: set once, every tab, chat and view uses it);
+    /// `then` says what else Continue does: a new chat works in it, an existing chat (`thread`) moves to it with
+    /// `thread.repo` and its approval, a view tab reads its code.
     pub(crate) fn choose_place(
         &mut self,
         then: crate::Then,
         thread: Option<i64>,
         cx: &mut Context<Self>,
     ) {
-        let dossier = self.screen.dossier.clone();
-        let client = self.client.clone();
-        let task = self.operator(cx, async move {
-            client
-                .call::<op::WorkspaceList>(&legionctl_api::Empty {})
-                .await
-        });
-        self.finish_with(cx, task, move |app, workspaces, cx| {
-            let dossier = app
-                .screen
-                .thread
-                .as_ref()
-                .filter(|_| thread.is_some())
-                .map(|t| t.thread.dossier.clone())
-                .or(dossier);
-            // a repository linked to the dossier (a git workspace of it) first; the user confirms or changes it
-            let linked = workspaces
-                .iter()
-                .find(|w| Some(&w.dossier) == dossier.as_ref() && !w.branch.is_empty())
-                .map(|w| w.repo.clone());
-            let mut input = json!({});
-            if let Some(id) = thread {
-                input["thread"] = json!(id);
-            }
-            if let Some(repo) = linked {
-                input["repo"] = json!(repo);
-            }
-            let Some(info) = legionctl_api::OPS.iter().find(|o| o.name == "thread.repo") else {
-                return;
-            };
-            let fields = legionctl_api::form::fields(info)
-                .into_iter()
-                .filter(|f| f.name == "repo" || (f.name == "base" && then != crate::Then::TabRepo))
-                .map(|mut f| {
-                    if f.name == "repo" {
-                        f.help = match then {
-                            crate::Then::TabRepo => "A folder in a git repository: the view shows its code".into(),
-                            _ => "A git repository gets its own branch; a plain folder gets a copy. Empty: a new folder"
-                                .into(),
-                        };
-                        f.required = then == crate::Then::TabRepo;
-                    }
-                    f
-                })
-                .collect();
-            app.state.pending = None;
-            // the form shows at the top of the tab
-            app.body_scroll
-                .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
-            let values = legionctl_api::form::texts(&input);
-            let button = legionctl_api::ViewButton {
-                label: match then {
-                    crate::Then::TabRepo => "Choose a repository",
-                    _ => "Where the chat works",
+        let folder = legionctl_api::form::Field {
+            name: "folder".into(),
+            kind: legionctl_api::form::Kind::Text,
+            required: true,
+            help: match then {
+                crate::Then::TabRepo => {
+                    "A folder in a git repository: the view shows its code".into()
                 }
-                .into(),
-                op: "thread.repo".into(),
-                input,
-                confirm: false,
-            };
-            app.state.form = Some(crate::Form::new(button, then, fields, values, true));
-            cx.notify();
-        });
+                _ => "A git repository gets its own branch; a plain folder gets a copy".into(),
+            },
+            default: String::new(),
+        };
+        let base = legionctl_api::form::Field {
+            name: "base".into(),
+            kind: legionctl_api::form::Kind::Text,
+            required: false,
+            help: "The ref that the chat's branch starts from; empty: the current branch".into(),
+            default: String::new(),
+        };
+        let fields = match then {
+            crate::Then::TabRepo => vec![folder],
+            _ => vec![folder, base],
+        };
+        // a view tab asks because its folder is no repository: its form starts empty
+        let mut input = match then {
+            crate::Then::TabRepo => json!({}),
+            _ => json!({"folder": self.screen.repo}),
+        };
+        if let Some(id) = thread {
+            input["thread"] = json!(id);
+        }
+        self.state.pending = None;
+        // the form shows at the top of the tab
+        self.body_scroll
+            .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
+        let values = legionctl_api::form::texts(&input);
+        let button = legionctl_api::ViewButton {
+            label: match then {
+                crate::Then::TabRepo => "Choose a repository",
+                _ => "Where the chat works",
+            }
+            .into(),
+            op: "thread.repo".into(),
+            input,
+            confirm: false,
+        };
+        self.state.form = Some(crate::Form::new(button, then, fields, values, true));
+        cx.notify();
     }
 
-    /// Continue of the environment step: the folder must exist; the chat keeps it, or the view tab reads its code.
+    /// Continue of the environment step: the folder must exist; it becomes the app's project, then the new chat
+    /// works in it, the chat moves to it, or the view tab reads its code.
     pub(crate) fn submit_place(&mut self, cx: &mut Context<Self>) {
         let Some(form) = self.state.form.as_mut() else {
             return;
         };
         let text = |k: &str| form.values.get(k).map_or("", |v| v.trim()).to_string();
-        let (folder, base) = (text("repo"), text("base"));
+        let (folder, base) = (text("folder"), text("base"));
         if folder.is_empty() {
-            if form.then == crate::Then::TabRepo {
-                form.error = Some("Give a folder in a git repository".into());
-                cx.notify();
-                return;
-            }
-            self.screen.chat_place = None;
-            self.state.form = None;
+            form.error = Some("Give a folder".into());
             cx.notify();
             return;
         }
@@ -1700,14 +1667,28 @@ impl LegionApp {
             cx.notify();
             return;
         }
-        let then = form.then;
+        let (then, thread) = (form.then, form.button.input["thread"].as_i64());
         self.state.form = None;
         self.set_project(&path, cx);
-        if then == crate::Then::TabRepo {
+        match (then, thread) {
             // the tab keeps its key: read its view again for the new project
-            self.render_view(cx);
-        } else {
-            self.screen.chat_place = Some((path, base));
+            (crate::Then::TabRepo, _) => self.render_view(cx),
+            (_, Some(id)) => {
+                let mut input = json!({"thread": id});
+                if !base.is_empty() {
+                    input["base"] = json!(base);
+                }
+                self.confirm(
+                    legionctl_api::ViewButton {
+                        label: "Change where the chat works".into(),
+                        op: "thread.repo".into(),
+                        input,
+                        confirm: false,
+                    },
+                    cx,
+                );
+            }
+            (_, None) => self.screen.chat_place = Some(base),
         }
         cx.notify();
     }
@@ -2000,10 +1981,11 @@ impl LegionApp {
     /// A new chat: its dossier and its environment step (where it works, the sandbox), changeable before the first
     /// message.
     fn chat_place_card(&self, dossier: &str, t: &Tokens, cx: &mut Context<Self>) -> Div {
+        let folder = self.screen.repo.display();
         let place = match &self.screen.chat_place {
-            Some((folder, base)) if base.is_empty() => format!("Works in {}", folder.display()),
-            Some((folder, base)) => format!("Works in {} from {base}", folder.display()),
-            None => "No folder: the agent works in a new empty folder".into(),
+            Some(base) if base.is_empty() => format!("Works in {folder}"),
+            Some(base) => format!("Works in {folder} from {base}"),
+            None => "Works in a new folder of this chat".into(),
         };
         div()
             .v_flex()

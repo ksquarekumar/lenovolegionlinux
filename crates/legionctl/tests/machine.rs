@@ -582,17 +582,11 @@ fn a_recording_replays_to_the_same_decisions_and_status() {
     let status = json(&op, &["status"]);
     // an agent's text must not reach a recording that is shared as a bug report
     std::fs::create_dir_all(m.dir.join("project")).unwrap();
-    json(
-        &op,
-        &[
-            "reminders",
-            "add",
-            "private",
-            "the secret plan",
-            "--project",
-            m.dir.join("project").to_str().unwrap(),
-        ],
+    let added = op.cli_in(
+        &m.dir.join("project"),
+        &["reminders", "add", "private", "the secret plan"],
     );
+    assert!(added.status.success(), "{added:?}");
     let dir = m.dir.join("recording");
     let dir = dir.to_str().unwrap();
     let recorded = json(&op, &["record", dir]);
@@ -8054,11 +8048,13 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let saved = op.run(
             &repo,
             &env,
-            &["views", "save", "--repo", "."],
+            &["views", "save", "--project"],
             &view("panel", "Repo panel, mine"),
         );
         assert!(saved.status.success(), "{saved:?}");
-        assert_eq!(find(&list(), "panel")["title"], "Repo panel, mine");
+        let panel = find(&list(), "panel");
+        assert_eq!(panel["title"], "Repo panel, mine");
+        assert_eq!(panel["layer"], "repository", "the project's layer: {panel}");
         assert_eq!(
             asked.lock().unwrap().len(),
             1,
@@ -8573,7 +8569,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             asked[0],
             format!(
                 "Define your own action: a one-line shell command whose output goes to the agent (id greet, command \
-                 echo hello, project {}).\nAgent session agent-1 asks for it.",
+                 echo hello).\nAgent session agent-1 asks for it in {}.",
                 home.display()
             ),
         );

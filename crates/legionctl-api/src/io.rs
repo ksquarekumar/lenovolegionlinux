@@ -39,19 +39,9 @@ pub struct StatusIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ProjectIn {
-    /// Project directory: its agent settings and its repository's .legionctl config layer apply.
-    #[serde(default = "here")]
-    pub project: ClientPath,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExplainIn {
     /// Dotted key, such as hooks.bindings.prompt or load.busy.
     pub key: String,
-    /// Project directory; its repository's .legionctl layer applies.
-    #[serde(default = "here")]
-    pub project: ClientPath,
 }
 
 /// Every setting with its value now and where that value comes from (DESIGN-20).
@@ -90,15 +80,8 @@ fn on_host() -> Inside {
     Inside::Host
 }
 
-fn here() -> ClientPath {
-    ClientPath(".".into())
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceOpenIn {
-    /// A folder in the repository (its main checkout or any worktree of it).
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// Ref the dossier's branch starts from and merges into; default: the main checkout's current branch.
     #[serde(default)]
     pub base: Option<String>,
@@ -114,9 +97,6 @@ pub struct WorkspaceOpenIn {
 /// workspace in the repository of `repo`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceIn {
-    /// A folder in a workspace or in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// The topic workspace (`workspace open --topic`), from anywhere in the repository.
     #[serde(default)]
     pub topic: Option<String>,
@@ -126,9 +106,6 @@ pub struct WorkspaceIn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MergeIn {
-    /// A folder in a workspace or in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// The topic workspace (`workspace open --topic`), from anywhere in the repository.
     #[serde(default)]
     pub topic: Option<String>,
@@ -144,9 +121,6 @@ pub struct MergeIn {
 pub struct CheckpointIn {
     /// Commit message: what this change set does (from the plan entry).
     pub message: String,
-    /// A folder in a workspace or in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// The topic workspace (`workspace open --topic`), from anywhere in the repository.
     #[serde(default)]
     pub topic: Option<String>,
@@ -169,9 +143,6 @@ pub struct TestsRunIn {
     /// Only the tests whose name contains this (libtest's filter).
     #[serde(default)]
     pub filter: Option<String>,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -179,9 +150,6 @@ pub struct ChecksRunIn {
     /// The checks by name (`code checks list`); none: each check but deploy and install.
     #[serde(default)]
     pub checks: Vec<String>,
-    /// A folder in the workspace or repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     #[serde(default)]
     pub session: SessionId,
 }
@@ -190,18 +158,12 @@ pub struct ChecksRunIn {
 pub struct CheckShowIn {
     /// The run's id (`<job>-<check>`).
     pub run: String,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TestShowIn {
     /// The test function's name (or libtest's, with its module path).
     pub name: String,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -214,9 +176,6 @@ pub struct TestReviewIn {
     #[serde(default)]
     #[schemars(extend("x-env" = "GIT_INDEX_FILE"))]
     pub index: Option<ClientPath>,
-    /// A folder in the repository or workspace.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -230,9 +189,6 @@ pub struct MutantRecordIn {
     /// The tests that failed with the mutation; none when it survived.
     #[serde(default)]
     pub killed_by: Vec<String>,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -243,9 +199,6 @@ pub struct CloseIn {
     /// Show the workspace that close would remove and what it would discard; change nothing.
     #[serde(default)]
     pub dry_run: bool,
-    /// A folder in a workspace or in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// The topic workspace (`workspace open --topic`), from anywhere in the repository.
     #[serde(default)]
     pub topic: Option<String>,
@@ -304,9 +257,6 @@ pub struct ThreadAccountIn {
 pub struct IdIn {
     /// The reminder's or hook action's id (`reminders list`, `hooks list`).
     pub id: String,
-    /// Project directory; its repository's .legionctl layer applies.
-    #[serde(default = "here")]
-    pub project: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -318,9 +268,6 @@ pub struct ReminderAddIn {
     /// When to inject it; prompt fires on every turn, so keep those short.
     #[serde(default = "session_start")]
     pub event: Event,
-    /// Project directory; its repository's .legionctl layer applies.
-    #[serde(default = "here")]
-    pub project: ClientPath,
 }
 
 fn session_start() -> Event {
@@ -333,9 +280,6 @@ pub struct HookBindIn {
     pub event: Event,
     /// Action id: a built-in (reminders, load, load-if-busy, setup-check) or one you defined.
     pub action: String,
-    /// Project directory; its repository's .legionctl layer applies.
-    #[serde(default = "here")]
-    pub project: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -347,9 +291,6 @@ pub struct HookAddIn {
     /// Seconds before it is stopped (1-30); the agent waits for hooks.
     #[serde(default = "five")]
     pub timeout_s: u32,
-    /// Project directory; its repository's .legionctl layer applies.
-    #[serde(default = "here")]
-    pub project: ClientPath,
 }
 
 fn five() -> u32 {
@@ -745,9 +686,6 @@ pub struct HookTable {
 pub struct HookRunIn {
     /// Hook event: session-start, prompt or stop.
     pub event: Event,
-    /// Project directory; its repository's .legionctl layer applies.
-    #[serde(default = "here")]
-    pub project: ClientPath,
     /// The agent session; without one the dossier gate does not apply.
     #[serde(default)]
     pub session: Option<SessionId>,
@@ -796,9 +734,9 @@ pub struct DossierReleaseIn {
 pub struct DossierCreateIn {
     /// Dossier name: a-z, 0-9 and '-', starting with a letter or digit; a name in use is refused.
     pub name: String,
-    /// A folder (a repository) where the home is linked as `agentWorkspaces`.
+    /// Link the dossier's home into the project as `agentWorkspaces`.
     #[serde(default)]
-    pub folder: Option<ClientPath>,
+    pub link: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -812,9 +750,6 @@ pub struct DossierUseIn {
     pub steal: bool,
     #[serde(default)]
     pub session: SessionId,
-    /// A folder in the repository the session works in; the next session there gets this dossier if it is free.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1043,9 +978,6 @@ pub struct SessionStartIn {
     /// Take the dossier over from another live session.
     #[serde(default)]
     pub steal: bool,
-    /// A folder in the repository to work on.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// A clauth account (`agents accounts list`): its login instead of the current one.
     #[serde(default)]
     pub account: Option<String>,
@@ -1100,9 +1032,6 @@ pub struct SessionRunIn {
     /// Take the dossier over from another live session.
     #[serde(default)]
     pub steal: bool,
-    /// A folder in the repository to work on.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// A clauth account (`agents accounts list`): its login instead of the current one.
     #[serde(default)]
     pub account: Option<String>,
@@ -1210,9 +1139,6 @@ pub struct GateIn {
     /// The git arguments, as the command got them.
     #[schemars(extend("x-argv" = true))]
     pub args: Vec<String>,
-    /// Where the command runs; its repository's config layer and aliases apply.
-    #[serde(default = "here")]
-    pub project: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1493,8 +1419,8 @@ pub struct CacheGetIn {
     pub call: CachedCall,
 }
 
-/// A tool call as the cache knows it (DESIGN/03): the operator builds the key from these, from the git state of
-/// `workspace`, and from the caller's session, so one sandbox cannot put entries under another's keys.
+/// A tool call as the cache knows it (DESIGN/03): the operator builds the key from these, from the git state of the
+/// call's folder for a `workspace` tool, and from the caller's session, so one sandbox cannot put entries under another's keys.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CachedCall {
     /// The server: its command line (for a package, it names the store version).
@@ -1502,9 +1428,9 @@ pub struct CachedCall {
     pub tool: String,
     /// The call's arguments.
     pub args: serde_json::Value,
-    /// The folder whose git state the result depends on, for a tool that reads the working copy.
+    /// The result depends on the git state of the call's folder (a tool that reads the working copy).
     #[serde(default)]
-    pub workspace: Option<ClientPath>,
+    pub workspace: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1542,9 +1468,6 @@ pub struct CacheValue {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ImagesScanIn {
-    /// The repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// Write `.legionctl/docker-compose-services.json` and `docker-compose-cache.json` in the repository.
     #[serde(default)]
     pub write: bool,
@@ -1624,9 +1547,6 @@ pub struct ServiceState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PackIn {
-    /// The repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// The service whose image the agent layer goes on, when the repository builds more than one.
     #[serde(default)]
     pub service: Option<String>,
@@ -1649,13 +1569,6 @@ pub enum PackKind {
 
 fn as_container() -> PackKind {
     PackKind::Container
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct RepoIn {
-    /// The repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 /// One capability of the machine (note 17) and the provider that gives it.
@@ -1745,9 +1658,6 @@ pub struct AgentSetIn {
     /// JSON (`true`, `3`, `["a"]`, `{"k": 1}`) or plain text. Not kept in the audit: it can be a token.
     #[schemars(extend("x-secret" = true))]
     pub value: String,
-    /// The project whose settings files project and project-local mean.
-    #[serde(default = "here")]
-    pub project: ClientPath,
     /// Show the changed lines; write nothing.
     #[serde(default)]
     pub dry_run: bool,
@@ -1762,9 +1672,6 @@ pub struct RunnablesCheckIn {
     /// The harness of the main agent: claude (members are teammates) or codex (members are Codex subagents).
     #[serde(default = "claude")]
     pub harness: Harness,
-    /// The project whose repository's .legionctl config layer and teams apply.
-    #[serde(default = "here")]
-    pub project: ClientPath,
 }
 
 fn claude() -> Harness {
@@ -1784,9 +1691,6 @@ pub struct PluginInstallIn {
     pub id: String,
     /// Where Claude Code records the plugin: user, project or project-local.
     pub scope: SettingsScope,
-    /// The project for the project scopes.
-    #[serde(default = "here")]
-    pub project: ClientPath,
 }
 
 /// A Claude Code plugin as `claude plugin list` reports it, and whether the allowlist has it.
@@ -2163,9 +2067,6 @@ pub struct GraphRefreshIn {
     /// Return at once; the graph is made in the background (a job). The git hook uses it.
     #[serde(default)]
     pub background: bool,
-    /// A folder in the repository (its main checkout or a worktree).
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2178,9 +2079,6 @@ pub struct GraphQueryIn {
     /// Make the graph of the ref when it has none.
     #[serde(default)]
     pub build: bool,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2196,9 +2094,6 @@ pub struct GraphImpactIn {
     /// Make the graph of the ref when it has none.
     #[serde(default)]
     pub build: bool,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2212,9 +2107,6 @@ pub struct GraphTreeIn {
     /// Make the graph of the ref when it has none.
     #[serde(default)]
     pub build: bool,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2235,9 +2127,6 @@ pub struct GraphChangesIn {
     /// List every entity in the text; else the entities that are not code are a count per file.
     #[serde(default)]
     pub detail: bool,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2252,9 +2141,6 @@ pub struct AnnotateIn {
     /// The ref where the symbol is as you annotate it; HEAD when not given.
     #[serde(default = "head", rename = "ref")]
     pub rev: String,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     #[serde(default)]
     pub session: SessionId,
 }
@@ -2267,9 +2153,6 @@ pub struct AnnotationsIn {
     /// Only the annotations of this stable key.
     #[serde(default)]
     pub key: Option<String>,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2277,9 +2160,6 @@ pub struct GraphPruneIn {
     /// Show what would be removed; remove nothing.
     #[serde(default)]
     pub dry_run: bool,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2294,9 +2174,6 @@ pub enum HookAction {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GraphHookIn {
     pub action: HookAction,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2307,9 +2184,6 @@ pub struct PlanCheckIn {
     /// Make the graph of the ref when it has none.
     #[serde(default)]
     pub build: bool,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2326,9 +2200,6 @@ pub struct PlanStatusIn {
     /// Make the graphs of the refs that have none.
     #[serde(default)]
     pub build: bool,
-    /// A folder in the repository.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 fn head() -> String {
@@ -2373,9 +2244,6 @@ pub struct ThreadStartIn {
     /// A team file (`vanilla`): its members join the thread and its flow applies.
     #[serde(default)]
     pub team: Option<String>,
-    /// Where the main agent works: the members' checks see this folder.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     #[serde(default)]
     pub session: SessionId,
 }
@@ -2384,8 +2252,6 @@ pub struct ThreadStartIn {
 pub struct ThreadRepoIn {
     /// The user's thread (`thread list`).
     pub thread: i64,
-    /// A folder in the repository to work on (the thread gets its own worktree), or a plain folder (an overlay).
-    pub repo: ClientPath,
     /// The ref that the thread's branch starts from; default: the repository's current branch. Not for a plain
     /// folder.
     #[serde(default)]
@@ -2537,9 +2403,6 @@ pub struct PeersIn {
     /// Peers that are members of this thread.
     #[serde(default)]
     pub thread: Option<i64>,
-    /// Where the caller works.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     #[serde(default)]
     pub session: SessionId,
 }
@@ -2549,9 +2412,6 @@ pub struct ObserveIn {
     /// A peer's id (`thread peers`: a session id, or `<session>/<agent id>` for a subagent), or a member name in one
     /// of the caller's threads.
     pub peer: String,
-    /// Where the caller works.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     #[serde(default)]
     pub session: SessionId,
 }
@@ -2567,9 +2427,6 @@ pub struct AgentToolIn {
     /// The subagent's type (Claude Code's `agent_type`, for example `Explore`).
     #[serde(default)]
     pub agent_type: Option<String>,
-    /// The agent's working directory.
-    #[serde(default = "here")]
-    pub project: ClientPath,
     pub tool: String,
     /// The file it wrote.
     #[serde(default)]
@@ -2617,16 +2474,9 @@ pub struct ViewTextIn {
 pub struct ViewSaveIn {
     /// The view file's JSONC text (stdin when not given).
     pub content: StdinText,
-    /// Save into this repository's layer (`.legionctl/views/`), shared with the code; default: your layer.
+    /// Save into the project's views (`.legionctl/views/`), shared with its code; default: your views.
     #[serde(default)]
-    pub repo: Option<ClientPath>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ViewsListIn {
-    /// A folder in a repository: its layer comes first.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
+    pub project: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2636,9 +2486,6 @@ pub struct ViewRenderIn {
     /// The view's parameters as `name=value`.
     #[serde(default)]
     pub params: Vec<String>,
-    /// A folder in a repository: its layer comes first.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2650,9 +2497,6 @@ pub struct ViewPlaceIn {
     /// The view's parameters as `name=value`.
     #[serde(default)]
     pub params: Vec<String>,
-    /// A folder in a repository: its layer comes first.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2661,9 +2505,6 @@ pub struct ThreadAgentIn {
     pub thread: i64,
     /// A name of config `session.acp`.
     pub agent: String,
-    /// A folder in a repository: its config layer applies.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 /// A view file of a layer.
@@ -2690,9 +2531,6 @@ pub struct ViewVersionIn {
     /// undo, redo, reset (to the pinned version, or else the original), pin (reset goes back to the version that shows), or
     /// a version number.
     pub to: String,
-    /// A folder in a repository: its layer comes first.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2711,9 +2549,6 @@ pub struct RlcdAskIn {
     #[serde(default)]
     #[schemars(extend("x-secret" = true, "x-from-env" = true))]
     pub key: Option<String>,
-    /// Where the caller works: its repository layer can select the backend.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2736,13 +2571,10 @@ pub struct FactSetIn {
     pub attribute: String,
     /// The value as JSON.
     pub value: String,
-    /// Where it holds: global (all your work), project (the repository of --repo), workspace (its worktree), dossier
+    /// Where it holds: global (all your work), project (the repository of this folder), workspace (its worktree), dossier
     /// (--dossier) or thread (--thread).
     #[serde(default = "global")]
     pub scope: FactScope,
-    /// A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// The dossier scope.
     #[serde(default)]
     pub dossier: Option<String>,
@@ -2792,9 +2624,6 @@ pub struct FactsAtIn {
     /// An entity, or a prefix with `*` at its end (`view:*`); default all.
     #[serde(default)]
     pub entity: Option<String>,
-    /// A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// The dossier scope.
     #[serde(default)]
     pub dossier: Option<String>,
@@ -2826,9 +2655,6 @@ pub struct FactsDiffIn {
     /// An entity, or a prefix with `*` at its end; default all.
     #[serde(default)]
     pub entity: Option<String>,
-    /// A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
     /// The dossier scope.
     #[serde(default)]
     pub dossier: Option<String>,
@@ -2894,9 +2720,6 @@ pub struct AskIn {
     /// Only a stored view answers (its intent, or rlcd's pick): the composer does not run.
     #[serde(default)]
     pub stored: bool,
-    /// A folder in a repository: its views layer and config apply.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 /// What answered an intent: a stored view, rlcd's pick, or the composer's view (or text).
@@ -2942,9 +2765,6 @@ pub struct ViewPartsIn {
     /// What the parts are for, in words: the parts that fit it come first, and only those that share a word.
     #[serde(default)]
     pub intent: Option<String>,
-    /// A folder in a repository: its layer comes first.
-    #[serde(default = "here")]
-    pub repo: ClientPath,
 }
 
 /// A part of the library: a stored view with one widget and one source, which a stack places by name and version.

@@ -95,7 +95,7 @@ fn recorded(op: &OpInfo, principal: &Principal) -> bool {
 /// The record cannot be written, or the call id is open or of another call.
 pub(crate) fn begin_op(
     op: &OpInfo,
-    principal: &Principal,
+    (principal, folder): (&Principal, Option<&std::path::Path>),
     given: Option<&str>,
     input: &Value,
 ) -> Result<Option<Start>, ApiError> {
@@ -108,7 +108,8 @@ pub(crate) fn begin_op(
     };
     let (who, hash, scope) = (
         principal_key(principal),
-        hash(input),
+        // the same input in another folder is another call
+        hash(&serde_json::json!([folder, input])),
         scope_key(principal).map_err(|e| internal(&e))?,
     );
     let call = Call {

@@ -4,6 +4,7 @@
 //! the hooks deliver the messages (`engine::hooks_run`).
 
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
@@ -26,7 +27,7 @@ fn lines(lines: Vec<String>) -> Lines {
     Lines { lines }
 }
 
-pub fn start(input: &ThreadStartIn) -> Result<Lines> {
+pub fn start(dir: &Path, input: &ThreadStartIn) -> Result<Lines> {
     let store = dossiers()?;
     // no session: the user's own thread (the app's chat), on the dossier that the user names
     if input.session.0.is_empty() && input.team.is_none() {
@@ -52,7 +53,6 @@ pub fn start(input: &ThreadStartIn) -> Result<Lines> {
             "thread {id} started on dossier {dossier}: this session is main0"
         )]));
     };
-    let dir = input.repo.get()?;
     let sources = Sources::resolve(&Dirs::from_env(), Some(dir))?;
     let path = sources.team_path(team)?.with_context(|| {
         format!("no team {team} in .legionctl/teams, your teams or the plugin's teams")
@@ -437,17 +437,36 @@ fn acp_wake(
     Ok(again)
 }
 
-pub fn list() -> Result<Vec<ThreadInfo>> {
-    Ok(dossiers()?.threads()?.into_wire())
+/// The threads, each with the folder its runs work in (`root`: config workspace.root, as a run takes it).
+pub fn list(root: &Path) -> Result<Vec<ThreadInfo>> {
+    let mut threads = dossiers()?.threads()?;
+    for t in &mut threads {
+        in_scratch(root, t);
+    }
+    Ok(threads.into_wire())
 }
 
-pub fn show(input: &ThreadIdIn) -> Result<ThreadView> {
-    Ok(dossiers()?.thread_show(input.thread)?.into_wire())
+pub fn show(root: &Path, input: &ThreadIdIn) -> Result<ThreadView> {
+    let mut view = dossiers()?.thread_show(input.thread)?;
+    in_scratch(root, &mut view.thread);
+    Ok(view.into_wire())
 }
 
-/// The chat bar's agent of a thread: a name of `session.acp`, else refused with the names.
-pub fn agent(input: &legionctl_api::ThreadAgentIn) -> Result<Lines> {
-    let config = crate::engine::config(Some(&input.repo))?;
+/// A thread on no folder works in its scratch folder: the app's chat line and the agent name the same folder.
+fn in_scratch(root: &Path, t: &mut legionctl_core::thread::ThreadInfo) {
+    if t.repo.is_none() {
+        t.folder = Some(
+            legionctl_core::thread::scratch_folder(root, t.id)
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+}
+
+/// The chat bar's agent of a thread: a name of `session.acp` in the config of the thread's folder `dir`, else
+/// refused with the names.
+pub fn agent(dir: &Path, input: &legionctl_api::ThreadAgentIn) -> Result<Lines> {
+    let config = crate::engine::config(Some(dir))?;
     let names: Vec<&String> = config.config.session.acp.keys().collect();
     anyhow::ensure!(
         names.contains(&&input.agent),
@@ -572,30 +591,20 @@ pub fn rule_rm(input: &RuleRmIn) -> Result<Lines> {
     Ok(lines(vec![format!("rule {} removed", input.id)]))
 }
 
-pub fn peers(input: &PeersIn) -> Result<Vec<Peer>> {
+pub fn peers(dir: &Path, input: &PeersIn) -> Result<Vec<Peer>> {
     let scope = Scope {
         dossier: input.dossier.clone(),
         topic: input.topic.clone(),
         thread: input.thread,
     };
     Ok(dossiers()?
-        .peers(
-            &Db::open_default()?,
-            &input.session.0,
-            input.repo.get()?,
-            &scope,
-        )?
+        .peers(&Db::open_default()?, &input.session.0, dir, &scope)?
         .into_wire())
 }
 
-pub fn observe(input: &ObserveIn) -> Result<Observed> {
+pub fn observe(dir: &Path, input: &ObserveIn) -> Result<Observed> {
     Ok(dossiers()?
-        .observe(
-            &Db::open_default()?,
-            &input.session.0,
-            input.repo.get()?,
-            &input.peer,
-        )?
+        .observe(&Db::open_default()?, &input.session.0, dir, &input.peer)?
         .into_wire())
 }
 

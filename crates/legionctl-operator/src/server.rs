@@ -12,8 +12,8 @@ use axum::routing::{get, post};
 use std::fmt::Write as _;
 
 use legionctl_api::{
-    ACTOR_HEADER, AGENT_HEADER, API_HEADER, Acted, ApiError, Class, Code, Ctx, DispatchError, OPS,
-    Op, OpInfo, Principal, api_fingerprint, op, user_token,
+    ACTOR_HEADER, AGENT_HEADER, API_HEADER, Acted, ApiError, Class, Code, Ctx, DispatchError,
+    FOLDER_HEADER, OPS, Op, OpInfo, Principal, api_fingerprint, op, user_token,
 };
 use legionctl_core::db::Db;
 use serde_json::{Value, json};
@@ -100,6 +100,27 @@ fn principal(headers: &HeaderMap) -> Result<Principal, ApiError> {
     }
 }
 
+/// The folder a call works in (its context, DESIGN-20 rule 7): the one its client sends; a sandboxed session works
+/// in its own workspace (in the folder of it that the call comes from).
+fn folder(principal: &Principal, headers: &HeaderMap) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let sent = headers
+        .get(FOLDER_HEADER)
+        .map(|v| std::path::PathBuf::from(std::ffi::OsStr::from_bytes(v.as_bytes())))
+        .filter(|p| p.is_absolute());
+    let Principal::Session(id) = principal else {
+        return sent;
+    };
+    let own = crate::engine::dossiers()
+        .and_then(|d| d.session(id))
+        .ok()?
+        .workdir;
+    Some(match sent {
+        Some(p) if p.starts_with(&own) => p,
+        _ => own,
+    })
+}
+
 /// Only the fields the operation's input has: a misspelled field would otherwise be dropped, and the operation would
 /// run with that field's default (an edit with `lines` for `content` deleted the lines it was to change).
 pub(crate) fn known_fields(op: &OpInfo, input: &Value) -> Result<(), ApiError> {
@@ -114,6 +135,21 @@ pub(crate) fn known_fields(op: &OpInfo, input: &Value) -> Result<(), ApiError> {
         .collect();
     if unknown.is_empty() {
         return Ok(());
+    }
+    // a folder of its own conflicts with the call's one context (DESIGN-20 rule 7)
+    if let Some(field) = unknown
+        .iter()
+        .find(|f| ["repo", "project", "folder"].contains(&f.as_str()))
+    {
+        return Err(ApiError {
+            code: Code::InvalidInput,
+            message: format!(
+                "{} works in the folder of the call and takes no {field}: run it in that folder, or give \
+                 legionctl -C <folder>",
+                op.name
+            ),
+            op: String::new(),
+        });
     }
     let mut fields: Vec<&String> = known.into_iter().flatten().map(|(f, _)| f).collect();
     fields.sort();
@@ -165,7 +201,11 @@ async fn in_scope(
 /// A sandboxed agent's call outside its own session (a `workspace` op, or a field marked `x-approval` set), and an
 /// unsandboxed agent's change of what runs or is said in every session (hooks, reminders), go ahead only when the
 /// user allows it; the user's own calls and machine changes (polkit asks) go ahead.
-async fn approved(op: &OpInfo, principal: &Principal, input: &Value) -> Result<(), ApiError> {
+async fn approved(
+    op: &OpInfo,
+    (principal, folder): (&Principal, Option<&std::path::Path>),
+    input: &Value,
+) -> Result<(), ApiError> {
     let asks = match principal {
         Principal::User => false,
         Principal::Session(_) => {
@@ -198,8 +238,11 @@ async fn approved(op: &OpInfo, principal: &Principal, input: &Value) -> Result<(
         .flatten()
         .map(|d| format!(", dossier {d}"))
         .unwrap_or_default();
+    let place = folder
+        .map(|f| format!(" in {}", f.display()))
+        .unwrap_or_default();
     let what = format!(
-        "{}\nAgent session {short}{dossier} asks for it.",
+        "{}\nAgent session {short}{dossier} asks for it{place}.",
         op.sentence(&redacted(op, input))
     );
     let asked = crate::desktop::ask("legionctl: an agent asks for your approval", &what).await;
@@ -391,6 +434,7 @@ async fn run(
         }
     };
     let op = OPS.iter().find(|op| op.name == name);
+    let folder = folder(&principal, headers);
     let mut recording: Option<calls::OpCall> = None;
     if let Some(op) = op {
         if let Err(mut e) = known_fields(op, &input) {
@@ -398,7 +442,7 @@ async fn run(
             return refusal(&e);
         }
         own_session(op, &principal, &mut input);
-        match admit(op, &principal, headers, &input, reply).await {
+        match admit(op, (&principal, folder.as_deref()), headers, &input, reply).await {
             Ok(call) => recording = call,
             Err(answer) => return answer,
         }
@@ -409,6 +453,7 @@ async fn run(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("unknown")
             .to_string(),
+        folder,
         principal,
     };
     // the call record is the record of its own begin and end
@@ -418,7 +463,7 @@ async fn run(
             (
                 ctx.actor.clone(),
                 ctx.principal.clone(),
-                redacted(op, &input),
+                (ctx.folder.clone(), redacted(op, &input)),
             )
         });
     let started = std::time::Instant::now();
@@ -458,8 +503,8 @@ async fn run(
     }
     let code = answer.as_ref().err().map(|e| e.code);
     count(op.map_or("unknown", |op| op.name), code, ms);
-    if let Some((actor, principal, input)) = audit {
-        let payload = json!({"principal": principal, "input": input, "outcome": code, "ms": ms});
+    if let Some((actor, principal, (folder, input))) = audit {
+        let payload = json!({"principal": principal, "folder": folder, "input": input, "outcome": code, "ms": ms});
         if let Err(e) = Db::open_default().and_then(|db| db.record(&actor, &name, &payload)) {
             eprintln!("operator: audit of {name} not recorded: {e:#}");
         }
@@ -476,7 +521,7 @@ async fn run(
 /// `Err`: the answer to give instead.
 async fn admit(
     op: &OpInfo,
-    principal: &Principal,
+    (principal, folder): (&Principal, Option<&std::path::Path>),
     headers: &HeaderMap,
     input: &Value,
     reply: &mut HeaderMap,
@@ -486,7 +531,7 @@ async fn admit(
         e
     };
     let given = headers.get(CALL_HEADER).and_then(|v| v.to_str().ok());
-    let recording = match calls::begin_op(op, principal, given, input) {
+    let recording = match calls::begin_op(op, (principal, folder), given, input) {
         Ok(None) => None,
         Ok(Some(Start::Answer(id, recorded))) => {
             tag(reply, &id);
@@ -514,7 +559,9 @@ async fn admit(
         .await
         .map_err(refused)?;
     if !asked {
-        approved(op, principal, input).await.map_err(refused)?;
+        approved(op, (principal, folder), input)
+            .await
+            .map_err(refused)?;
     }
     Ok(recording)
 }

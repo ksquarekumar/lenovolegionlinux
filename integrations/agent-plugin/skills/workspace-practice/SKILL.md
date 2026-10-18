@@ -10,7 +10,7 @@ user-invocable: true
 1. Change code only in a legionctl workspace. Never edit, stage or commit in the repository's main checkout.
 2. If you changed the main checkout, tell the user and move the change to the workspace.
 3. Bind a dossier first (skill dossier-practice). A workspace belongs to one dossier.
-4. `workspace open [--repo <dir>] [--base <ref>]` makes or reopens the workspace: a worktree at
+4. `workspace open [--base <ref>]` in the repository (or `legionctl -C <dir> workspace open`) makes or reopens the workspace: a worktree at
    `<workspace.root>/<repo>/<dossier>` on branch `legionctl/<dossier>`, with the dossier home linked in as
    `agentWorkspaces` (git ignores it through `info/exclude`).
    The default base is the main checkout's branch.

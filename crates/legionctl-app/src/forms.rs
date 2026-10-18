@@ -195,10 +195,6 @@ fn about(form: &crate::Form, op: &legionctl_api::OpInfo) -> &'static str {
 
 /// A field's words for the user: `max_tokens` is "Max tokens".
 pub(crate) fn label(name: &str) -> String {
-    // a `repo` field is a folder in a repository, or a plain folder
-    if name == "repo" {
-        return "Folder".into();
-    }
     let words = name.replace('_', " ");
     let mut chars = words.chars();
     chars

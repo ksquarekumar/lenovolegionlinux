@@ -11,7 +11,7 @@ use std::os::unix::process::CommandExt;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use legionctl_api::{ClientPath, Cores, GateIn, Launch, RunEnvIn, RunGpu, cli, op};
+use legionctl_api::{Cores, GateIn, Launch, RunEnvIn, RunGpu, cli, op};
 
 use legionctl_api::client::Client;
 
@@ -188,10 +188,7 @@ fn gate_git() -> Result<()> {
         let err = std::process::Command::new(real).args(args).exec();
         return Err(err).context("running the real git");
     }
-    let input = GateIn {
-        args: args.clone(),
-        project: ClientPath(std::env::current_dir()?),
-    };
+    let input = GateIn { args: args.clone() };
     let guard = tokio::runtime::Runtime::new()?
         .block_on(Client::new("gate")?.call::<op::GatesCheck>(&input))?;
     if let Some(reason) = guard.refusal {
@@ -343,6 +340,10 @@ fn main() -> Result<()> {
         return gate_git();
     }
     let matches = cli::command(client_only()).get_matches();
+    // `-C <folder>`: the call works in that folder, as if legionctl started there (git's -C)
+    if let Some(folder) = matches.get_one::<String>("folder") {
+        std::env::set_current_dir(folder).with_context(|| format!("-C {folder}"))?;
+    }
     match matches.subcommand() {
         Some(("mcp", sub)) => {
             let only: Vec<String> = sub

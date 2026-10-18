@@ -1663,6 +1663,8 @@ wire! {
         repo: Option<String>,
         /// The branch of the thread's own worktree; none for a plain folder (an overlay) or no repository.
         branch: Option<String>,
+        /// The folder its runs work in: its worktree, its overlay of the plain folder, or its scratch folder.
+        folder: Option<String>,
     }
 
     /// A member of a thread.

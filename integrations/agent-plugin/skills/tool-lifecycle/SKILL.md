@@ -24,6 +24,9 @@ user-invocable: true
 7. Each call that is not a read is an event (kind = the operation name) with the actor, the input and the result.
    `events` pages the log (`--cursor`, `--limit`); `trace` follows it live. The app is the only UI;
    agents and scripts read its views with `views render` (text or `--json`).
+7a. Each call works in one folder: the CLI's working folder (or `legionctl -C <folder> ...`), the MCP server's
+   folder, a sandboxed session's own workspace. Its repository, config layer, dossier and code graph come from it.
+   No command takes a repository path: run it in the folder, or give `-C`.
 8. Long operations are jobs: `jobs list`, `jobs show <id>`. See skill sessions-and-agents.
 9. Over MCP, three tools reach every operation: `legionctl_find` (by words or group), `legionctl_describe` (help,
    input schema, class) and `legionctl_run` (`op` is the command path with `.`: `kernel.cmdline.set`). In a session,

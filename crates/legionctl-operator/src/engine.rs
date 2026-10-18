@@ -21,7 +21,7 @@ use legionctl_api::{
     AccountIn, AccountLoginIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath,
     CloseIn, ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation, Findings,
     GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState, MergeIn,
-    PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
+    PowerApplyIn, PowerSource, ProfileIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
     RunnableGrant, RunnablesCheck, RunnablesCheckIn, RunnablesShowIn, ServiceIn, SetupApplyIn,
     SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
     WorkspaceOpenIn, WorkspaceStatus, Workspaces,
@@ -58,7 +58,7 @@ use legionctl_api::{
 use legionctl_api::{
     Conditions, PlanView, RuleDetail, RuleEditIn, RuleIn, RuleResetIn, RuleState, Rules,
 };
-use legionctl_api::{ImagesScanIn, RepoIn, Scan, ServiceState, VirtActIn, VirtStatus};
+use legionctl_api::{ImagesScanIn, Scan, ServiceState, VirtActIn, VirtStatus};
 use legionctl_core::db::{Db, EventFilter};
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::packages::Store;
@@ -145,9 +145,10 @@ fn path(p: Option<&ClientPath>) -> Result<Option<&Path>> {
 fn tool_key(ctx: &Ctx, call: &CachedCall) -> Result<String> {
     use blake2::{Blake2b, Digest, digest::consts::U16};
     let scope = ctx.principal.agent().unwrap_or_default();
-    let state = match &call.workspace {
-        Some(dir) => legionctl_core::workspace::git_state(dir.get()?)?,
-        None => String::new(),
+    let state = if call.workspace {
+        legionctl_core::workspace::git_state(ctx.folder()?)?
+    } else {
+        String::new()
     };
     let input = serde_json::to_vec(&(scope, &call.server, &call.tool, &call.args, state))?;
     Ok(format!("{:x}", Blake2b::<U16>::digest(&input)))
@@ -1189,7 +1190,7 @@ pub(crate) fn dossiers() -> Result<Dossiers> {
 fn jail(
     ctx: &Ctx,
     store: &Dossiers,
-    project: Option<&ClientPath>,
+    project: Option<&Path>,
 ) -> Result<Option<legionctl_core::session::Jail>> {
     match &ctx.principal {
         Principal::Session(id) => Ok(Some(store.jail(id, &config(project)?.config)?)),
@@ -1461,16 +1462,19 @@ fn conversation_prompt(store: &Dossiers, id: i64, dir: &Path, prompt: &str) -> R
 
 /// The user's dossier (no session: the app, a terminal): the fact `app` `dossier` of the user, global.
 pub(crate) fn user_dossier() -> Result<Option<String>> {
-    let facts = crate::facts::at_op(&legionctl_api::FactsAtIn {
-        entity: Some("app".into()),
-        repo: ClientPath(PathBuf::from("/")),
-        dossier: None,
-        thread: None,
-        time: None,
-        recorded: None,
-        rev: None,
-        winners: true,
-    })?;
+    // a global fact: any folder reads it
+    let facts = crate::facts::at_op(
+        Path::new("/"),
+        &legionctl_api::FactsAtIn {
+            entity: Some("app".into()),
+            dossier: None,
+            thread: None,
+            time: None,
+            recorded: None,
+            rev: None,
+            winners: true,
+        },
+    )?;
     Ok(facts
         .into_iter()
         .find(|f| f.attribute == "dossier")
@@ -1478,7 +1482,7 @@ pub(crate) fn user_dossier() -> Result<Option<String>> {
 }
 
 /// Choose the user's dossier (`None`: no dossier).
-fn user_dossier_set(ctx: &Ctx, repo: &ClientPath, dossier: Option<&str>) -> Result<()> {
+fn user_dossier_set(ctx: &Ctx, dossier: Option<&str>) -> Result<()> {
     crate::facts::set(
         ctx,
         &legionctl_api::FactSetIn {
@@ -1486,7 +1490,6 @@ fn user_dossier_set(ctx: &Ctx, repo: &ClientPath, dossier: Option<&str>) -> Resu
             attribute: "dossier".into(),
             value: serde_json::json!(dossier).to_string(),
             scope: legionctl_api::FactScope::Global,
-            repo: repo.clone(),
             dossier: None,
             thread: None,
             valid_from: None,
@@ -1543,6 +1546,7 @@ pub(crate) fn dossier_of(id: &SessionId) -> Result<String> {
 /// dossier (so a dossier that another session held is taken once it is free).
 type Linked = (Option<(PathBuf, String)>, Option<Result<String, String>>);
 fn bind_linked(
+    dir: &Path,
     store: &Dossiers,
     resolved: &Resolved,
     input: &HookRunIn,
@@ -1550,7 +1554,7 @@ fn bind_linked(
 ) -> Result<Linked> {
     let session = input.session.as_ref().filter(|s| !s.0.is_empty());
     let linked = match (session, &active) {
-        (Some(_), None) => store.linked(input.project.get()?)?,
+        (Some(_), None) => store.linked(dir)?,
         _ => None,
     };
     let rebound = match (session, &linked) {
@@ -1850,11 +1854,11 @@ fn compose_allowed(repo: &Path, own: &str, project: &str) -> Result<()> {
 }
 
 /// The config of a hook's folder, or the hook's reply without it: the migration's, or the held prompt of [`held`].
-fn hook_config(input: &HookRunIn) -> Result<std::result::Result<Resolved, HookReply>> {
+fn hook_config(dir: &Path, input: &HookRunIn) -> Result<std::result::Result<Resolved, HookReply>> {
     if let Some(reply) = unmigrated(input.event.into()) {
         return Ok(Err(reply));
     }
-    match config(Some(&input.project)) {
+    match config(Some(dir)) {
         Ok(resolved) => Ok(Ok(resolved)),
         Err(e) => held(input.event.into(), e).map(Err),
     }
@@ -1876,8 +1880,8 @@ fn held(event: Event, e: anyhow::Error) -> Result<HookReply> {
 
 /// The config for work in `project`; a repository layer file with keys that wait for the user's first answer gets
 /// its question (O-2, through the asker that the operator sets), and resolves without them until then.
-pub(crate) fn config(project: Option<&ClientPath>) -> Result<Resolved> {
-    resolve(&Dirs::from_env(), path(project)?)
+pub(crate) fn config(project: Option<&Path>) -> Result<Resolved> {
+    resolve(&Dirs::from_env(), project)
 }
 
 impl Operator {
@@ -1985,7 +1989,7 @@ impl Operator {
                     }
                     "workspace.pack" => {
                         let repo = PathBuf::from(job.input["repo"].as_str().unwrap_or_default());
-                        let out = config(Some(&ClientPath(repo)))
+                        let out = config(Some(&repo))
                             .and_then(|r| pack_job(&job.input, &r.config.session));
                         end_job(&db, job.id, &out)
                     }
@@ -2479,12 +2483,12 @@ impl Engine for Operator {
         })
     }
 
-    fn agents_list(&self, _: &Ctx, input: ProjectIn) -> Result<ConfigFiles> {
-        Ok(agents::config_files(&home(), input.project.get()?).into_wire())
+    fn agents_list(&self, ctx: &Ctx, _: Empty) -> Result<ConfigFiles> {
+        Ok(agents::config_files(&home(), ctx.folder()?).into_wire())
     }
 
-    fn agents_set(&self, _: &Ctx, input: AgentSetIn) -> Result<Edit> {
-        let project = input.project.get()?;
+    fn agents_set(&self, ctx: &Ctx, input: AgentSetIn) -> Result<Edit> {
+        let project = ctx.folder()?;
         let path = match (input.agent, input.scope) {
             (AgentName::Claude, SettingsScope::User) => home().join(".claude/settings.json"),
             (AgentName::Claude, SettingsScope::Project) => project.join(".claude/settings.json"),
@@ -2506,8 +2510,8 @@ impl Engine for Operator {
         .into_wire())
     }
 
-    fn runnables_check(&self, _: &Ctx, input: RunnablesCheckIn) -> Result<RunnablesCheck> {
-        let sources = Sources::resolve(&Dirs::from_env(), Some(input.project.get()?))?;
+    fn runnables_check(&self, ctx: &Ctx, input: RunnablesCheckIn) -> Result<RunnablesCheck> {
+        let sources = Sources::resolve(&Dirs::from_env(), Some(ctx.folder()?))?;
         let team = match &input.team {
             Some(name) => Some((
                 name.as_str(),
@@ -2561,7 +2565,7 @@ impl Engine for Operator {
             .collect())
     }
 
-    fn agents_plugins_install(&self, _: &Ctx, input: PluginInstallIn) -> Result<Lines> {
+    fn agents_plugins_install(&self, ctx: &Ctx, input: PluginInstallIn) -> Result<Lines> {
         // the user's and the system's layers only: a repository must not widen the allowlist it is checked against
         let plugins = config(None)?.config.plugins;
         if let Some(why) = plugins.refusal(&input.id) {
@@ -2575,7 +2579,7 @@ impl Engine for Operator {
         };
         // never -y: a command the marketplace declares is for a person to accept
         let out = Command::new("claude")
-            .current_dir(input.project.get()?)
+            .current_dir(ctx.folder()?)
             .args(["plugin", "install", plugin, "--marketplace"])
             .arg(&plugins.marketplaces[market].source)
             .args(["--scope", scope, "--json"])
@@ -2647,12 +2651,12 @@ impl Engine for Operator {
         crate::accounts::switch(&input.name)
     }
 
-    fn workspace_open(&self, _: &Ctx, input: WorkspaceOpenIn) -> Result<Workspace> {
+    fn workspace_open(&self, ctx: &Ctx, input: WorkspaceOpenIn) -> Result<Workspace> {
         let root = config(None)?.config.workspace.root;
         Ok(dossiers()?
             .open_workspace(
                 dossier_of(&input.session)?,
-                input.repo.get()?,
+                ctx.folder()?,
                 input.base.as_deref(),
                 input.topic.as_deref(),
                 &root,
@@ -2660,11 +2664,11 @@ impl Engine for Operator {
             .into_wire())
     }
 
-    fn workspace_status(&self, _: &Ctx, input: WorkspaceIn) -> Result<WorkspaceStatus> {
+    fn workspace_status(&self, ctx: &Ctx, input: WorkspaceIn) -> Result<WorkspaceStatus> {
         let store = dossiers()?;
         let ws = store.workspace_of(
             &dossier_of(&input.session)?,
-            input.repo.get()?,
+            ctx.folder()?,
             input.topic.as_deref(),
         )?;
         Ok(store.workspace_status(&ws)?.into_wire())
@@ -2679,7 +2683,7 @@ impl Engine for Operator {
         let session = session(&input.session)?;
         let ws = store.workspace_of(
             &dossier_of(&input.session)?,
-            input.repo.get()?,
+            ctx.folder()?,
             input.topic.as_deref(),
         )?;
         let accepted = store.accept_tests(&ws.path, &input.accept_test, &input.reason, session)?;
@@ -2693,7 +2697,7 @@ impl Engine for Operator {
         if let Some(held) = store.checkpoint_gate(session)? {
             anyhow::bail!(held);
         }
-        let jail = jail(ctx, &store, Some(&input.repo))?;
+        let jail = jail(ctx, &store, Some(ctx.folder()?))?;
         let lines = store.checkpoint(&ws, &input.message, (session, jail.as_ref()))?;
         // the commit's patch id links it to this checkpoint, also after `workspace merge` rebased it; a folder
         // workspace has no commits
@@ -2720,9 +2724,9 @@ impl Engine for Operator {
     }
 
     fn code_tests_run(&self, ctx: &Ctx, input: TestsRunIn) -> Result<Lines> {
-        let repo = input.repo.get()?;
+        let repo = ctx.folder()?;
         let store = dossiers()?;
-        let jail = jail(ctx, &store, Some(&input.repo))?;
+        let jail = jail(ctx, &store, Some(ctx.folder()?))?;
         let db = Db::open_default()?;
         let job = db.job_begin(
             "code.tests.run",
@@ -2744,23 +2748,23 @@ impl Engine for Operator {
         out
     }
 
-    fn code_checks_detect(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
+    fn code_checks_detect(&self, ctx: &Ctx, _: Empty) -> Result<Lines> {
         Ok(Lines {
-            lines: legionctl_core::checks::detect(input.repo.get()?)?,
+            lines: legionctl_core::checks::detect(ctx.folder()?)?,
         })
     }
 
-    fn code_checks_list(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
+    fn code_checks_list(&self, ctx: &Ctx, _: Empty) -> Result<Lines> {
         Ok(Lines {
-            lines: dossiers()?.checks_list(input.repo.get()?)?,
+            lines: dossiers()?.checks_list(ctx.folder()?)?,
         })
     }
 
     fn code_checks_run(&self, ctx: &Ctx, input: ChecksRunIn) -> Result<Lines> {
         let session = Some(input.session.0.as_str()).filter(|s| !s.is_empty());
         let store = dossiers()?;
-        let jail = jail(ctx, &store, Some(&input.repo))?;
-        let runs = store.run_checks(input.repo.get()?, &input.checks, (session, jail.as_ref()))?;
+        let jail = jail(ctx, &store, Some(ctx.folder()?))?;
+        let runs = store.run_checks(ctx.folder()?, &input.checks, (session, jail.as_ref()))?;
         Ok(Lines {
             lines: runs
                 .iter()
@@ -2778,8 +2782,8 @@ impl Engine for Operator {
         })
     }
 
-    fn code_checks_show(&self, _: &Ctx, input: CheckShowIn) -> Result<Lines> {
-        let (run, tail) = dossiers()?.check_run(input.repo.get()?, &input.run)?;
+    fn code_checks_show(&self, ctx: &Ctx, input: CheckShowIn) -> Result<Lines> {
+        let (run, tail) = dossiers()?.check_run(ctx.folder()?, &input.run)?;
         let p = run.profile;
         Ok(Lines {
             lines: [
@@ -2804,31 +2808,29 @@ impl Engine for Operator {
         })
     }
 
-    fn code_tests_list(&self, _: &Ctx, input: RepoIn) -> Result<Vec<TestRow>> {
-        Ok(dossiers()?.tests_list(input.repo.get()?)?.into_wire())
+    fn code_tests_list(&self, ctx: &Ctx, _: Empty) -> Result<Vec<TestRow>> {
+        Ok(dossiers()?.tests_list(ctx.folder()?)?.into_wire())
     }
 
-    fn code_tests_show(&self, _: &Ctx, input: TestShowIn) -> Result<TestDetail> {
+    fn code_tests_show(&self, ctx: &Ctx, input: TestShowIn) -> Result<TestDetail> {
         Ok(dossiers()?
-            .test_show(input.repo.get()?, &input.name)?
+            .test_show(ctx.folder()?, &input.name)?
             .into_wire())
     }
 
-    fn code_tests_review(&self, _: &Ctx, input: TestReviewIn) -> Result<TestReview> {
+    fn code_tests_review(&self, ctx: &Ctx, input: TestReviewIn) -> Result<TestReview> {
         let side = if input.staged {
             Side::Index(input.index.as_ref().map(ClientPath::get).transpose()?)
         } else {
             Side::WorkTree
         };
-        Ok(dossiers()?
-            .review_tests(input.repo.get()?, side)?
-            .into_wire())
+        Ok(dossiers()?.review_tests(ctx.folder()?, side)?.into_wire())
     }
 
-    fn code_tests_mutant_record(&self, _: &Ctx, input: MutantRecordIn) -> Result<Lines> {
+    fn code_tests_mutant_record(&self, ctx: &Ctx, input: MutantRecordIn) -> Result<Lines> {
         Ok(Lines {
             lines: vec![dossiers()?.record_mutant(
-                input.repo.get()?,
+                ctx.folder()?,
                 &input.file,
                 input.line,
                 &input.description,
@@ -2839,10 +2841,10 @@ impl Engine for Operator {
 
     fn code_tests_mutant_run(&self, ctx: &Ctx, input: WorkspaceIn) -> Result<Lines> {
         let store = dossiers()?;
-        let jail = jail(ctx, &store, Some(&input.repo))?;
+        let jail = jail(ctx, &store, Some(ctx.folder()?))?;
         let ws = store.workspace_of(
             &dossier_of(&input.session)?,
-            input.repo.get()?,
+            ctx.folder()?,
             input.topic.as_deref(),
         )?;
         let db = Db::open_default()?;
@@ -2861,7 +2863,7 @@ impl Engine for Operator {
 
     fn workspace_merge(&self, ctx: &Ctx, input: MergeIn) -> Result<Lines> {
         let store = dossiers()?;
-        let (dir, topic) = (input.repo.get()?, input.topic.as_deref());
+        let (dir, topic) = (ctx.folder()?, input.topic.as_deref());
         // no agent session: the user, whose merge of a branch that sets its own gates the desktop dialog confirms
         let (ws, session) = if input.session.0.is_empty() {
             let ws = store.workspace_for_user(input.dossier.as_deref(), dir, topic)?;
@@ -2876,7 +2878,7 @@ impl Engine for Operator {
                 Some(input.session.0.as_str()),
             )
         };
-        let jail = jail(ctx, &store, Some(&input.repo))?;
+        let jail = jail(ctx, &store, Some(ctx.folder()?))?;
         let lines = store.merge(&ws, (session, jail.as_ref()), |what| {
             self.runtime
                 .block_on(crate::desktop::ask("legionctl: confirm a merge", what))
@@ -2886,11 +2888,11 @@ impl Engine for Operator {
         Ok(Lines { lines })
     }
 
-    fn workspace_close(&self, _: &Ctx, input: CloseIn) -> Result<Lines> {
+    fn workspace_close(&self, ctx: &Ctx, input: CloseIn) -> Result<Lines> {
         let store = dossiers()?;
         let ws = store.workspace_of(
             &dossier_of(&input.session)?,
-            input.repo.get()?,
+            ctx.folder()?,
             input.topic.as_deref(),
         )?;
         Ok(Lines {
@@ -2924,74 +2926,74 @@ impl Engine for Operator {
         })
     }
 
-    fn reminders_list(&self, _: &Ctx, input: ProjectIn) -> Result<Reminders> {
-        Ok(reminders::list(&config(Some(&input.project))?).into_wire())
+    fn reminders_list(&self, ctx: &Ctx, _: Empty) -> Result<Reminders> {
+        Ok(reminders::list(&config(Some(ctx.folder()?))?).into_wire())
     }
 
-    fn reminders_on(&self, _: &Ctx, input: IdIn) -> Result<Reminders> {
-        reminders::set_enabled(&config(Some(&input.project))?, &input.id, true)?;
-        Ok(reminders::list(&config(Some(&input.project))?).into_wire())
+    fn reminders_on(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
+        reminders::set_enabled(&config(Some(ctx.folder()?))?, &input.id, true)?;
+        Ok(reminders::list(&config(Some(ctx.folder()?))?).into_wire())
     }
 
-    fn reminders_off(&self, _: &Ctx, input: IdIn) -> Result<Reminders> {
-        reminders::set_enabled(&config(Some(&input.project))?, &input.id, false)?;
-        Ok(reminders::list(&config(Some(&input.project))?).into_wire())
+    fn reminders_off(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
+        reminders::set_enabled(&config(Some(ctx.folder()?))?, &input.id, false)?;
+        Ok(reminders::list(&config(Some(ctx.folder()?))?).into_wire())
     }
 
-    fn reminders_add(&self, _: &Ctx, input: ReminderAddIn) -> Result<Reminders> {
+    fn reminders_add(&self, ctx: &Ctx, input: ReminderAddIn) -> Result<Reminders> {
         reminders::add(
-            &config(Some(&input.project))?,
+            &config(Some(ctx.folder()?))?,
             &input.id,
             &input.text,
             input.event.into(),
         )?;
-        Ok(reminders::list(&config(Some(&input.project))?).into_wire())
+        Ok(reminders::list(&config(Some(ctx.folder()?))?).into_wire())
     }
 
-    fn reminders_rm(&self, _: &Ctx, input: IdIn) -> Result<Reminders> {
-        reminders::remove(&config(Some(&input.project))?, &input.id)?;
-        Ok(reminders::list(&config(Some(&input.project))?).into_wire())
+    fn reminders_rm(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
+        reminders::remove(&config(Some(ctx.folder()?))?, &input.id)?;
+        Ok(reminders::list(&config(Some(ctx.folder()?))?).into_wire())
     }
 
-    fn hooks_list(&self, _: &Ctx, input: ProjectIn) -> Result<HookTable> {
-        Ok(Self::hook_table(&config(Some(&input.project))?))
+    fn hooks_list(&self, ctx: &Ctx, _: Empty) -> Result<HookTable> {
+        Ok(Self::hook_table(&config(Some(ctx.folder()?))?))
     }
 
-    fn hooks_bind(&self, _: &Ctx, input: HookBindIn) -> Result<HookTable> {
+    fn hooks_bind(&self, ctx: &Ctx, input: HookBindIn) -> Result<HookTable> {
         hooks::bind(
-            &config(Some(&input.project))?,
+            &config(Some(ctx.folder()?))?,
             input.event.into(),
             &input.action,
         )?;
-        Ok(Self::hook_table(&config(Some(&input.project))?))
+        Ok(Self::hook_table(&config(Some(ctx.folder()?))?))
     }
 
-    fn hooks_unbind(&self, _: &Ctx, input: HookBindIn) -> Result<HookTable> {
+    fn hooks_unbind(&self, ctx: &Ctx, input: HookBindIn) -> Result<HookTable> {
         hooks::unbind(
-            &config(Some(&input.project))?,
+            &config(Some(ctx.folder()?))?,
             input.event.into(),
             &input.action,
         )?;
-        Ok(Self::hook_table(&config(Some(&input.project))?))
+        Ok(Self::hook_table(&config(Some(ctx.folder()?))?))
     }
 
-    fn hooks_add(&self, _: &Ctx, input: HookAddIn) -> Result<HookTable> {
+    fn hooks_add(&self, ctx: &Ctx, input: HookAddIn) -> Result<HookTable> {
         hooks::add_command(
-            &config(Some(&input.project))?,
+            &config(Some(ctx.folder()?))?,
             &input.id,
             &input.command,
             input.timeout_s,
         )?;
-        Ok(Self::hook_table(&config(Some(&input.project))?))
+        Ok(Self::hook_table(&config(Some(ctx.folder()?))?))
     }
 
-    fn hooks_rm(&self, _: &Ctx, input: IdIn) -> Result<HookTable> {
-        hooks::remove_action(&config(Some(&input.project))?, &input.id)?;
-        Ok(Self::hook_table(&config(Some(&input.project))?))
+    fn hooks_rm(&self, ctx: &Ctx, input: IdIn) -> Result<HookTable> {
+        hooks::remove_action(&config(Some(ctx.folder()?))?, &input.id)?;
+        Ok(Self::hook_table(&config(Some(ctx.folder()?))?))
     }
 
     fn hooks_run(&self, ctx: &Ctx, input: HookRunIn) -> Result<HookReply> {
-        let resolved = match hook_config(&input)? {
+        let resolved = match hook_config(ctx.folder()?, &input)? {
             Ok(resolved) => resolved,
             Err(reply) => return Ok(reply),
         };
@@ -3013,8 +3015,8 @@ impl Engine for Operator {
             // each hook call shows the session is live, so its dossier is not taken over
             store.touch(&s.0)?;
         }
-        let (linked, rebound) = bind_linked(&store, &resolved, &input, &mut active)?;
-        let place = match active.as_deref().zip(input.project.get().ok()) {
+        let (linked, rebound) = bind_linked(ctx.folder()?, &store, &resolved, &input, &mut active)?;
+        let place = match active.as_deref().zip(ctx.folder().ok()) {
             Some((d, dir)) => store.place(d, dir)?,
             None => None,
         };
@@ -3060,7 +3062,7 @@ impl Engine for Operator {
             }
         }
         if Event::from(input.event) == Event::SessionStart
-            && let Ok(dir) = input.project.get()
+            && let Ok(dir) = ctx.folder()
         {
             crate::code::trigger(dir);
         }
@@ -3078,7 +3080,7 @@ impl Engine for Operator {
         } else if let Some(Ok(line)) = rebound {
             lines.push(line);
         }
-        let make = || jail(ctx, &store, Some(&input.project));
+        let make = || jail(ctx, &store, Some(ctx.folder()?));
         let mut jail = hooks::Jail::new(&make);
         lines.push(hooks::run(
             &resolved,
@@ -3105,7 +3107,11 @@ impl Engine for Operator {
     }
 
     fn dossier_create(&self, ctx: &Ctx, input: legionctl_api::DossierCreateIn) -> Result<Lines> {
-        let folder = path(input.folder.as_ref())?;
+        let folder = if input.link {
+            Some(ctx.folder()?)
+        } else {
+            None
+        };
         let lines = dossiers()?.create_new(&input.name, folder)?;
         Db::open_default()?.record(
             &ctx.actor,
@@ -3118,7 +3124,7 @@ impl Engine for Operator {
     fn dossier_use(&self, ctx: &Ctx, input: DossierUseIn) -> Result<Lines> {
         if input.session.0.is_empty() {
             dossiers()?.known(&input.name)?;
-            user_dossier_set(ctx, &input.repo, Some(&input.name))?;
+            user_dossier_set(ctx, Some(&input.name))?;
             return Ok(Lines {
                 lines: vec![format!("your dossier: {}", input.name)],
             });
@@ -3128,7 +3134,7 @@ impl Engine for Operator {
             &ctx.actor,
             &input.name,
             input.steal,
-            Some(&place_of(input.repo.get()?)),
+            Some(&place_of(ctx.folder()?)),
         )?;
         Ok(Lines { lines })
     }
@@ -3157,7 +3163,7 @@ impl Engine for Operator {
     fn dossier_release(&self, ctx: &Ctx, input: DossierReleaseIn) -> Result<Lines> {
         if input.session.0.is_empty() {
             let had = user_dossier()?;
-            user_dossier_set(ctx, &ClientPath(PathBuf::from("/")), None)?;
+            user_dossier_set(ctx, None)?;
             return Ok(Lines {
                 lines: vec![had.map_or_else(
                     || "you had no dossier".into(),
@@ -3560,8 +3566,8 @@ impl Engine for Operator {
         })
     }
 
-    fn skills(&self, _: &Ctx, input: ProjectIn) -> Result<SkillList> {
-        Ok(skills::inventory(&home(), &config(Some(&input.project))?).into_wire())
+    fn skills(&self, ctx: &Ctx, _: Empty) -> Result<SkillList> {
+        Ok(skills::inventory(&home(), &config(Some(ctx.folder()?))?).into_wire())
     }
 
     fn monitor(&self, _: &Ctx, input: MonitorIn) -> Result<Samples> {
@@ -3718,8 +3724,8 @@ impl Engine for Operator {
         })
     }
 
-    fn images_scan(&self, _: &Ctx, input: ImagesScanIn) -> Result<Scan> {
-        let repo = input.repo.get()?;
+    fn images_scan(&self, ctx: &Ctx, input: ImagesScanIn) -> Result<Scan> {
+        let repo = ctx.folder()?;
         let scan = legionctl_core::images::scan_repository(repo)?;
         if input.write {
             let dir = repo.join(".legionctl");
@@ -3736,8 +3742,8 @@ impl Engine for Operator {
         Ok(scan.into_wire())
     }
 
-    fn images_build(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
-        let repo = input.repo.get()?;
+    fn images_build(&self, ctx: &Ctx, _: Empty) -> Result<Lines> {
+        let repo = ctx.folder()?;
         let db = Db::open_default()?;
         let job = db.job_begin("images.build", &serde_json::json!({"repo": repo}))?;
         let out = build_images(repo);
@@ -3745,9 +3751,9 @@ impl Engine for Operator {
         out
     }
 
-    fn workspace_pack(&self, _: &Ctx, input: PackIn) -> Result<Lines> {
-        let repo = input.repo.get()?;
-        let session = config(Some(&input.repo))?.config.session;
+    fn workspace_pack(&self, ctx: &Ctx, input: PackIn) -> Result<Lines> {
+        let repo = ctx.folder()?;
+        let session = config(Some(ctx.folder()?))?.config.session;
         let db = Db::open_default()?;
         let job_input = serde_json::json!({"repo": repo, "service": input.service, "as": input.kind, "gpu": input.gpu});
         let job = db.job_begin("workspace.pack", &job_input)?;
@@ -3773,8 +3779,8 @@ impl Engine for Operator {
             .into_wire())
     }
 
-    fn images_run(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
-        let repo = input.repo.get()?;
+    fn images_run(&self, ctx: &Ctx, _: Empty) -> Result<Lines> {
+        let repo = ctx.folder()?;
         let (project, tag) = (
             legionctl_core::images::project_name(repo),
             legionctl_core::images::tag(repo)?,
@@ -3807,8 +3813,8 @@ impl Engine for Operator {
         })
     }
 
-    fn images_status(&self, _: &Ctx, input: RepoIn) -> Result<Vec<ServiceState>> {
-        let project = legionctl_core::images::project_name(input.repo.get()?);
+    fn images_status(&self, ctx: &Ctx, _: Empty) -> Result<Vec<ServiceState>> {
+        let project = legionctl_core::images::project_name(ctx.folder()?);
         self.runtime
             .block_on(crate::virt::project_containers(&project))
     }
@@ -4878,114 +4884,111 @@ impl Engine for Operator {
         crate::resources::route(self, ctx, &input)
     }
 
-    fn code_graph_refresh(&self, _: &Ctx, input: legionctl_api::GraphRefreshIn) -> Result<Lines> {
-        crate::code::refresh(&input)
+    fn code_graph_refresh(&self, ctx: &Ctx, input: legionctl_api::GraphRefreshIn) -> Result<Lines> {
+        crate::code::refresh(ctx.folder()?, &input)
     }
 
-    fn code_graph_refs(&self, _: &Ctx, input: RepoIn) -> Result<legionctl_api::GraphRefs> {
-        crate::code::refs(&input)
+    fn code_graph_refs(&self, ctx: &Ctx, _: Empty) -> Result<legionctl_api::GraphRefs> {
+        crate::code::refs(ctx.folder()?)
     }
 
     fn code_graph_query(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::GraphQueryIn,
     ) -> Result<legionctl_api::CodeNodes> {
-        crate::code::query(&input)
+        crate::code::query(ctx.folder()?, &input)
     }
 
     fn code_graph_impact(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::GraphImpactIn,
     ) -> Result<legionctl_api::CodeNodes> {
-        crate::code::impact(&input)
+        crate::code::impact(ctx.folder()?, &input)
     }
 
     fn code_graph_tree(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::GraphTreeIn,
     ) -> Result<legionctl_api::CodeTree> {
-        Ok(legionctl_core::codegraph::tree(
-            input.repo.get()?,
-            &input.prefix,
-            &input.rev,
-            input.build,
-        )?
-        .into_wire())
+        Ok(
+            legionctl_core::codegraph::tree(ctx.folder()?, &input.prefix, &input.rev, input.build)?
+                .into_wire(),
+        )
     }
 
     fn code_graph_changes(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::GraphChangesIn,
     ) -> Result<Vec<legionctl_api::ChangeSet>> {
-        crate::code::changes(&input)
+        crate::code::changes(ctx.folder()?, &input)
     }
 
     fn code_graph_annotate(&self, ctx: &Ctx, input: legionctl_api::AnnotateIn) -> Result<Lines> {
-        crate::code::annotate(ctx, &input)
+        crate::code::annotate(ctx.folder()?, ctx, &input)
     }
 
     fn code_graph_annotations(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::AnnotationsIn,
     ) -> Result<Vec<legionctl_api::Annotation>> {
-        crate::code::annotations(&input)
+        crate::code::annotations(ctx.folder()?, &input)
     }
 
-    fn code_graph_prune(&self, _: &Ctx, input: legionctl_api::GraphPruneIn) -> Result<Lines> {
-        crate::code::prune(&input)
+    fn code_graph_prune(&self, ctx: &Ctx, input: legionctl_api::GraphPruneIn) -> Result<Lines> {
+        crate::code::prune(ctx.folder()?, &input)
     }
 
-    fn code_graph_hook(&self, _: &Ctx, input: legionctl_api::GraphHookIn) -> Result<Lines> {
-        crate::code::hook(&input)
+    fn code_graph_hook(&self, ctx: &Ctx, input: legionctl_api::GraphHookIn) -> Result<Lines> {
+        crate::code::hook(ctx.folder()?, &input)
     }
 
     fn code_plan_check(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::PlanCheckIn,
     ) -> Result<legionctl_api::PlanCheck> {
-        crate::code::plan_check(&input)
+        crate::code::plan_check(ctx.folder()?, &input)
     }
 
     fn code_plan_status(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::PlanStatusIn,
     ) -> Result<legionctl_api::PlanStatus> {
-        crate::code::plan_status(&input)
+        crate::code::plan_status(ctx.folder()?, &input)
     }
 
-    fn thread_start(&self, _: &Ctx, input: legionctl_api::ThreadStartIn) -> Result<Lines> {
-        crate::thread::start(&input)
+    fn thread_start(&self, ctx: &Ctx, input: legionctl_api::ThreadStartIn) -> Result<Lines> {
+        crate::thread::start(ctx.folder()?, &input)
     }
 
-    fn thread_repo(&self, _: &Ctx, input: legionctl_api::ThreadRepoIn) -> Result<Lines> {
-        let root = config(Some(&input.repo))?.config.workspace.root;
+    fn thread_repo(&self, ctx: &Ctx, input: legionctl_api::ThreadRepoIn) -> Result<Lines> {
+        let root = config(Some(ctx.folder()?))?.config.workspace.root;
         Ok(Lines {
             lines: dossiers()?.thread_repo(
                 input.thread,
-                input.repo.get()?,
+                ctx.folder()?,
                 input.base.as_deref(),
                 &root,
             )?,
         })
     }
 
-    fn thread_list(&self, _: &Ctx, _: Empty) -> Result<Vec<legionctl_api::ThreadInfo>> {
-        crate::thread::list()
+    fn thread_list(&self, ctx: &Ctx, _: Empty) -> Result<Vec<legionctl_api::ThreadInfo>> {
+        crate::thread::list(&config(Some(ctx.folder()?))?.config.workspace.root)
     }
 
     fn thread_show(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::ThreadIdIn,
     ) -> Result<legionctl_api::ThreadView> {
-        crate::thread::show(&input)
+        crate::thread::show(&config(Some(ctx.folder()?))?.config.workspace.root, &input)
     }
 
     fn thread_import(&self, _: &Ctx, input: legionctl_api::ThreadImportIn) -> Result<Lines> {
@@ -5032,10 +5035,10 @@ impl Engine for Operator {
 
     fn facts_at(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::FactsAtIn,
     ) -> Result<Vec<legionctl_api::Fact>> {
-        crate::facts::at_op(&input)
+        crate::facts::at_op(ctx.folder()?, &input)
     }
 
     fn facts_history(
@@ -5048,26 +5051,22 @@ impl Engine for Operator {
 
     fn facts_diff(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::FactsDiffIn,
     ) -> Result<Vec<legionctl_api::FactChange>> {
-        crate::facts::diff(&input)
+        crate::facts::diff(ctx.folder()?, &input)
     }
 
     fn facts_stale(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::FactsAtIn,
     ) -> Result<Vec<legionctl_api::Fact>> {
-        crate::facts::stale(&input)
+        crate::facts::stale(ctx.folder()?, &input)
     }
 
-    fn views_list(
-        &self,
-        _: &Ctx,
-        input: legionctl_api::ViewsListIn,
-    ) -> Result<Vec<legionctl_api::ViewInfo>> {
-        crate::views::list(&input)
+    fn views_list(&self, ctx: &Ctx, _: Empty) -> Result<Vec<legionctl_api::ViewInfo>> {
+        Ok(crate::views::list(ctx.folder()?))
     }
 
     fn views_check(&self, _: &Ctx, input: legionctl_api::ViewTextIn) -> Result<Lines> {
@@ -5094,24 +5093,25 @@ impl Engine for Operator {
         crate::views::render(self, ctx, &input)
     }
 
-    fn views_place(&self, _: &Ctx, input: legionctl_api::ViewPlaceIn) -> Result<Lines> {
-        crate::views::place(&input)
+    fn views_place(&self, ctx: &Ctx, input: legionctl_api::ViewPlaceIn) -> Result<Lines> {
+        crate::views::place(ctx.folder()?, &input)
     }
 
     fn views_parts(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::ViewPartsIn,
     ) -> Result<Vec<legionctl_api::PartInfo>> {
-        crate::views::parts(&input)
+        crate::views::parts(ctx.folder()?, &input)
     }
 
     fn views_cost(&self, _: &Ctx, _: Empty) -> Result<Vec<legionctl_api::AskCost>> {
         crate::views::cost()
     }
 
-    fn thread_agent(&self, _: &Ctx, input: legionctl_api::ThreadAgentIn) -> Result<Lines> {
-        crate::thread::agent(&input)
+    fn thread_agent(&self, ctx: &Ctx, input: legionctl_api::ThreadAgentIn) -> Result<Lines> {
+        let root = config(Some(ctx.folder()?))?.config.workspace.root;
+        crate::thread::agent(&dossiers()?.thread_folder(input.thread, &root)?, &input)
     }
 
     fn thread_account(&self, _: &Ctx, input: legionctl_api::ThreadAccountIn) -> Result<Lines> {
@@ -5164,18 +5164,18 @@ impl Engine for Operator {
 
     fn thread_peers(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::PeersIn,
     ) -> Result<Vec<legionctl_api::Peer>> {
-        crate::thread::peers(&input)
+        crate::thread::peers(ctx.folder()?, &input)
     }
 
     fn thread_observe(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::ObserveIn,
     ) -> Result<legionctl_api::Observed> {
-        crate::thread::observe(&input)
+        crate::thread::observe(ctx.folder()?, &input)
     }
 
     fn agent_tool(&self, ctx: &Ctx, input: legionctl_api::AgentToolIn) -> Result<HookReply> {
@@ -5211,10 +5211,10 @@ impl Engine for Operator {
 
     fn rlcd_ask(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: legionctl_api::RlcdAskIn,
     ) -> Result<legionctl_api::RlcdDecision> {
-        Ok(crate::rlcd::ask_op(&self.runtime, &dossiers()?, &input)?.into_wire())
+        Ok(crate::rlcd::ask_op(&self.runtime, (&dossiers()?, ctx.folder()?), &input)?.into_wire())
     }
 
     fn rlcd_decisions(
@@ -5246,9 +5246,9 @@ impl Engine for Operator {
         })
     }
 
-    fn session_start(&self, _: &Ctx, input: SessionStartIn) -> Result<Launch> {
-        let dir = input.repo.get()?;
-        let resolved = config(Some(&input.repo))?;
+    fn session_start(&self, ctx: &Ctx, input: SessionStartIn) -> Result<Launch> {
+        let dir = ctx.folder()?;
+        let resolved = config(Some(ctx.folder()?))?;
         let store = Dossiers::open(&resolved.config.dossier)?;
         let dossier = match input.dossier {
             Some(d) => d,
@@ -5281,9 +5281,9 @@ impl Engine for Operator {
         Ok(launch.into_wire())
     }
 
-    fn session_run(&self, _: &Ctx, input: SessionRunIn) -> Result<RunOutput> {
-        let resolved = config(Some(&input.repo))?;
-        let store = Dossiers::open(&resolved.config.dossier)?;
+    fn session_run(&self, ctx: &Ctx, input: SessionRunIn) -> Result<RunOutput> {
+        let caller = config(Some(ctx.folder()?))?;
+        let store = Dossiers::open(&caller.config.dossier)?;
         // the user's thread: its dossier, its folder and its ACP session; the prompt and the answer go into its log
         let thread = match input.thread {
             Some(id) => {
@@ -5304,14 +5304,19 @@ impl Engine for Operator {
                     info.dossier,
                     input.dossier.as_deref().unwrap_or_default()
                 );
-                let root = &resolved.config.workspace.root;
+                let root = &caller.config.workspace.root;
                 Some((info, store.thread_folder(id, root)?, store.thread_acp(id)?))
             }
             None => None,
         };
         let dir = match &thread {
             Some((_, folder, _)) => folder.as_path(),
-            None => input.repo.get()?,
+            None => ctx.folder()?,
+        };
+        // a thread's run works in the thread's folder, with that folder's config (one context, DESIGN-20 rule 7)
+        let resolved = match &thread {
+            Some(_) => config(Some(dir))?,
+            None => caller,
         };
         let dossier = match (&thread, input.dossier.clone()) {
             (Some((info, _, _)), _) => info.dossier.clone(),
@@ -5476,9 +5481,9 @@ impl Engine for Operator {
         Ok(launch.into_wire())
     }
 
-    fn gates_check(&self, _: &Ctx, input: GateIn) -> Result<Guard> {
-        let dir = input.project.get()?;
-        let deny = config(Some(&input.project))?.config.gates.git.deny;
+    fn gates_check(&self, ctx: &Ctx, input: GateIn) -> Result<Guard> {
+        let dir = ctx.folder()?;
+        let deny = config(Some(ctx.folder()?))?.config.gates.git.deny;
         // an alias is resolved by the real git outside the sandbox, so the agent cannot hide a denied command
         // git config --get: 0 found, 1 not set, another code an error
         let is_alias = |sub: &str| -> Result<bool> {
@@ -5492,22 +5497,20 @@ impl Engine for Operator {
         })
     }
 
-    fn config_show(&self, _: &Ctx, input: ProjectIn) -> Result<ConfigView> {
-        let resolved = config(Some(&input.project))?;
+    fn config_show(&self, ctx: &Ctx, _: Empty) -> Result<ConfigView> {
+        let resolved = config(Some(ctx.folder()?))?;
         Ok(ConfigView {
             value: resolved.value,
             problems: resolved.problems,
         })
     }
 
-    fn config_explain(&self, _: &Ctx, input: ExplainIn) -> Result<Explanation> {
-        Ok(config(Some(&input.project))?
-            .explain(&input.key)
-            .into_wire())
+    fn config_explain(&self, ctx: &Ctx, input: ExplainIn) -> Result<Explanation> {
+        Ok(config(Some(ctx.folder()?))?.explain(&input.key).into_wire())
     }
 
-    fn config_settings(&self, _: &Ctx, input: ProjectIn) -> Result<legionctl_api::SettingsView> {
-        let resolved = config(Some(&input.project))?;
+    fn config_settings(&self, ctx: &Ctx, _: Empty) -> Result<legionctl_api::SettingsView> {
+        let resolved = config(Some(ctx.folder()?))?;
         let items = legionctl_core::settings::registry()?
             .into_iter()
             .map(|setting| {
@@ -5529,8 +5532,8 @@ impl Engine for Operator {
         })
     }
 
-    fn config_layers(&self, _: &Ctx, input: ProjectIn) -> Result<LayerList> {
-        let resolved = config(Some(&input.project))?;
+    fn config_layers(&self, ctx: &Ctx, _: Empty) -> Result<LayerList> {
+        let resolved = config(Some(ctx.folder()?))?;
         Ok(LayerList {
             layers: resolved.layers.into_wire(),
             locked: resolved.config.config.locked,

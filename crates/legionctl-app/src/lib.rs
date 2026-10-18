@@ -116,7 +116,8 @@ impl Form {
 pub enum Then {
     /// The operation runs, with its class's approval.
     Run,
-    /// The new chat's environment step: the chat keeps the folder (and the base ref) for its first message.
+    /// The chat's environment step: the folder becomes the app's project; a new chat works in it from the base ref,
+    /// an existing chat (its `thread` in the form's input) moves to it.
     ChatPlace,
     /// The view tab reads the code of this folder.
     TabRepo,
@@ -199,6 +200,8 @@ impl LegionApp {
         let (events, follower) = LegionApp::follow(client.clone(), &runtime, cx);
         let chat = input::chat_field(window, cx);
         let chat_events = cx.subscribe_in(&chat, window, LegionApp::chat_event);
+        // every call works in the app's folder (its project once the user chooses one)
+        client.set_folder(&repo);
         let mut app = LegionApp {
             client,
             runtime,
@@ -533,7 +536,7 @@ impl LegionApp {
         let Some(info) = OPS.iter().find(|o| o.name == button.op) else {
             return;
         };
-        legionctl_api::cli::fill_user_fields(info, &mut button.input, &self.tab_repo());
+        legionctl_api::cli::fill_user_fields(info, &mut button.input, &self.screen.repo);
         let route = legionctl_api::form::route(info);
         let dry_run = route == legionctl_api::form::Route::Plan;
         let class = info.class;
@@ -622,7 +625,6 @@ impl LegionApp {
         let input = legionctl_api::ViewVersionIn {
             name: name.to_string(),
             to: to.to_string(),
-            repo: legionctl_api::ClientPath(self.screen.repo.clone()),
         };
         let task = self.operator(
             cx,

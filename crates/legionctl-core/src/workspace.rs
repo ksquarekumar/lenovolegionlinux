@@ -639,7 +639,7 @@ impl Dossiers {
             };
             bail!(
                 "the branch {} changes .legionctl/, which sets its own gates: an agent cannot merge it. The user \
-                 merges it from a terminal outside an agent session: legionctl workspace merge --repo {}{topic} \
+                 merges it from a terminal outside an agent session: legionctl -C {} workspace merge{topic} \
                  --dossier {} (the same gate, then a desktop dialog to confirm)",
                 ws.branch,
                 ws.repo.display(),

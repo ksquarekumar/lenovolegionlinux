@@ -386,13 +386,13 @@ fn prune_keeps_merge_bases_whatever_their_age_and_the_newest_20(
             "{kept} is a base, merge-base or head"
         );
     }
-    // from any folder, with the repository named
+    // from any folder, with the repository as the call's folder
     let refs: Value = serde_json::from_str(&lab.op.ok(&[
+        "-C",
+        repo.to_str().unwrap(),
         "code",
         "graph",
         "refs",
-        "--repo",
-        repo.to_str().unwrap(),
         "--json",
     ]))
     .unwrap();
@@ -1258,8 +1258,7 @@ fn facts_in_time(lab: &Lab, ws: &Path) {
     );
 
     // an agent's fact of the same scope does not win over the user's
-    let args =
-        serde_json::json!({"entity": "app", "attribute": "width", "value": "0.5", "repo": ws});
+    let args = serde_json::json!({"entity": "app", "attribute": "width", "value": "0.5"});
     let reply = agent_fact(lab, ws, &args);
     assert_ne!(reply["isError"], true, "{reply}");
     let both = app_facts(lab, ws, &[]);
@@ -1272,7 +1271,7 @@ fn facts_in_time(lab: &Lab, ws: &Path) {
         "{both:?}"
     );
     // A-10: nor at a nearer scope, and an agent does not correct the user's fact
-    let nearer = serde_json::json!({"entity": "app", "attribute": "width", "value": "0.6", "repo": ws,
+    let nearer = serde_json::json!({"entity": "app", "attribute": "width", "value": "0.6",
                                     "scope": "workspace"});
     assert_ne!(agent_fact(lab, ws, &nearer)["isError"], true);
     let winner = app_facts(lab, ws, &[]).into_iter().find(|f| f.2).unwrap();
@@ -1285,7 +1284,7 @@ fn facts_in_time(lab: &Lab, ws: &Path) {
         .find(|f| f["value"] == 0.3 && f["recorded_to"].is_null())
         .unwrap()["id"]
         .clone();
-    let correct = serde_json::json!({"entity": "app", "attribute": "width", "value": "0.9", "repo": ws,
+    let correct = serde_json::json!({"entity": "app", "attribute": "width", "value": "0.9",
                                      "corrects": user_id});
     let refused = agent_fact(lab, ws, &correct);
     assert!(

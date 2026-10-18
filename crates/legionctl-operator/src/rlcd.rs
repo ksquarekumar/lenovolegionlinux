@@ -135,7 +135,7 @@ pub fn ask(
 /// A question does not parse, the backend or its key is missing, or the call fails (the failure is stored first).
 pub fn ask_op(
     runtime: &tokio::runtime::Handle,
-    store: &Dossiers,
+    (store, dir): (&Dossiers, &std::path::Path),
     input: &legionctl_api::RlcdAskIn,
 ) -> Result<Stored> {
     let questions = input
@@ -143,7 +143,7 @@ pub fn ask_op(
         .iter()
         .map(|q| legionctl_core::rlcd::parse_question(q))
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let resolved = resolve(&Dirs::from_env(), Some(input.repo.get()?))?;
+    let resolved = resolve(&Dirs::from_env(), Some(dir))?;
     let (name, b) = backend(&resolved, input.backend.as_deref())?;
     let key = match &input.key {
         Some(key) => key.clone(),

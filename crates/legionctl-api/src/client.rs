@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    ACTOR_HEADER, AGENT_HEADER, API_HEADER, ApiError, CALL_HEADER, Code, Op, SOCKET, TOKEN_ENV,
-    api_fingerprint, coded, user_token,
+    ACTOR_HEADER, AGENT_HEADER, API_HEADER, ApiError, CALL_HEADER, Code, FOLDER_HEADER, Op, SOCKET,
+    TOKEN_ENV, api_fingerprint, coded, user_token,
 };
 use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full};
@@ -19,6 +19,9 @@ pub struct Client {
     actor: &'static str,
     socket: PathBuf,
     runtime: PathBuf,
+    /// The folder every call works in (the call's context): this process's working folder until
+    /// [`Client::set_folder`] sets another (the app's project, the hook's `cwd`).
+    folder: std::sync::Mutex<Option<PathBuf>>,
 }
 
 impl Client {
@@ -36,6 +39,30 @@ impl Client {
             actor,
             socket: runtime.join(SOCKET),
             runtime: runtime.to_path_buf(),
+            folder: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Every call from now on works in `folder`.
+    pub fn set_folder(&self, folder: &Path) {
+        *self
+            .folder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(folder.to_path_buf());
+    }
+
+    /// The folder of the calls.
+    ///
+    /// # Errors
+    /// No folder is set and this process's working folder cannot be read.
+    pub fn folder(&self) -> Result<PathBuf> {
+        match &*self
+            .folder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            Some(folder) => Ok(folder.clone()),
+            None => std::env::current_dir().context("reading the working folder"),
         }
     }
 
@@ -152,6 +179,17 @@ impl Client {
         if let Some(agent) = agent {
             headers.insert(AGENT_HEADER, agent.parse()?);
         }
+        let folder = std::path::absolute(self.folder()?)?;
+        headers.insert(
+            FOLDER_HEADER,
+            hyper::header::HeaderValue::from_bytes(folder.as_os_str().as_encoded_bytes())
+                .with_context(|| {
+                    format!(
+                        "the folder {} has a line break in its name",
+                        folder.display()
+                    )
+                })?,
+        );
         let response = sender.send_request(request).await?;
         if response
             .headers()

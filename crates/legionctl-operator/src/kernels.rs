@@ -91,6 +91,7 @@ fn ctx() -> Ctx {
     Ctx {
         actor: "operator".into(),
         principal: Principal::User,
+        folder: None,
     }
 }
 

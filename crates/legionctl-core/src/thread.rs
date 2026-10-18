@@ -169,6 +169,16 @@ pub struct ThreadInfo {
     /// folder. The branch of its own worktree there; none for a plain folder (an overlay).
     pub repo: Option<String>,
     pub branch: Option<String>,
+    /// The folder its runs work in: its worktree on that branch, or its overlay of the plain folder; none: its
+    /// scratch folder ([`scratch_folder`]).
+    pub folder: Option<String>,
+}
+
+/// The scratch folder of the user's `thread` under `root` (config workspace.root): its folder before it works on a
+/// repository or a plain folder.
+#[must_use]
+pub fn scratch_folder(root: &Path, thread: i64) -> PathBuf {
+    root.join("threads").join(format!("thread-{thread}"))
 }
 
 pub struct Member {
@@ -1210,6 +1220,8 @@ impl Dossiers {
                  (SELECT json_extract(payload, '$.repo') FROM thread_log l
                   WHERE l.thread = t.id AND l.kind = 'thread.repo' ORDER BY l.id DESC LIMIT 1),
                  (SELECT json_extract(payload, '$.branch') FROM thread_log l
+                  WHERE l.thread = t.id AND l.kind = 'thread.repo' ORDER BY l.id DESC LIMIT 1),
+                 (SELECT json_extract(payload, '$.path') FROM thread_log l
                   WHERE l.thread = t.id AND l.kind = 'thread.repo' ORDER BY l.id DESC LIMIT 1)
                  FROM threads t ORDER BY id DESC",
             )?
@@ -1225,6 +1237,7 @@ impl Dossiers {
                     owner: r.get(7)?,
                     repo: r.get(8)?,
                     branch: r.get(9)?,
+                    folder: r.get(10)?,
                 })
             })?
             .collect::<Result<_, _>>()?)
@@ -1480,7 +1493,7 @@ impl Dossiers {
         if let Some(dir) = workdir {
             return Ok(PathBuf::from(dir));
         }
-        let dir = root.join("threads").join(format!("thread-{thread}"));
+        let dir = scratch_folder(root, thread);
         std::fs::create_dir_all(&dir).with_context(|| format!("making {}", dir.display()))?;
         Ok(dir)
     }
@@ -1774,7 +1787,7 @@ impl Dossiers {
         let project = p
             .seen
             .get(session)
-            .and_then(|e| e.payload["input"]["project"].as_str())
+            .and_then(|e| e.payload["folder"].as_str())
             .map(PathBuf::from);
         let workspace = project.as_deref().and_then(|dir| p.workspace_of(dir));
         let (state, seen) = (live_state(p, session), p.seen.get(session).map(|e| e.ts));

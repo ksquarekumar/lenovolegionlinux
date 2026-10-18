@@ -1,6 +1,8 @@
 //! The `facts` operations (DESIGN-10 T1): the store is `legionctl_core::facts`; here the caller's place becomes the
 //! scopes, its refs become commits, and its token becomes the fact's source.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use legionctl_api::{
     Ctx, Fact, FactChange, FactSetIn, FactsAtIn, FactsDiffIn, FactsHistoryIn, IntoWire, Lines,
@@ -69,7 +71,7 @@ pub fn set(ctx: &Ctx, input: &FactSetIn) -> Result<Lines> {
             lines: vec![format!("fact {added} corrects fact {id}")],
         });
     }
-    let dir = input.repo.get()?;
+    let dir = ctx.folder()?;
     let place = facts::repository(dir);
     let scope: Scope = input.scope.into();
     let scope_id = match scope {
@@ -140,9 +142,9 @@ pub fn set(ctx: &Ctx, input: &FactSetIn) -> Result<Lines> {
     })
 }
 
-pub fn at_op(input: &FactsAtIn) -> Result<Vec<Fact>> {
+pub fn at_op(dir: &Path, input: &FactsAtIn) -> Result<Vec<Fact>> {
     let point = at(
-        input.repo.get()?,
+        dir,
         (input.dossier.as_ref(), input.thread),
         (input.time, input.recorded, input.rev.as_deref()),
     )?;
@@ -153,9 +155,9 @@ pub fn at_op(input: &FactsAtIn) -> Result<Vec<Fact>> {
     Ok(rows.into_wire())
 }
 
-pub fn stale(input: &FactsAtIn) -> Result<Vec<Fact>> {
+pub fn stale(dir: &Path, input: &FactsAtIn) -> Result<Vec<Fact>> {
     let point = at(
-        input.repo.get()?,
+        dir,
         (input.dossier.as_ref(), input.thread),
         (input.time, input.recorded, input.rev.as_deref()),
     )?;
@@ -166,8 +168,7 @@ pub fn history(input: &FactsHistoryIn) -> Result<Vec<Fact>> {
     Ok(dossiers()?.facts_history(&input.entity)?.into_wire())
 }
 
-pub fn diff(input: &FactsDiffIn) -> Result<Vec<FactChange>> {
-    let dir = input.repo.get()?;
+pub fn diff(dir: &Path, input: &FactsDiffIn) -> Result<Vec<FactChange>> {
     let place = (input.dossier.as_ref(), input.thread);
     let a = at(
         dir,
