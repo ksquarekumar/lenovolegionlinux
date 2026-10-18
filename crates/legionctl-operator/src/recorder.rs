@@ -10,20 +10,6 @@ use serde_json::{Value, json};
 
 use crate::system1::System1Proxy;
 
-/// The recorder's writes: all events that came in while the last write ran, in one transaction. A burst of session
-/// activity (a package install opens thousands of new paths, ~50 per second) is then a few short writes, not one
-/// commit per event that keeps other writers waiting (todo-189).
-fn write(events: &std::sync::mpsc::Receiver<(String, Value)>) {
-    while let Ok(first) = events.recv() {
-        let batch: Vec<_> = std::iter::once(first).chain(events.try_iter()).collect();
-        if let Err(e) = Db::open_log(&legionctl_core::db::default_path())
-            .and_then(|db| db.record_all("legionctl-system", &batch))
-        {
-            eprintln!("operator: cannot record {} events: {e:#}", batch.len());
-        }
-    }
-}
-
 /// Ask the daemon for this user's session activity; a daemon without the sensor says why, and recording goes on.
 async fn watch_sessions(machine: &System1Proxy<'_>) {
     match machine.watch_sessions().await {
@@ -45,11 +31,10 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
     let mut fn_lock = machine.receive_fn_lock().await?;
     let mut keys = machine.receive_key().await?;
     eprintln!("operator: recording machine events");
-    let (record, events) = std::sync::mpsc::channel();
-    std::thread::spawn(move || write(&events));
+    // the event log's one writer batches them (db::log_later): a burst of session activity (a package install opens
+    // thousands of new paths, ~50 per second) is a few short writes, not one commit per event (todo-189)
     ready.set();
     // the battery's health once a day (the trend in `battery status`); beside the loop, which ends with the bus
-    let battery = record.clone();
     tokio::spawn(async move {
         let mut hourly = tokio::time::interval(std::time::Duration::from_hours(1));
         loop {
@@ -58,7 +43,10 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
                 Ok(Ok(sample)) => {
                     crate::faults::works("battery");
                     if let Some(sample) = sample {
-                        let _ = battery.send(("battery.sample".into(), sample));
+                        legionctl_core::db::log_later(
+                            ACTOR,
+                            vec![("battery.sample".into(), sample)],
+                        );
                     }
                 }
                 Ok(Err(e)) => crate::faults::failed("battery", BATTERY, &e),
@@ -94,11 +82,13 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
             }
             else => return Ok(()),
         };
-        record.send((kind, payload))?;
+        legionctl_core::db::log_later(ACTOR, vec![(kind, payload)]);
     }
 }
 
-/// A battery sample when the last one is a day old or there is none.
+/// The actor of the machine daemon's events.
+const ACTOR: &str = "legionctl-system";
+
 /// The fault of a daily battery sample that cannot be taken (user decision Q1).
 const BATTERY: &str = "the daily battery sample (the trend in battery status) is not taken";
 

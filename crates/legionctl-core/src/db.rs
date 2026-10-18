@@ -19,6 +19,109 @@ use std::fmt::Write as _;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+/// Events for the event log of one database, and where the writer answers (None: no one waits).
+struct Batch {
+    actor: String,
+    events: Vec<(String, serde_json::Value)>,
+    ack: Option<std::sync::mpsc::Sender<Written>>,
+}
+
+/// The ids of a batch's events, or why they are not written (busy: the busy timeout ran out) and the error's text.
+type Written = std::result::Result<Vec<i64>, (bool, String)>;
+
+/// The one writer of each database's event log in this process: all events that came in during its last write go in
+/// one transaction on the event log's connection (NORMAL), so event writes never wait on each other, and control
+/// writes wait for one writer only (todo-189, todo-207 B7).
+fn writer(path: &Path) -> std::sync::mpsc::Sender<Batch> {
+    static WRITERS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::mpsc::Sender<Batch>>>,
+    > = std::sync::OnceLock::new();
+    let mut writers = WRITERS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    writers
+        .entry(path.to_path_buf())
+        .or_insert_with(|| {
+            let (send, events) = std::sync::mpsc::channel::<Batch>();
+            let path = path.to_path_buf();
+            std::thread::spawn(move || {
+                while let Ok(first) = events.recv() {
+                    let batch: Vec<Batch> =
+                        std::iter::once(first).chain(events.try_iter()).collect();
+                    let written = Db::open_log(&path).and_then(|db| db.insert_events(&batch));
+                    match written {
+                        Ok(ids) => {
+                            for (one, ids) in batch.into_iter().zip(ids) {
+                                if let Some(ack) = one.ack {
+                                    let _ = ack.send(Ok(ids));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let busy = crate::error::message_of(&e).contains("busy for");
+                            for one in batch {
+                                match one.ack {
+                                    Some(ack) => {
+                                        let _ = ack.send(Err((busy, format!("{e:#}"))));
+                                    }
+                                    None => eprintln!(
+                                        "legionctl: {} events of {} not recorded: {}",
+                                        one.events.len(),
+                                        one.actor,
+                                        crate::error::message_of(&e)
+                                    ),
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            send
+        })
+        .clone()
+}
+
+/// Append `events` of `actor` to the event log of the database at `path` through its one writer; `wait`: until they
+/// are written (their ids), else at once (an empty list).
+fn log(
+    path: &Path,
+    actor: &str,
+    events: Vec<(String, serde_json::Value)>,
+    wait: bool,
+) -> Result<Vec<i64>> {
+    let (ack, written) = std::sync::mpsc::channel();
+    writer(path)
+        .send(Batch {
+            actor: actor.to_string(),
+            events,
+            ack: wait.then_some(ack),
+        })
+        .ok()
+        .context("the event log's writer has ended")?;
+    if !wait {
+        return Ok(Vec::new());
+    }
+    match written.recv().context("the event log's writer has ended")? {
+        Ok(ids) => Ok(ids),
+        // the same error as a direct write, so the busy one reads as one plain sentence (error::message_of)
+        Err((true, text)) => Err(anyhow::Error::new(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            Some(text),
+        ))
+        .context("writing the event log")),
+        Err((false, text)) => Err(anyhow::anyhow!("writing the event log: {text}")),
+    }
+}
+
+/// Append `events` of `actor` to the event log of the operator database without waiting (the recorder's machine and
+/// session events); a failed write is a line in the operator's journal.
+pub fn log_later(actor: &str, events: Vec<(String, serde_json::Value)>) {
+    if let Err(e) = log(&default_path(), actor, events, false) {
+        eprintln!("legionctl: events of {actor} not recorded: {e:#}");
+    }
+}
+
 /// A database's schema: the tables of `version`, made at once in a new file, and the steps that bring a file of an
 /// older version to it.
 pub struct Schema {
@@ -100,6 +203,7 @@ pub const OPERATOR: &Schema = &Schema {
 
 pub struct Db {
     conn: Connection,
+    path: PathBuf,
 }
 
 pub fn default_path() -> PathBuf {
@@ -343,7 +447,10 @@ impl Db {
             path.display(),
             schema.version
         );
-        Ok(Db { conn })
+        Ok(Db {
+            conn,
+            path: path.to_path_buf(),
+        })
     }
 
     /// # Errors
@@ -410,11 +517,13 @@ impl Db {
     /// # Errors
     /// The database write fails.
     pub fn record(&self, actor: &str, kind: &str, payload: &serde_json::Value) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO events (ts, actor, kind, payload) VALUES (?1, ?2, ?3, ?4)",
-            params![now(), actor, kind, payload.to_string()],
+        let ids = log(
+            &self.path,
+            actor,
+            vec![(kind.to_string(), payload.clone())],
+            true,
         )?;
-        Ok(self.conn.last_insert_rowid())
+        ids.first().copied().context("the event log gave no id")
     }
 
     /// Append `events` (kind, payload) of `actor` to the event log in one transaction.
@@ -422,18 +531,29 @@ impl Db {
     /// # Errors
     /// The database write fails.
     pub fn record_all(&self, actor: &str, events: &[(String, serde_json::Value)]) -> Result<()> {
+        log(&self.path, actor, events.to_vec(), true).map(|_| ())
+    }
+
+    /// The writer's one transaction: each batch's events, and their ids.
+    fn insert_events(&self, batch: &[Batch]) -> Result<Vec<Vec<i64>>> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        for (kind, payload) in events {
-            tx.execute(
-                "INSERT INTO events (ts, actor, kind, payload) VALUES (?1, ?2, ?3, ?4)",
-                params![now(), actor, kind, payload.to_string()],
-            )?;
+        let mut ids = Vec::new();
+        for one in batch {
+            let mut these = Vec::new();
+            for (kind, payload) in &one.events {
+                tx.execute(
+                    "INSERT INTO events (ts, actor, kind, payload) VALUES (?1, ?2, ?3, ?4)",
+                    params![now(), one.actor, kind, payload.to_string()],
+                )?;
+                these.push(tx.last_insert_rowid());
+            }
+            ids.push(these);
         }
         tx.commit()?;
-        Ok(())
+        Ok(ids)
     }
 
     /// The id of the newest event; 0 when there is none.
