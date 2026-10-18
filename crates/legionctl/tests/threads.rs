@@ -408,6 +408,24 @@ fn only_an_observer_of_the_thread_blocks(lab: &Lab) {
 /// Blocks and rights: a peer outside the thread and the main agent cannot block; a soft-block stops the end of one
 /// reply; a hard-block stops each reply (also when the reply already goes on because of a stop hook) and refuses the
 /// tool it names until main0 acks it; a member that leaves takes its blocks with it.
+/// The hard-block holds Codex's own call of the op too.
+fn codex_names_the_same_call(lab: &Lab) {
+    // Codex names the same call mcp__legionctl__legionctl_run (recorded live from Codex 0.163)
+    let codex: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/codex-hooks/pre-tool-legionctl-run.json"
+    ))
+    .unwrap();
+    assert!(
+        lab.pre_tool_call(
+            "main",
+            codex["tool_name"].as_str().unwrap(),
+            &codex["tool_input"]
+        )
+        .is_some(),
+        "Codex's recorded legionctl_run of the op is refused"
+    );
+}
+
 #[test]
 fn blocks_hold_main_until_acked_and_only_an_observer_of_the_thread_sends_them() {
     let lab = thread_lab("blocks");
@@ -463,6 +481,7 @@ fn blocks_hold_main_until_acked_and_only_an_observer_of_the_thread_sends_them() 
         held.contains("observer0 holds") && held.contains("hard-block #3"),
         "{held}"
     );
+    codex_names_the_same_call(&lab);
     assert_eq!(lab.pre_tool("main", "Bash"), None, "another tool passes");
     assert_eq!(
         lab.pre_run("main", "workspace.status"),

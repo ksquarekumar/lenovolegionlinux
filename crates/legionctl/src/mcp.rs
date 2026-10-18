@@ -24,6 +24,9 @@ use legionctl_core::session::BROKER_ENV;
 /// Rows of `legionctl_find` when the caller gives no `limit`.
 const FIND_LIMIT: usize = 20;
 
+/// The time a brokered server has to start and list its tools.
+const START_SECONDS: u64 = 10;
+
 /// A server that `legionctl mcp` brokers (`mcp.servers`): its proxy and the tools the proxy offers.
 struct Brokered {
     server: String,
@@ -101,7 +104,10 @@ async fn start(server: &str, entry: &Value) -> anyhow::Result<Brokered> {
     };
     let mut command = tokio::process::Command::new(std::env::current_exe()?);
     // the broker list holds every server's keyring headers: no proxy, and no server it starts, may see it
-    command.args(strings(&entry["args"])).env_remove(BROKER_ENV);
+    command
+        .args(strings(&entry["args"]))
+        .env_remove(BROKER_ENV)
+        .kill_on_drop(true);
     for (name, value) in entry["env"].as_object().into_iter().flatten() {
         command.env(name, value.as_str().unwrap_or_default());
     }
@@ -120,11 +126,15 @@ impl Legion {
             .get_or_init(|| async {
                 let mut started = (Vec::new(), Vec::new());
                 for (server, entry) in &self.broker {
-                    match start(server, entry).await {
-                        Ok(b) => started.0.push(b),
-                        Err(e) => started
+                    let limit = std::time::Duration::from_secs(START_SECONDS);
+                    match tokio::time::timeout(limit, start(server, entry)).await {
+                        Ok(Ok(b)) => started.0.push(b),
+                        Ok(Err(e)) => started
                             .1
                             .push(format!("MCP server {server} did not start: {e:#}.")),
+                        Err(_) => started.1.push(format!(
+                            "MCP server {server} did not start in {START_SECONDS} s."
+                        )),
                     }
                 }
                 started
@@ -206,26 +216,25 @@ impl Legion {
             .collect();
         let group = args["group"].as_str();
         let rows = self.rows().await;
-        let not_started = self.brokered().await.1.join("\n");
-        let with_failures = |text: String| {
-            if not_started.is_empty() {
-                text
-            } else {
-                format!("{text}\n{not_started}")
-            }
-        };
         if words.is_empty() && group.is_none() {
+            // the overview tells each server that did not start, once per call
+            let not_started = self.brokered().await.1.join("\n");
             let mut groups: BTreeMap<&str, usize> = BTreeMap::new();
             for row in &rows {
                 *groups.entry(&row.group).or_default() += 1;
             }
             let lines: Vec<String> = groups.iter().map(|(g, n)| format!("{g} {n}")).collect();
-            return with_failures(format!(
+            let overview = format!(
                 "{} operations in {} groups (group, count). Give words, a group or both.\n{}",
                 rows.len(),
                 groups.len(),
                 lines.join("\n")
-            ));
+            );
+            return if not_started.is_empty() {
+                overview
+            } else {
+                format!("{overview}\n{not_started}")
+            };
         }
         let limit = args["limit"]
             .as_u64()
@@ -266,12 +275,10 @@ impl Legion {
                 hits.len()
             )
         };
-        with_failures(
-            std::iter::once(head)
-                .chain(shown)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
+        std::iter::once(head)
+            .chain(shown)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     async fn describe(&self, name: &str) -> Result<String, ApiError> {

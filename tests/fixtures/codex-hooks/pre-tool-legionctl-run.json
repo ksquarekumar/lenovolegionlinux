@@ -1,0 +1,15 @@
+{
+  "session_id": "01a14f61-4098-7d01-8cf5-f7ae8a59bc0f",
+  "turn_id": "01a14f61-42d6-7da1-a9d6-32831013872f",
+  "transcript_path": null,
+  "cwd": "/home/user/project",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "mcp__legionctl__legionctl_run",
+  "tool_input": {
+    "op": "workspace.checkpoint",
+    "input": {}
+  },
+  "tool_use_id": "exec-388b57a3-4fba-4e68-8a5e-3b65c7d1e1bd"
+}

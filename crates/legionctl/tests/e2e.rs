@@ -3381,7 +3381,9 @@ fn a_session_runs_a_brokered_servers_tool_through_legionctls_three_tools() {
             "remote": {"url": url, "allow": ["docs"], "keyring_headers": {"x-api-key": "remote-key"}},
             // a command server that notes the environment it gets
             "self": {"command": ["sh", "-c", format!("env > \"$HOME/seen.env\"; exec {} mcp", env!("CARGO_BIN_EXE_legionctl"))],
-                     "allow": ["legionctl_find"]}
+                     "allow": ["legionctl_find"]},
+            // a server that never answers
+            "mute": {"command": ["sleep", "60"]}
         }}})
         .to_string(),
     );
@@ -3413,8 +3415,10 @@ fn a_session_runs_a_brokered_servers_tool_through_legionctls_three_tools() {
     );
     let (groups, _) = mcp.tool("legionctl_find", &json!({}));
     assert!(
-        groups.contains("\nremote 1") && groups.contains("\nself 1"),
-        "{groups}"
+        groups.contains("\nremote 1")
+            && groups.contains("\nself 1")
+            && groups.ends_with("\nMCP server mute did not start in 10 s."),
+        "the others answer, and the mute one is one sentence: {groups}"
     );
     let seen = std::fs::read_to_string(home.join("seen.env")).unwrap();
     assert!(
