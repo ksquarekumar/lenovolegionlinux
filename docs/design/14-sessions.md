@@ -226,8 +226,8 @@ name, a BLAKE2b-128 hash of the input, the caller's toolsets, start, end, outcom
 read, the answer. The id goes back in `x-legionctl-call` (the socket) and as the last line `call <id>` of a
 `legionctl_run` answer; a caller that retries with it (`call_id`) gets the recorded answer, and nothing runs twice; the
 id of another call (other operation or input) and a call with no end (it runs, or the operator stopped during it) are
-one sentence each. A brokered call that cannot be recorded (the operator does not answer) does not run while
-`RUN_UNRECORDED` in proxy.rs is false (DESIGN/22 rule 3 against the user's decision Q5 of 2026-10-14; open). An
+one sentence each. A brokered call that cannot be recorded (the operator does not answer) does not run (the user's
+decision of 2026-10-19, which replaces Q5 of 2026-10-14). An
 operation's cache time is in the registry (`Read(300)` for `ops.list`; only reads): an agent's
 same call with the same input and toolsets within that time answers from the record (outcome `cached`).
 `legionctl tools calls [--kind op|tool|model] [--session]` lists the record; the step to v16 moved the rows of the
