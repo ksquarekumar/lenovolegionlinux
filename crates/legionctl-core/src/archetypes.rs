@@ -391,6 +391,64 @@ fn list(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// The capability sets that agent config `name` requests: its `capabilities`, then the toolsets of its skills.
+#[must_use]
+pub fn requested_sets(config: &crate::config::Config, name: &str) -> Vec<String> {
+    let mut out: Vec<String> = config
+        .agents
+        .configs
+        .get(name)
+        .map_or_else(Vec::new, |c| c.capabilities.clone());
+    for set in declared_toolsets(config, name) {
+        if !out.contains(&set) {
+            out.push(set);
+        }
+    }
+    out
+}
+
+/// The toolsets of the skills that agent config `name` declares (its archetype file's `skills:` and its own), from each
+/// skill's `toolsets:` (DESIGN/22 rule 2).
+#[must_use]
+pub fn declared_toolsets(config: &crate::config::Config, name: &str) -> Vec<String> {
+    let Some(c) = config.agents.configs.get(name) else {
+        return Vec::new();
+    };
+    let mut refused = Vec::new();
+    let archetype = c
+        .archetype
+        .as_deref()
+        .and_then(|a| archetype_file(&crate::setup::plugin_root(), a, &mut refused))
+        .map(|f| f.layer.skills)
+        .unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for skill in archetype.iter().chain(&c.skills) {
+        for set in skill_toolsets(skill) {
+            if !out.contains(&set) {
+                out.push(set);
+            }
+        }
+    }
+    out
+}
+
+/// The `toolsets:` of the plugin's skill `skill` (`legionctl:` before the name is allowed); none: no such skill or no
+/// toolsets.
+#[must_use]
+pub fn skill_toolsets(skill: &str) -> Vec<String> {
+    let name = skill.strip_prefix("legionctl:").unwrap_or(skill);
+    if name.is_empty() || name.contains(['/', '.']) {
+        return Vec::new();
+    }
+    let text = std::fs::read_to_string(crate::setup::plugin_skills().join(name).join("SKILL.md"))
+        .unwrap_or_default();
+    text.strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+        .and_then(|(head, _)| head.lines().find_map(|l| l.strip_prefix("toolsets:")))
+        .map(|value| list(value.trim()))
+        .unwrap_or_default()
+}
+
 /// Read `<plugin>/agents/<name>.md`. Each frontmatter field that the plugin path does not honour, and each ref that
 /// does not exist, is a refusal.
 fn archetype_file(plugin: &Path, name: &str, refused: &mut Vec<String>) -> Option<ArchetypeFile> {

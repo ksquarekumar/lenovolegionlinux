@@ -749,8 +749,9 @@ fn an_agent_finds_describes_and_runs_operations_through_three_mcp_tools() {
     assert!(
         lines
             .next()
-            .unwrap()
-            .starts_with("workspace.checkpoint · session · ")
+            .is_some_and(|row| row.starts_with("workspace.checkpoint · session · ")
+            // this MCP server runs for an agent that loaded no skill: the read class only (DESIGN/22 rule 2)
+            && row.ends_with(" · not granted: workspace-write, ask"))
             && lines.next().is_none(),
         "the op with both words in its name comes first: {found}"
     );
@@ -760,6 +761,9 @@ fn an_agent_finds_describes_and_runs_operations_through_three_mcp_tools() {
             "hooks.add · workspace. It changes your files, settings or other sessions"
         ) && described.contains("Input: {")
             && described.contains("\"command\"")
+            && described.contains(
+                " Not granted: settings-change, ask: a run asks the user for that toolset."
+            )
             && described.ends_with("Output: HookTable"),
         "{described}"
     );
@@ -1443,8 +1447,10 @@ fn every_change_is_audited_with_its_outcome_and_errors_have_codes() {
     let refused = run("s2", &["dossier", "use", "port"]);
     assert!(!refused.status.success());
     let token = "sk-not-for-the-audit";
-    let set = run(
-        "s1",
+    // a change of your settings: the user's call (an agent's would ask for the toolset settings-change)
+    let set = op.run(
+        &home,
+        &[],
         &[
             "agents",
             "set",
@@ -1454,6 +1460,7 @@ fn every_change_is_audited_with_its_outcome_and_errors_have_codes() {
             token,
             "--dry-run",
         ],
+        "",
     );
     assert!(
         set.status.success(),
@@ -1472,6 +1479,11 @@ fn every_change_is_audited_with_its_outcome_and_errors_have_codes() {
                 e["payload"].clone(),
             )
         })
+        .collect();
+    // the agents' own hook calls (their skill loads) are internal rows
+    let audit: Vec<(String, Value)> = audit
+        .into_iter()
+        .filter(|(k, _)| !k.starts_with("internal."))
         .collect();
     let kinds: Vec<&str> = audit.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(
@@ -1692,6 +1704,16 @@ fn the_wire_format_matches_the_committed_schema() {
 fn the_event_log_pages_and_keeps_only_its_days() {
     let home = home("pages");
     let op = operator_in("pages", &home);
+    // the agent's first call loads its skills (internal rows): the pages start after them
+    op.run(
+        &home,
+        &[("LEGIONCTL_SESSION", "s1")],
+        &["dossier", "active"],
+        "",
+    );
+    let before: Value =
+        serde_json::from_str(&op.ok(&["events", "--json", "--limit", "1000"])).unwrap();
+    let start = before["items"].as_array().unwrap().last().unwrap()["id"].to_string();
     for name in ["one", "two", "three"] {
         let out = op.run(
             &home,
@@ -1708,7 +1730,7 @@ fn the_event_log_pages_and_keeps_only_its_days() {
     let page = |args: &[&str]| -> Value {
         serde_json::from_str(&op.ok(&[&["events", "--json"], args].concat())).unwrap()
     };
-    let first = page(&["--limit", "2"]);
+    let first = page(&["--limit", "2", "--cursor", &start]);
     assert_eq!(first["items"].as_array().unwrap().len(), 2);
     let next = first["next"]
         .as_str()
@@ -1734,7 +1756,7 @@ fn the_event_log_pages_and_keeps_only_its_days() {
         .args([
             "-c",
             "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
-             c.execute('UPDATE events SET ts = ts - 100 * 86400 WHERE id IN (SELECT id FROM events ORDER BY id LIMIT 2)'); c.commit()",
+             c.execute('UPDATE events SET ts = ts - 100 * 86400 WHERE id IN (SELECT id FROM events WHERE kind = \\'dossier.use\\' ORDER BY id LIMIT 2)'); c.commit()",
         ])
         .arg(home.join(".local/state/legionctl/operator.db"))
         .status()
@@ -1754,7 +1776,7 @@ fn the_event_log_pages_and_keeps_only_its_days() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|e| e["payload"]["input"]["name"].as_str().unwrap_or(""))
+        .filter_map(|e| e["payload"]["input"]["name"].as_str())
         .collect();
     assert_eq!(names, ["three"], "{kept}");
 }
@@ -3398,11 +3420,13 @@ fn a_session_runs_a_brokered_servers_tool_through_legionctls_three_tools() {
         "a secret in a command line: {legionctl}"
     );
 
-    // the agent's MCP server, as the harness starts it from mcp.json
+    // the agent's MCP server, as the harness starts it from mcp.json; the session does not run here (no user
+    // manager), so its token is not valid and the user token stands in
     let vars: Vec<(String, String)> = legionctl["env"]
         .as_object()
         .unwrap()
         .iter()
+        .filter(|(k, _)| *k != "LEGIONCTL_TOKEN")
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
         .chain([("HOME".into(), home.to_str().unwrap().into())])
         .collect();
@@ -8785,6 +8809,13 @@ fn a_write_that_waits_out_the_lock_says_so_in_one_sentence() {
     let (op, home) = operator("db-busy");
     op.ok(&["events", "--limit", "1"]);
     let db = home.join(".local/state/legionctl/operator.db");
+    // the agent loaded its skills before the database got busy (its first call)
+    op.run(
+        &home,
+        &[("LEGIONCTL_SESSION", "flood")],
+        &["dossier", "active"],
+        "",
+    );
     let holder = rusqlite::Connection::open(&db).unwrap();
     holder.execute_batch("BEGIN IMMEDIATE").unwrap();
     let out = op.run(

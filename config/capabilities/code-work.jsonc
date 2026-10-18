@@ -1,0 +1,8 @@
+// The project's checks, tests, plan and code graph, and the jobs they start (skill verify-and-ship).
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "code-work",
+  "version": 1,
+  "description": "The code operations (checks, tests, mutations, plan, code graph) and their jobs.",
+  "toolverse": { "operations": ["code.*", "jobs.*"], "skills": ["verify-and-ship"] }
+}

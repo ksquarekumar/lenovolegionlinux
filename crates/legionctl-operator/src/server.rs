@@ -142,6 +142,24 @@ pub(crate) fn own_session(op: &OpInfo, principal: &Principal, input: &mut Value)
     }
 }
 
+/// An agent's call of a public operation outside its toolsets asks the user for the toolset (DESIGN/22 rule 2); the
+/// user's own calls, legionctl's internal ones and the hooks of an unsandboxed agent (legionctl's own lifecycle steps
+/// for it, such as the dossier release at its end) have no scope. True: the user was asked and allowed it.
+async fn in_scope(
+    op: &OpInfo,
+    principal: &Principal,
+    actor: Option<&str>,
+    input: &Value,
+) -> Result<bool, ApiError> {
+    let hook = matches!(principal, Principal::Agent(_)) && actor == Some("hook");
+    match principal.agent() {
+        Some(id) if !op.internal() && !hook => {
+            crate::scope::check(id, op.name, &op.sentence(&redacted(op, input))).await
+        }
+        _ => Ok(false),
+    }
+}
+
 /// A sandboxed agent's call outside its own session (a `workspace` op, or a field marked `x-approval` set), and an
 /// unsandboxed agent's change of what runs or is said in every session (hooks, reminders), go ahead only when the
 /// user allows it; the user's own calls and machine changes (polkit asks) go ahead.
@@ -370,7 +388,16 @@ async fn run(
             return refusal(&e);
         }
         own_session(op, &principal, &mut input);
-        if let Err(mut e) = approved(op, &principal, &input).await {
+        // the user who just allowed the toolset for this call is not asked again for the same call
+        let actor = headers.get(ACTOR_HEADER).and_then(|v| v.to_str().ok());
+        let asked = match in_scope(op, &principal, actor, &input).await {
+            Ok(asked) => asked,
+            Err(mut e) => {
+                e.op.clone_from(&name);
+                return refusal(&e);
+            }
+        };
+        if !asked && let Err(mut e) = approved(op, &principal, &input).await {
             e.op.clone_from(&name);
             return refusal(&e);
         }

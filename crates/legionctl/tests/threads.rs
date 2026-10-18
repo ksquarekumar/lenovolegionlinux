@@ -3400,7 +3400,8 @@ fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
     );
     a.wake(1);
     assert_eq!(a.dirs().last(), Some(&AcctLab::profile("work")));
-    // its first wake's session has its config's capability set beside its harness set (DESIGN-13)
+    // its first wake's session has its config's capability set beside its harness set (DESIGN-13), then the toolsets of
+    // its archetype's skills and of its thread (DESIGN/22 rule 2)
     let grant: Value =
         serde_json::from_str(&lab.ok(main, ws, &["runnables", "show", "1/observer0", "--json"]))
             .unwrap();
@@ -3410,7 +3411,18 @@ fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
         .iter()
         .map(|s| s["name"].as_str().unwrap())
         .collect();
-    assert_eq!(sets, ["claude-code", "web-read"], "{grant:#}");
+    assert_eq!(
+        sets,
+        [
+            "claude-code",
+            "web-read",
+            "dossier-write",
+            "code-work",
+            "workspace-write",
+            "thread-member"
+        ],
+        "{grant:#}"
+    );
 
     a.used("work", 95.0);
     a.wake(2);

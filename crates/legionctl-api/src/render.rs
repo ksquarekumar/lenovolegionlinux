@@ -3154,6 +3154,29 @@ impl Render for Vec<crate::FactChange> {
     }
 }
 
+impl Render for crate::Scope {
+    fn text(&self) -> String {
+        let sets = if self.sets.is_empty() {
+            "the read class".to_string()
+        } else {
+            self.sets.join(", ")
+        };
+        std::iter::once(format!(
+            "toolsets: {sets}; {} tools not granted",
+            self.missing.len()
+        ))
+        .chain(self.missing.iter().map(|(tool, set)| {
+            if set.is_empty() {
+                format!("{tool:<28} no toolset holds it")
+            } else {
+                format!("{tool:<28} not granted: {set}, ask")
+            }
+        }))
+        .collect::<Vec<_>>()
+        .join("\n")
+    }
+}
+
 impl Render for Vec<crate::OpEntry> {
     fn text(&self) -> String {
         std::iter::once(format!("{} operations", self.len()))

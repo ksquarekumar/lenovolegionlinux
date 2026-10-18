@@ -1,6 +1,7 @@
 ---
 name: dossier-practice
 description: How to keep this session's legionctl dossier (~/agentWorkspaces/<dossier>) - binding, the plan.md ledger, numbered MEMORY, DESIGN, EVIDENCE and SPIKE artifacts, anchored edits, and the hooks that gate and nudge. Use whenever a session has a dossier bound, and before you bind one.
+toolsets: [dossier-write]
 user-invocable: false
 ---
 

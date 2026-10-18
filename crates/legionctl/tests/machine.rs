@@ -7626,16 +7626,22 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
     }
 
-    /// A session's token in the operator database of `home`, as `session start` issues it (only its hash is kept).
+    /// A session's token in the operator database of `home`, as `session start` issues it (only its hash is kept), and
+    /// its grant: the toolsets of its own session and of your settings, as a started session's skills give them.
     fn add_session_token(home: &std::path::Path, token: &str, session: &str) {
         let added = std::process::Command::new("python3")
             .args([
                 "-c",
-                "import hashlib, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
+                "import hashlib, json, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); s = sys.argv[3]; \
                  c.execute('INSERT INTO tokens VALUES (?, ?, 0)', \
-                 (hashlib.blake2b(sys.argv[2].encode(), digest_size=32).hexdigest(), sys.argv[3])); \
+                 (hashlib.blake2b(sys.argv[2].encode(), digest_size=32).hexdigest(), s)); \
                  c.execute(\"INSERT INTO sessions (id, agent, dossier, workdir, started) VALUES (?, 'probe', '', '', 0)\", \
-                 (sys.argv[3],)); c.commit()",
+                 (s,)); \
+                 grant = {'runnable': 'session:' + s, 'requested': ['session-own', 'settings-change'], 'sets': [], \
+                          'manifest': {'name': 'session:' + s, 'toolverse': {'classes': ['session', 'workspace']}}}; \
+                 c.execute(\"INSERT INTO facts (entity, attribute, value, scope, scope_id, source, evidence, confidence, \
+                            valid_from, recorded_from) VALUES (?, 'manifest', ?, 'global', '', 'rule', '{}', 1.0, 0, 0)\", \
+                           ('runnable:session:' + s, json.dumps(grant))); c.commit()",
             ])
             .arg(home.join(".local/state/legionctl/operator.db"))
             .args([token, session])
@@ -8614,6 +8620,96 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
                 Value::Null
             )],
             "the denied call never ran; the allowed one is the agent's"
+        );
+        drop(desktop);
+    }
+
+    /// DESIGN/22 rule 2: a harness agent's scope is the read class and the toolsets of the skills it loaded. A call
+    /// outside them asks the user for the whole toolset that holds it (Deny refuses it, Allow keeps the toolset in the
+    /// agent's grant, so the next call asks nothing); loading a skill (Claude Code's recorded Skill call) is the
+    /// declaration of its toolsets and asks nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_harness_agent_holds_its_skills_toolsets_and_the_user_allows_one_more() {
+        let m = Machine::new("scope");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (desktop, asked) = crate::desktop::answering(&address, &["deny", "allow"]).await;
+        let home = m.dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let op = Operator::start(
+            "scope",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", home.clone().into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        );
+        let env = [
+            ("LEGIONCTL_SESSION", "h1"),
+            ("HOME", home.to_str().unwrap()),
+        ];
+        let agent = |args: &[&str]| op.run_bare(&home, &env, args, "");
+        let err = |o: &std::process::Output| String::from_utf8_lossy(&o.stderr).to_string();
+
+        assert!(
+            agent(&["dossier", "list"]).status.success(),
+            "a read asks nothing"
+        );
+        let denied = agent(&["dossier", "use", "box"]);
+        assert!(
+            err(&denied).contains(
+                "dossier.use needs the toolset dossier-write, and the user did not allow it"
+            ),
+            "{}",
+            err(&denied)
+        );
+        let mut skill: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/claude-code-hooks/post-tool-skill.json"
+        ))
+        .unwrap();
+        skill["session_id"] = "h1".into();
+        skill["cwd"] = home.to_str().unwrap().into();
+        let loaded = op.run_bare(&home, &env, &["hook", "post-tool"], &skill.to_string());
+        assert!(loaded.status.success(), "{}", err(&loaded));
+        let used = agent(&["dossier", "use", "box"]);
+        assert!(
+            used.status.success(),
+            "the loaded skill's toolset: {}",
+            err(&used)
+        );
+
+        let fact = |value: &str| agent(&["facts", "set", "app", value, "--attribute", "width"]);
+        let first = fact("0.3");
+        assert!(first.status.success(), "{}", err(&first));
+        let again = fact("0.4");
+        assert!(again.status.success(), "{}", err(&again));
+        let asked = asked.lock().unwrap().clone();
+        assert_eq!(asked.len(), 2, "one question per toolset: {asked:?}");
+        assert!(
+            asked[0].starts_with("Agent session h1 asks for the toolset dossier-write:")
+                && asked[1].starts_with("Agent session h1 asks for the toolset session-own:")
+                && asked[1].contains("Its first use: "),
+            "{asked:?}"
+        );
+        let scope: Value = serde_json::from_slice(
+            &agent(&[
+                "runnables",
+                "scope",
+                "--json",
+                "dossier.use",
+                "facts.set",
+                "hooks.add",
+            ])
+            .stdout,
+        )
+        .unwrap();
+        assert_eq!(
+            scope,
+            serde_json::json!({"sets": ["dossier-write", "session-own"],
+                               "missing": {"hooks.add": "settings-change"}}),
+            "the grant keeps both toolsets"
         );
         drop(desktop);
     }

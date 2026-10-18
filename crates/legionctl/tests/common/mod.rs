@@ -49,6 +49,20 @@ pub fn fresh(bin: &Path) -> PathBuf {
     bin.to_path_buf()
 }
 
+/// The plugin's skills that declare toolsets: an agent that loaded them all has the scope of its work.
+pub const WORK_SKILLS: &[&str] = &[
+    "dossier-practice",
+    "workspace-practice",
+    "verify-and-ship",
+    "sessions-and-agents",
+    "glanceable-style",
+    "tool-lifecycle",
+    "machine-tools",
+];
+
+/// The (HOME, agent session) pairs whose agent loaded [`WORK_SKILLS`].
+static LOADED: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
 pub struct Operator {
     /// Short on purpose: a unix socket path must fit in 108 bytes.
     pub runtime: Scratch,
@@ -125,8 +139,34 @@ impl Operator {
     }
 
     /// `legionctl` with only `XDG_RUNTIME_DIR` (to find the socket), `PATH`, `env`, the working directory `cwd` and
-    /// `stdin` as its input.
+    /// `stdin` as its input. An agent session (`LEGIONCTL_SESSION` in `env`) loads the skills of its work at its first
+    /// call, as an agent does when its reminders name them, so their toolsets are its scope (DESIGN/22 rule 2);
+    /// [`Operator::run_bare`] is an agent that loaded none.
     pub fn run(&self, cwd: &Path, env: &[(&str, &str)], args: &[&str], stdin: &str) -> Output {
+        if let Some((_, session)) = env.iter().find(|(k, _)| *k == "LEGIONCTL_SESSION") {
+            // the grant is in the HOME's operator database: an operator that starts again on it keeps it
+            let home = env.iter().find(|(k, _)| *k == "HOME").map_or_else(
+                || self.runtime.display().to_string(),
+                |(_, h)| (*h).to_string(),
+            );
+            let key = (home, (*session).to_string());
+            if !LOADED.lock().unwrap().contains(&key) {
+                let rest: Vec<(&str, &str)> = env
+                    .iter()
+                    .copied()
+                    .filter(|(k, _)| *k != "LEGIONCTL_SESSION")
+                    .collect();
+                // a test of a broken config or a busy database sees that in its own call: the next call loads again
+                if self.skills_loaded(cwd, &rest, session, WORK_SKILLS) {
+                    LOADED.lock().unwrap().push(key);
+                }
+            }
+        }
+        self.run_bare(cwd, env, args, stdin)
+    }
+
+    /// [`Operator::run`] with no skills loaded for its agent session.
+    pub fn run_bare(&self, cwd: &Path, env: &[(&str, &str)], args: &[&str], stdin: &str) -> Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_legionctl"))
             .args(args)
             .current_dir(cwd)
@@ -146,6 +186,36 @@ impl Operator {
             .write_all(stdin.as_bytes())
             .unwrap();
         child.wait_with_output().unwrap()
+    }
+
+    /// The agent of `session` loads the legionctl `skills`, as Claude Code's `Skill` call reaches the post-tool hook
+    /// (tests/fixtures/claude-code-hooks/post-tool-skill.json): their toolsets join its scope (DESIGN/22 rule 2). False
+    /// when a hook call failed.
+    fn skills_loaded(
+        &self,
+        cwd: &Path,
+        env: &[(&str, &str)],
+        session: &str,
+        skills: &[&str],
+    ) -> bool {
+        for skill in skills {
+            let payload = serde_json::json!({
+                "session_id": session, "cwd": cwd, "hook_event_name": "PostToolUse", "tool_name": "Skill",
+                "tool_input": {"skill": format!("legionctl:{skill}")},
+                "tool_response": {"success": true, "commandName": format!("legionctl:{skill}")}
+            });
+            let out = self.run_bare(
+                cwd,
+                &[env, &[("LEGIONCTL_SESSION", session)]].concat(),
+                &["hook", "post-tool"],
+                &payload.to_string(),
+            );
+            if !out.status.success() {
+                eprintln!("loading {skill}: {}", String::from_utf8_lossy(&out.stderr));
+                return false;
+            }
+        }
+        true
     }
 
     pub fn cli_in(&self, cwd: &Path, args: &[&str]) -> Output {

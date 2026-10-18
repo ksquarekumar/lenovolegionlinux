@@ -28,16 +28,24 @@ macro_rules! tables {
 pub(crate) use tables;
 
 /// The shipped sets. A new set is a new file in `config/capabilities/` and a line here.
-const SHIPPED: [&str; 9] = [
+const SHIPPED: [&str; 17] = [
+    include_str!("../../../config/capabilities/agent-work.jsonc"),
     include_str!("../../../config/capabilities/claude-code.jsonc"),
+    include_str!("../../../config/capabilities/code-work.jsonc"),
     include_str!("../../../config/capabilities/codex.jsonc"),
     include_str!("../../../config/capabilities/dossier-write.jsonc"),
     include_str!("../../../config/capabilities/github-read.jsonc"),
+    include_str!("../../../config/capabilities/machine-change.jsonc"),
     include_str!("../../../config/capabilities/machine-read.jsonc"),
     include_str!("../../../config/capabilities/node-dev.jsonc"),
     include_str!("../../../config/capabilities/python-dev.jsonc"),
     include_str!("../../../config/capabilities/rust-dev.jsonc"),
+    include_str!("../../../config/capabilities/session-own.jsonc"),
+    include_str!("../../../config/capabilities/settings-change.jsonc"),
+    include_str!("../../../config/capabilities/thread-member.jsonc"),
+    include_str!("../../../config/capabilities/views-write.jsonc"),
     include_str!("../../../config/capabilities/web-read.jsonc"),
+    include_str!("../../../config/capabilities/workspace-write.jsonc"),
 ];
 
 /// A runnable's manifest (DESIGN-13): a capability set file, or the granted manifest of a runnable (the union of its
@@ -677,6 +685,63 @@ fn merge(into: &mut Manifest, set: &Manifest) {
     }
 }
 
+/// A toolset (DESIGN/22 rule 2) holds a tool: its operations or `mcp_tools` name it (`x.*` a group, `server/*` a
+/// server's tools), or it has the operation's class (`read`, `session`, `workspace`, `machine`).
+#[must_use]
+pub fn holds(toolverse: &Toolverse, name: &str, class: Option<&str>) -> bool {
+    let named = |pattern: &String| {
+        pattern == name
+            || pattern
+                .strip_suffix(".*")
+                .is_some_and(|group| name.starts_with(&format!("{group}.")))
+            || pattern
+                .strip_suffix("/*")
+                .is_some_and(|server| name.starts_with(&format!("{server}/")))
+    };
+    class.is_some_and(|c| toolverse.classes.iter().any(|x| x == c))
+        || toolverse.operations.iter().any(named)
+        || toolverse.mcp_tools.iter().any(named)
+}
+
+/// The toolset to ask for when a scope does not hold `name`: a set that may be granted and names the tool (or its
+/// group or server) first, else one that has its class.
+#[must_use]
+pub fn toolset_for<'a>(config: &'a Config, name: &str, class: Option<&str>) -> Option<&'a Loaded> {
+    let grantable = || {
+        config
+            .capabilities
+            .iter()
+            .filter(|l| refusal(config, &l.set.name).is_none())
+    };
+    grantable()
+        .find(|l| holds(&l.set.toolverse, name, None))
+        .or_else(|| grantable().find(|l| holds(&l.set.toolverse, name, class)))
+}
+
+/// The scope of an agent that declared no toolsets (DESIGN/22, lead decision 3): the read class; the rest is asked.
+#[must_use]
+pub fn read_only() -> Toolverse {
+    Toolverse {
+        classes: vec!["read".into()],
+        ..Toolverse::default()
+    }
+}
+
+/// `grant` with `set` added: its name and the union with its manifest.
+fn with_set(mut grant: Grant, set: &Loaded) -> Grant {
+    if !grant.sets.iter().any(|g| g.name == set.set.name) {
+        grant.requested.push(set.set.name.clone());
+        merge(&mut grant.manifest, &set.set);
+        grant.sets.push(Granted {
+            name: set.set.name.clone(),
+            version: set.set.version,
+            layer: set.source.layer.clone(),
+            file: set.source.file.clone(),
+        });
+    }
+    grant
+}
+
 /// The connections that session `id` was granted, from its record, as the gateway's tunnel enforces them; `None`: no
 /// such session, or one from before grants.
 ///
@@ -783,6 +848,38 @@ impl crate::dossier::Dossiers {
             rusqlite::params![serde_json::to_string(&grant.manifest.connections)?, id],
         )?;
         Ok(())
+    }
+
+    /// The scope of agent session `id` (a sandboxed session, or a harness agent by its session id): its grant, or
+    /// for an agent without one the read class.
+    ///
+    /// # Errors
+    /// The grant cannot be read or does not parse.
+    pub fn scope(&self, id: &str) -> Result<Grant> {
+        Ok(match self.fact_value(&entity(id), "manifest", &[])? {
+            Some(value) => serde_json::from_value(value)?,
+            None => Grant {
+                runnable: format!("session:{id}"),
+                requested: Vec::new(),
+                parent: None,
+                sets: Vec::new(),
+                manifest: Manifest {
+                    name: format!("session:{id}"),
+                    toolverse: read_only(),
+                    ..Manifest::default()
+                },
+            },
+        })
+    }
+
+    /// Add the toolset `set` to the scope of session `id` (the user allowed it, or a skill that the agent loaded
+    /// declares it).
+    ///
+    /// # Errors
+    /// The grant cannot be read or written.
+    pub fn grant_toolset(&self, id: &str, set: &Loaded) -> Result<()> {
+        let grant = with_set(self.scope(id)?, set);
+        self.keep_grant(id, &grant)
     }
 
     /// The grant of session `id`, or of member `<thread>/<member>` (its session).

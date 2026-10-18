@@ -17,6 +17,7 @@ mod recorder;
 mod resources;
 mod rlcd;
 mod rules;
+mod scope;
 mod semantic;
 mod server;
 mod session;

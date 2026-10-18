@@ -1,6 +1,7 @@
 ---
 name: sessions-and-agents
 description: How to run a coding agent in a legionctl session (a sandbox on the host, in a container or a VM, with the git gate, its own dossier and workspace, an optional GPU, a clauth account and the model gateway) instead of a plain subagent, and how to follow it. Use when you plan to give work to another agent, when a task must run headless or isolated, and when you check what a session did.
+toolsets: [agent-work, thread-member]
 user-invocable: true
 ---
 

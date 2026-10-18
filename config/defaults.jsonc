@@ -357,8 +357,11 @@
   // parent and this layer allow; anything else refuses the start with the reason. "allow": the shipped, system and
   // user sets that a grant may hold; a repository's own set needs no entry, but its powerful parts (host, storage,
   // toolverse, connections, harness) need your first-use answer. `legionctl runnables show <session>` gives a grant.
+  // A set with a toolverse is a toolset (DESIGN/22): an agent holds the read class and the toolsets of its skills; a
+  // call outside them asks you for the toolset that holds it (`legionctl runnables scope`).
   "runnables": {
-    "allow": ["claude-code", "codex", "rust-dev", "node-dev", "python-dev", "web-read", "github-read", "dossier-write", "machine-read"]
+    "allow": ["claude-code", "codex", "rust-dev", "node-dev", "python-dev", "web-read", "github-read", "dossier-write", "machine-read",
+              "workspace-write", "code-work", "agent-work", "thread-member", "views-write", "session-own", "settings-change", "machine-change"]
   },
 
   // The desktop app (legionctl-app).

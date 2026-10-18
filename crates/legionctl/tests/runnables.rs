@@ -302,9 +302,20 @@ fn a_start_that_requests_sets_it_may_not_have_is_refused_with_each_reason() {
 
     let launch = launch(&lab.start("probe", "refuse", &[]));
     let grant = lab.show(launch["id"].as_str().unwrap());
+    // the config's sets, then the toolsets of the main-agent's skills (DESIGN/22 rule 2)
     assert_eq!(
         set_names(&grant),
-        ["web-read", "github-read", "dossier-write", "machine-read"],
+        [
+            "web-read",
+            "github-read",
+            "dossier-write",
+            "machine-read",
+            "workspace-write",
+            "code-work",
+            "agent-work",
+            "thread-member",
+            "views-write"
+        ],
         "{grant:#}"
     );
 }

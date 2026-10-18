@@ -1,0 +1,8 @@
+// Each operation that changes only the caller's own session (the session class).
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "session-own",
+  "version": 1,
+  "description": "Every operation that changes only your own session (its facts, views, notes).",
+  "toolverse": { "classes": ["session"] }
+}

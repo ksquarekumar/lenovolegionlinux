@@ -242,6 +242,7 @@ async fn post_tool(
             message: text("message"),
             // a tool that reports its result has `success: false` when it failed (SendMessage)
             ok: input["tool_response"]["success"] != false,
+            skill: text("skill").filter(|_| input["tool_name"] == "Skill"),
         })
         .await?
         .text;

@@ -207,7 +207,28 @@ impl Legion {
         self.ops.iter().copied().find(|op| op.name == name)
     }
 
-    async fn find(&self, args: &Value) -> String {
+    /// The tools of `names` that the caller's scope does not hold, with the toolset a run asks for ("": none).
+    async fn missing(&self, names: Vec<String>) -> Result<BTreeMap<String, String>, ApiError> {
+        if names.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let scope = self
+            .client
+            .call::<legionctl_api::op::RunnablesScope>(&legionctl_api::ScopeIn { tools: names })
+            .await
+            .map_err(|e| {
+                e.downcast_ref::<ApiError>().cloned().unwrap_or_else(|| {
+                    failed(
+                        legionctl_api::code_of(&e),
+                        format!("{e:#}"),
+                        "runnables.scope",
+                    )
+                })
+            })?;
+        Ok(scope.missing)
+    }
+
+    async fn find(&self, args: &Value) -> Result<String, ApiError> {
         let words: Vec<String> = args["words"]
             .as_str()
             .unwrap_or_default()
@@ -230,11 +251,11 @@ impl Legion {
                 groups.len(),
                 lines.join("\n")
             );
-            return if not_started.is_empty() {
+            return Ok(if not_started.is_empty() {
                 overview
             } else {
                 format!("{overview}\n{not_started}")
-            };
+            });
         }
         let limit = args["limit"]
             .as_u64()
@@ -261,10 +282,26 @@ impl Legion {
             .filter(|(score, _)| words.is_empty() || *score > 0)
             .collect();
         hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+        let missing = self
+            .missing(
+                hits.iter()
+                    .take(limit)
+                    .filter(|(_, row)| self.op(&row.name).is_some())
+                    .map(|(_, row)| row.name.clone())
+                    .collect(),
+            )
+            .await?;
         let shown: Vec<String> = hits
             .iter()
             .take(limit)
-            .map(|(_, row)| format!("{} · {} · {}", row.name, row.class, row.summary))
+            .map(|(_, row)| {
+                let line = format!("{} · {} · {}", row.name, row.class, row.summary);
+                match missing.get(&row.name).map(String::as_str) {
+                    None => line,
+                    Some("") => format!("{line} · no toolset holds it"),
+                    Some(set) => format!("{line} · not granted: {set}, ask"),
+                }
+            })
             .collect();
         let left = hits.len() - shown.len();
         let head = if left == 0 {
@@ -275,10 +312,10 @@ impl Legion {
                 hits.len()
             )
         };
-        std::iter::once(head)
+        Ok(std::iter::once(head)
             .chain(shown)
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n"))
     }
 
     async fn describe(&self, name: &str) -> Result<String, ApiError> {
@@ -319,8 +356,17 @@ impl Legion {
                 asks.join(", ")
             )
         };
+        let granted = match self
+            .missing(vec![op.name.to_string()])
+            .await?
+            .remove(op.name)
+        {
+            None => String::new(),
+            Some(set) if set.is_empty() => " No toolset holds it: a run is refused.".into(),
+            Some(set) => format!(" Not granted: {set}, ask: a run asks the user for that toolset."),
+        };
         Ok(format!(
-            "{} · {}. {gate}{asks}\n\n{}\n\nInput: {schema}\nOutput: {}",
+            "{} · {}. {gate}{asks}{granted}\n\n{}\n\nInput: {schema}\nOutput: {}",
             op.name,
             class_name(op.class),
             op.text(),
@@ -419,7 +465,7 @@ impl ServerHandler for Legion {
         let args = Value::Object(request.arguments.unwrap_or_default());
         let text = |text: String| CallToolResult::success(vec![ContentBlock::text(text)]);
         let answer = match request.name.as_ref() {
-            "legionctl_find" => Ok(text(self.find(&args).await)),
+            "legionctl_find" => self.find(&args).await.map(text),
             "legionctl_describe" => self
                 .describe(args["op"].as_str().unwrap_or_default())
                 .await

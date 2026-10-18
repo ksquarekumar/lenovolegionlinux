@@ -1018,6 +1018,8 @@ fn agent_fact(lab: &Lab, cwd: &Path, args: &Value) -> Value {
         .env("XDG_RUNTIME_DIR", &*lab.op.runtime)
         .env("HOME", &lab.home)
         .env("PATH", path())
+        // the agent's MCP server runs in its session (Claude Code gives it CLAUDE_CODE_SESSION_ID)
+        .env("CLAUDE_CODE_SESSION_ID", "s1")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -1266,7 +1268,7 @@ fn facts_in_time(lab: &Lab, ws: &Path) {
         "{both:?}"
     );
     assert!(
-        both.contains(&("0.5".into(), "agent:mcp".into(), false)),
+        both.contains(&("0.5".into(), "agent:s1".into(), false)),
         "{both:?}"
     );
     // A-10: nor at a nearer scope, and an agent does not correct the user's fact

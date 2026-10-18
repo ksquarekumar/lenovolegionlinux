@@ -1,0 +1,8 @@
+// Each operation of the machine class; polkit still asks for each change.
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "machine-change",
+  "version": 1,
+  "description": "Operations that change the machine (power, fan, GPU, kernel, boot); polkit asks for each one.",
+  "toolverse": { "classes": ["machine"] }
+}

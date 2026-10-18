@@ -1,0 +1,8 @@
+// Other agents: sessions and their jobs (skill sessions-and-agents; the thread operations are thread-member).
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "agent-work",
+  "version": 1,
+  "description": "The session and job operations: start, run and follow other agents.",
+  "toolverse": { "operations": ["session.*", "jobs.*"], "skills": ["sessions-and-agents"] }
+}

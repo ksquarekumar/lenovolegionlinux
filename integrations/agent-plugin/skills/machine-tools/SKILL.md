@@ -1,6 +1,7 @@
 ---
 name: machine-tools
 description: How to read and change this Lenovo Legion Pro 7 16IRX8H with legionctl (power, knobs and configset rules, fan, battery, display, GPU, kernel, boot, greeter, Windows, virtualization, bench, tune, record, replay, undo) and the user's safety rules for agents. Use before each legionctl machine command and when the user asks about power, heat, fans, GPU, display, kernels or boot.
+toolsets: [machine-read]
 user-invocable: true
 ---
 

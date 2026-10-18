@@ -557,6 +557,9 @@ operations! {
     /// The granted manifest of a session (its id) or a thread member (`<thread>/<member>`): what it asked for, the sets
     /// it got with their versions and files, and their union (connections, storage, host, harness, toolverse).
     runnables_show / RunnablesShow = "runnables.show", Read, RunnablesShowIn => RunnableGrant;
+    /// The caller's toolsets, and for each tool it does not hold the toolset that a run of it asks the user for. The
+    /// user has no scope: nothing is missing.
+    runnables_scope / RunnablesScope = "runnables.scope", Read, ScopeIn => Scope;
     /// Tokens per agent, day and model from Claude Code's and Codex's own transcripts.
     agents_usage / AgentsUsage = "agents.usage", Read, AgentUsageIn => UsageReport;
     /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the

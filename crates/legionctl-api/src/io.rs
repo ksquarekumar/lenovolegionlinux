@@ -1070,6 +1070,23 @@ pub struct RunnablesShowIn {
     pub target: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ScopeIn {
+    /// The operations and brokered tools (`<server>/<tool>`) to check; none: every public operation.
+    #[serde(default)]
+    pub tools: Vec<String>,
+}
+
+/// The caller's scope: its toolsets, and the tools it does not hold with the toolset that a run
+/// asks the user for.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Scope {
+    /// The toolsets (capability sets) of its grant; the read class is in every scope.
+    pub sets: Vec<String>,
+    /// Tool -> the toolset that holds it; empty: no toolset holds it, so a run of it is refused.
+    pub missing: std::collections::BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionRunIn {
     /// Agent: claude or codex (config session.acp: its ACP adapter).
@@ -2521,6 +2538,9 @@ pub struct AgentToolIn {
     /// False when the tool reports that it failed.
     #[serde(default)]
     pub ok: bool,
+    /// `Skill`: the skill the agent loaded (`legionctl:<name>`); its toolsets join a harness agent's scope.
+    #[serde(default)]
+    pub skill: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

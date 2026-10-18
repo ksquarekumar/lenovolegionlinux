@@ -1801,14 +1801,11 @@ fn gate_message(
     ))
 }
 
-/// The sets that a session (the main agent) requests: those of the config main-agent, and the start's flags.
+/// The sets that a session (the main agent) requests: those of the config main-agent and of its skills (toolsets),
+/// and the start's flags.
 fn main_agent_sets(config: &legionctl_core::config::Config, flags: &[String]) -> Vec<String> {
-    config
-        .agents
-        .configs
-        .get("main-agent")
-        // no config main-agent: it requests nothing; its harness's and languages' sets still come
-        .map_or_else(Vec::new, |c| c.capabilities.clone())
+    // no config main-agent: it requests nothing; its harness's and languages' sets still come
+    legionctl_core::archetypes::requested_sets(config, "main-agent")
         .into_iter()
         .chain(flags.iter().cloned())
         .collect()
@@ -4996,6 +4993,14 @@ impl Engine for Operator {
         })
     }
 
+    fn runnables_scope(
+        &self,
+        ctx: &Ctx,
+        input: legionctl_api::ScopeIn,
+    ) -> Result<legionctl_api::Scope> {
+        crate::scope::scope(&ctx.principal, &input)
+    }
+
     fn ops_list(
         &self,
         _: &Ctx,
@@ -5168,7 +5173,10 @@ impl Engine for Operator {
         crate::thread::observe(&input)
     }
 
-    fn agent_tool(&self, _: &Ctx, input: legionctl_api::AgentToolIn) -> Result<HookReply> {
+    fn agent_tool(&self, ctx: &Ctx, input: legionctl_api::AgentToolIn) -> Result<HookReply> {
+        if let Some(skill) = &input.skill {
+            crate::scope::declare(&ctx.principal, &input.session.0, skill)?;
+        }
         crate::thread::tool(&input)
     }
 

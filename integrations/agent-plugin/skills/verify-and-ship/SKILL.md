@@ -1,6 +1,7 @@
 ---
 name: verify-and-ship
 description: The checks before a legionctl change is committed and merged - test build (profile test-fast), static client, lint, tests, mutation checks, regenerated schema and D-Bus XML, EVIDENCE, commit message, and CI in batches. Use before each checkpoint that changes code, before a merge, and when CI fails.
+toolsets: [code-work, workspace-write]
 user-invocable: true
 ---
 

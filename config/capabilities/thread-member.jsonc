@@ -1,0 +1,8 @@
+// A thread's messages and log: every member of a thread gets it (skill sessions-and-agents for the main agent).
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "thread-member",
+  "version": 1,
+  "description": "The thread operations: messages, acks, declarations, peers and the thread's log.",
+  "toolverse": { "operations": ["thread.*"] }
+}

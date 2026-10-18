@@ -1142,6 +1142,15 @@ fn merge_json(into: &mut serde_json::Value, over: &serde_json::Value) {
 /// and value.
 pub const HEADERS_ENV: &str = "LEGIONCTL_MCP_HEADERS";
 
+/// A bound run's operations join its scope (DESIGN/22 rule 2): the operator gave them to it.
+fn bound_scope(grant: &mut crate::runnables::Grant, tools: &[String]) {
+    for op in tools {
+        if !grant.manifest.toolverse.operations.contains(op) {
+            grant.manifest.toolverse.operations.push(op.clone());
+        }
+    }
+}
+
 /// The environment variable of `legionctl mcp` with the servers it brokers: a JSON object of server name and
 /// `{args, env}`, the `legionctl mcp-proxy` arguments and environment of each.
 pub const BROKER_ENV: &str = "LEGIONCTL_MCP_BROKER";
@@ -1676,7 +1685,7 @@ impl Dossiers {
         let runs = runs(start.inside, start.dir);
         let id = new_id()?;
         // a refused set stops the session before anything is bound (DESIGN-13: at start, not at the first call)
-        let grant = crate::runnables::grant(
+        let mut grant = crate::runnables::grant(
             config,
             &format!("session:{id}"),
             &crate::runnables::Request {
@@ -1687,6 +1696,7 @@ impl Dossiers {
                 parent: start.parent,
             },
         )?;
+        bound_scope(&mut grant, start.tools);
         let place = place_of(start.dir);
         let bound = self.bind(&id, agent, start.dossier, start.steal, Some(&place))?;
         let ws = self.open_workspace(
@@ -1758,7 +1768,7 @@ impl Dossiers {
             .fact_value(&crate::runnables::entity(id), "manifest", &[])?
             .map(serde_json::from_value)
             .transpose()?;
-        let grant = crate::runnables::grant(
+        let mut grant = crate::runnables::grant(
             config,
             &format!("session:{id}"),
             &crate::runnables::Request {
@@ -1769,6 +1779,7 @@ impl Dossiers {
                 parent: before.as_ref().and_then(|b| b.parent.as_deref()),
             },
         )?;
+        bound_scope(&mut grant, tools);
         let place = place_of(&record.workdir);
         let bound = self.bind(id, &record.agent, &record.dossier, false, Some(&place))?;
         self.keep_grant(id, &grant)?;

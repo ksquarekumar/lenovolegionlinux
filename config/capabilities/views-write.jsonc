@@ -1,0 +1,8 @@
+// The app's views: compose, save and place them (skill glanceable-style; the ui-composer).
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "views-write",
+  "version": 1,
+  "description": "The view operations: ask for a view, save, check and place views.",
+  "toolverse": { "operations": ["views.*", "ask"], "skills": ["glanceable-style"] }
+}

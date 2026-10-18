@@ -1,0 +1,8 @@
+// The dossier's workspace (git worktree): open, status, checkpoint, merge, close (skill workspace-practice).
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "workspace-write",
+  "version": 1,
+  "description": "The workspace operations: open, status, checkpoint, merge and close of the dossier's worktree.",
+  "toolverse": { "operations": ["workspace.*"], "skills": ["workspace-practice"] }
+}

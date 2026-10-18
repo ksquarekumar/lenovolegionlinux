@@ -2646,6 +2646,51 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "runnables.scope": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The operations and brokered tools (`<server>/<tool>`) to check; none: every public operation.",
+          "default": []
+        }
+      },
+      "title": "ScopeIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "sets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The toolsets (capability sets) of its grant; the read class is in every scope."
+        },
+        "missing": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tool -> the toolset that holds it; empty: no toolset holds it, so a run of it is refused."
+        }
+      },
+      "required": [
+        "sets",
+        "missing"
+      ],
+      "description": "The caller's scope: its toolsets, and the tools it does not hold with the toolset that a run\nasks the user for.",
+      "title": "Scope",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "agents.usage": {
     "class": "read",
     "internal": false,
@@ -20478,6 +20523,14 @@
           "type": "boolean",
           "description": "False when the tool reports that it failed.",
           "default": false
+        },
+        "skill": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`Skill`: the skill the agent loaded (`legionctl:<name>`); its toolsets join a harness agent's scope.",
+          "default": null
         }
       },
       "required": [

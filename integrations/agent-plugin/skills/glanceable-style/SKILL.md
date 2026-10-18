@@ -1,6 +1,7 @@
 ---
 name: glanceable-style
 description: Structure user-facing output (answers, reports, status, docs, UI and CLI text) so a person gets the point at a glance and opens more detail on demand, and an agent finds and links it with few tokens. Use for every output that a person or a tool reads; use skill ste100-style for the words.
+toolsets: [views-write]
 user-invocable: false
 ---
 

@@ -1,0 +1,21 @@
+{
+  "session_id": "7a7bb3cb-9743-4556-9d16-1dec350d83b7",
+  "transcript_path": "/home/user/.claude/projects/-home-user-project/7a7bb3cb-9743-4556-9d16-1dec350d83b7.jsonl",
+  "cwd": "/home/user/project",
+  "prompt_id": "5425b2c9-2660-4ec0-bece-02548dc09495",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Skill",
+  "tool_input": {
+    "skill": "legionctl:dossier-practice"
+  },
+  "tool_response": {
+    "success": true,
+    "commandName": "legionctl:dossier-practice"
+  },
+  "tool_use_id": "toolu_013bQwHLuzM8W3Q2hmBadfkh",
+  "duration_ms": 4
+}

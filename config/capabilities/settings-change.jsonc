@@ -1,0 +1,9 @@
+// Each operation of the workspace class: your files and settings, or other sessions. The operator still asks for each
+// call of an agent in a sandbox.
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "settings-change",
+  "version": 1,
+  "description": "Operations that change your files and settings or other sessions (hooks, reminders, setup, rules).",
+  "toolverse": { "classes": ["workspace"] }
+}

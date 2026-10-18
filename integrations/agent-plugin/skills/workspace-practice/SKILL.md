@@ -1,6 +1,7 @@
 ---
 name: workspace-practice
 description: How to change code with legionctl - the dossier's workspace (a git worktree), topic workspaces for parallel agents, checkpoint, merge, close, drift, rebase and conflicts. Use before the first code change in a repository, when you start parallel agents on one dossier, and before you commit, merge or close.
+toolsets: [workspace-write]
 user-invocable: true
 ---
 

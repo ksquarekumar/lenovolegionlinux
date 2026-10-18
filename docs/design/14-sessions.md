@@ -197,6 +197,21 @@ Trust fixes (2026-10-17, EV-review-14, plan#todo-198):
   `kernel.build`, `windows.vm.overlay`, `windows.vm.recovery`, `windows.repair`, `windows.restore.apply`) are
   Workspace class: an agent's call asks the user; polkit still asks for the daemon's part.
 
+## Toolsets: the scope of an agent (DESIGN/22 rule 2, built 2026-10-18)
+
+A toolset is a capability set with a `toolverse` (classes, operations, `mcp_tools`). A skill declares the toolsets it
+needs in its frontmatter (`toolsets: [dossier-write]`). The scope of an agent is the read class and its grant: a
+session or a thread member gets the toolsets of its archetype's skills at its start (members also `thread-member`;
+a bound run its `--only` operations); a harness agent (Claude Code or Codex with the user token) starts with the read
+class, and each skill it loads (Claude Code's `Skill` call, through the post-tool hook) adds that skill's toolsets. At
+dispatch, an agent's call of a public operation outside its scope asks the user for the toolset that holds it (a set
+that names the operation or its group first, else one with its class); Allow keeps the toolset in the agent's grant,
+Deny refuses the call. The user, legionctl's internal operations and an unsandboxed agent's hooks have no scope.
+`runnables scope` gives the caller's toolsets and the toolset each missing tool needs; `legionctl_find` and
+`legionctl_describe` mark such tools "not granted: <toolset>, ask". Shipped toolsets: dossier-write,
+workspace-write, code-work, agent-work, thread-member, views-write, session-own, settings-change, machine-change and
+machine-read. Open: brokered tools (`<server>/<tool>`) are not checked at dispatch yet (rule 3's call record does it).
+
 ## Session record
 
 One row per session in the user database (plus child tables), changed only through the event log:

@@ -296,7 +296,16 @@ fn launch(
                     inside: Inside::Host,
                     gpu: false,
                     member: Some((&name, &w.workdir)),
-                    capabilities: &member_sets(&w.fields)?,
+                    // a member is in a thread: its messages are part of its work
+                    capabilities: &[
+                        member_sets(&w.fields)?,
+                        legionctl_core::archetypes::declared_toolsets(
+                            &resolved.config,
+                            w.archetype.as_str(),
+                        ),
+                        vec!["thread-member".into()],
+                    ]
+                    .concat(),
                     parent: Some(&main_sets(&resolved.config)),
                     tools: &[],
                 },
@@ -345,15 +354,11 @@ fn member_sets(fields: &serde_json::Value) -> Result<Vec<String>> {
     }
 }
 
-/// A member's parent: the sets of the config main-agent (the main agent of its thread).
+/// A member's parent: the sets of the config main-agent (the main agent of its thread), with its skills' toolsets.
 // shortcut: a team whose main0 uses another config still has main-agent's sets as the parent; upgrade when a thread
 // keeps its main agent's grant
 fn main_sets(config: &legionctl_core::config::Config) -> Vec<String> {
-    config
-        .agents
-        .configs
-        .get("main-agent")
-        .map_or_else(Vec::new, |c| c.capabilities.clone())
+    legionctl_core::archetypes::requested_sets(config, "main-agent")
 }
 
 /// The acp step of a wake: the member's session (made at its first wake), one ACP prompt with its instructions, the
