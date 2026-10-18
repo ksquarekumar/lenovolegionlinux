@@ -393,8 +393,30 @@ fn usage(body: &[u8]) -> Tokens {
     tokens
 }
 
+/// The usage row of a model call, and its row in the call record (DESIGN/22 rule 3: one record, the gateway's own
+/// cache stays apart).
 fn record(row: &GatewayUsage) {
-    if let Err(e) = Db::open_default().and_then(|db| db.gateway_usage_add(row)) {
+    let outcome = match (row.cached, row.status) {
+        (true, _) => "cached",
+        (false, 200..=299) => "ok",
+        _ => "error",
+    };
+    let written = Db::open_default().and_then(|db| {
+        db.gateway_usage_add(row)?;
+        let ended = legionctl_core::calls::now_ms();
+        let call = legionctl_core::calls::Call {
+            call: &legionctl_core::calls::new_id()?,
+            principal: "gateway",
+            session: "",
+            kind: "model",
+            server: &row.account,
+            name: &row.model,
+            input_hash: "",
+            scope: "",
+        };
+        db.call_add(&call, (ended - row.ms, ended), outcome)
+    });
+    if let Err(e) = written {
         eprintln!("operator: gateway usage not recorded: {e:#}");
     }
 }

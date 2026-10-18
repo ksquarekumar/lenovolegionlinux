@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod agents;
 pub mod archetypes;
 pub mod cache;
+pub mod calls;
 pub mod checks;
 pub mod codegraph;
 pub mod codetests;

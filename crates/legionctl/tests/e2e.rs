@@ -15,6 +15,8 @@ mod keyring;
 mod plain;
 #[path = "common/provider.rs"]
 mod provider;
+#[path = "common/tokens.rs"]
+mod tokens;
 #[path = "common/trust.rs"]
 mod trust;
 
@@ -29,6 +31,7 @@ use common::scratch::Scratch;
 use git::git;
 use hooks::claude_hook;
 use serde_json::{Value, json};
+use tokens::add_session_token;
 
 /// What an agent gets from `legionctl hook <event>` (Claude Code's hook JSON, the fixture session) in `cwd`.
 fn hook_out(op: &Operator, cwd: &Path, event: &str) -> String {
@@ -685,6 +688,119 @@ fn an_unknown_input_field_is_refused_before_the_operation_runs() {
     assert!(
         String::from_utf8_lossy(&after.stdout).contains("| todo-1 | keep me |"),
         "the row stays"
+    );
+}
+
+/// DESIGN/22 rule 3: each run of an agent's operation has a call id and a row in the call record before it runs. The
+/// answer that did not reach the agent comes again for its call id, also after an operator restart, and the change does
+/// not run twice; the id of another call, and a call that has no end (the operator stopped during it), are one
+/// sentence each; a read with a cache time answers from the record.
+#[test]
+fn a_retried_call_gets_its_recorded_result_and_never_runs_twice() {
+    let home = home("calls");
+    let op = operator_in("calls", &home);
+    agent_loads_its_skills(&op, &home, "r1");
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "r1"),
+    ];
+    let set = |value: &str| json!({"entity": "app", "attribute": "width", "value": value});
+    let run = |mcp: &mut Mcp, input: &Value, call: Option<&str>| -> (Vec<String>, bool) {
+        let mut args = json!({"op": "facts.set", "input": input});
+        if let Some(call) = call {
+            args["call_id"] = call.into();
+        }
+        let result = mcp.call(
+            "tools/call",
+            &json!({"name": "legionctl_run", "arguments": args}),
+        );
+        let texts = result["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["text"].as_str().unwrap().to_string())
+            .collect();
+        (texts, result["isError"] == true)
+    };
+    let mut mcp = Mcp::start(&op, &env);
+    let (first, failed) = run(&mut mcp, &set("0.3"), None);
+    assert!(!failed, "{first:?}");
+    let id = first[1]
+        .strip_prefix("call ")
+        .expect("the answer's last line names its call")
+        .to_string();
+    drop(mcp);
+    drop(op);
+
+    let op = operator_in("calls2", &home);
+    let mut mcp = Mcp::start(&op, &env);
+    let (again, failed) = run(&mut mcp, &set("0.3"), Some(&id));
+    assert!(!failed && again == first, "the recorded answer: {again:?}");
+    let history: Value =
+        serde_json::from_str(&op.ok(&["facts", "history", "app", "--json"])).unwrap();
+    assert_eq!(
+        history.as_array().unwrap().len(),
+        1,
+        "the change ran once: {history}"
+    );
+    let (other, failed) = run(&mut mcp, &set("0.4"), Some(&id));
+    assert!(failed, "{other:?}");
+    assert!(
+        other[0].contains(&format!(
+            "call id {id} is of another call: a retry sends the same operation and input"
+        )),
+        "{other:?}"
+    );
+
+    // the operator stopped during a call: its row has no end
+    let cut = Command::new("python3")
+        .args([
+            "-c",
+            "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
+             c.execute(\"INSERT INTO calls (call, principal, session, kind, server, name, input_hash, scope, started) \
+                        SELECT 'cut', principal, session, kind, server, name, input_hash, scope, started FROM calls \
+                        WHERE call = ?\", (sys.argv[2],)); c.commit()",
+        ])
+        .arg(home.join(".local/state/legionctl/operator.db"))
+        .arg(&id)
+        .status()
+        .unwrap();
+    assert!(cut.success());
+    let (open, failed) = run(&mut mcp, &set("0.3"), Some("cut"));
+    assert!(
+        failed
+            && open[0].contains("call cut of facts.set started at ")
+            && open[0].contains("legionctl does not run it twice: check what it did"),
+        "{open:?}"
+    );
+    let history: Value =
+        serde_json::from_str(&op.ok(&["facts", "history", "app", "--json"])).unwrap();
+    assert_eq!(history.as_array().unwrap().len(), 1, "{history}");
+
+    // ops.list may be answered from the record for 300 s
+    for _ in 0..2 {
+        let (_, failed) = mcp.run("ops.list", &json!({}));
+        assert!(!failed);
+    }
+    let calls: Value =
+        serde_json::from_str(&op.ok(&["tools", "calls", "--kind", "op", "--json"])).unwrap();
+    let rows: Vec<(&str, &str)> = calls["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["session"] == "r1")
+        .map(|c| (c["tool"].as_str().unwrap(), c["outcome"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("dossier.active", "ok"),
+            ("facts.set", "ok"),
+            ("facts.set", "running"),
+            ("ops.list", "ok"),
+            ("ops.list", "cached")
+        ],
+        "{calls}"
     );
 }
 
@@ -2964,6 +3080,7 @@ fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
     use rmcp::model::CallToolRequestParams;
 
     let (op, home) = operator("proxy");
+    agent_loads_its_skills(&op, &home, "s-proxy");
     let exe = env!("CARGO_BIN_EXE_legionctl");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (tools, load, doctor) = runtime.block_on(async {
@@ -3018,7 +3135,7 @@ fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
     let calls = op.run(
         &home,
         &[("HOME", home.to_str().unwrap())],
-        &["tools", "calls", "--json"],
+        &["tools", "calls", "--kind", "tool", "--json"],
         "",
     );
     let calls: Value = serde_json::from_slice::<Value>(&calls.stdout).unwrap()["items"].clone();
@@ -3053,6 +3170,7 @@ fn the_proxy_reaches_a_remote_server_with_its_header() {
     use rmcp::model::CallToolRequestParams;
 
     let (op, home) = operator("remote");
+    agent_loads_its_skills(&op, &home, "s-remote");
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-remote-mcp.py");
     // the stand-in picks its own port and says which: listening by then, and no race for the port
@@ -3107,7 +3225,7 @@ fn the_proxy_reaches_a_remote_server_with_its_header() {
     let calls = op.run(
         &home,
         &[("HOME", home.to_str().unwrap())],
-        &["tools", "calls", "--json"],
+        &["tools", "calls", "--kind", "tool", "--json"],
         "",
     );
     let calls: Value = serde_json::from_slice::<Value>(&calls.stdout).unwrap()["items"].clone();
@@ -3124,6 +3242,7 @@ fn the_proxy_reuses_a_cached_result_until_the_working_copy_changes() {
     use rmcp::ServiceExt;
 
     let (op, home) = operator("cache");
+    agent_loads_its_skills(&op, &home, "s-cache");
     let repo = repository(&home);
     let exe = env!("CARGO_BIN_EXE_legionctl");
     let results = tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -3162,7 +3281,7 @@ fn the_proxy_reuses_a_cached_result_until_the_working_copy_changes() {
     let calls = op.run(
         &home,
         &[("HOME", home.to_str().unwrap())],
-        &["tools", "calls", "--json"],
+        &["tools", "calls", "--kind", "tool", "--json"],
         "",
     );
     let outcomes: Vec<String> = serde_json::from_slice::<Value>(&calls.stdout).unwrap()["items"]
@@ -3219,7 +3338,8 @@ fn tool_cache_entries_belong_to_a_session_and_fit_the_limit() {
                     .unwrap();
             agent.peer().call_tool(hooks_list()).await.unwrap();
         });
-        let calls: Value = serde_json::from_str(&op.ok(&["tools", "calls", "--json"])).unwrap();
+        let calls: Value =
+            serde_json::from_str(&op.ok(&["tools", "calls", "--kind", "tool", "--json"])).unwrap();
         calls["items"].as_array().unwrap().last().unwrap()["outcome"]
             .as_str()
             .unwrap()
@@ -3274,22 +3394,23 @@ fn tool_cache_entries_belong_to_a_session_and_fit_the_limit() {
     assert_eq!(stats()["entries"], 0);
 }
 
-/// A session's token in the test operator's database, as `session start` issues it (only its hash is kept).
-fn add_session_token(home: &Path, token: &str, session: &str) {
-    let added = Command::new("python3")
-        .args([
-            "-c",
-            "import hashlib, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
-             c.execute('INSERT INTO tokens VALUES (?, ?, 0)', \
-             (hashlib.blake2b(sys.argv[2].encode(), digest_size=32).hexdigest(), sys.argv[3])); \
-             c.execute(\"INSERT INTO sessions (id, agent, dossier, workdir, started) VALUES (?, 'probe', '', '', 0)\", \
-             (sys.argv[3],)); c.commit()",
-        ])
-        .arg(home.join(".local/state/legionctl/operator.db"))
-        .args([token, session])
-        .status()
-        .unwrap();
-    assert!(added.success());
+/// The agent of `session` makes its first call, so it loads the skills of its work (their toolsets, among them the
+/// brokered MCP tools, are its scope).
+fn agent_loads_its_skills(op: &Operator, home: &Path, session: &str) {
+    let first = op.run(
+        home,
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", session),
+        ],
+        &["dossier", "active"],
+        "",
+    );
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
 }
 
 /// A git repository with tag v1: a server that notes the network it sees, then serves legionctl's own MCP tools;
@@ -3380,6 +3501,54 @@ fn session_mcp(op: &Operator, home: &Path, repo: &Path) -> (String, Value) {
     (id, config)
 }
 
+/// The call record has the two calls of the remote server of session `id`, and no third for the retry.
+fn two_calls_and_no_third_for_the_retry(op: &Operator, id: &str) {
+    let calls: Value =
+        serde_json::from_str(&op.ok(&["tools", "calls", "--kind", "tool", "--json"])).unwrap();
+    let logged: Vec<(&str, &str, &str, &str)> = calls["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["session"].as_str().unwrap(),
+                c["server"].as_str().unwrap(),
+                c["tool"].as_str().unwrap(),
+                c["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        logged,
+        [(id, "remote", "docs", "ok"), (id, "remote", "docs", "ok")],
+        "two calls of the server, and no third for the retry"
+    );
+}
+
+/// A brokered call's answer ends with its call id; a retry with it gets the recorded answer, and the server is not
+/// called again.
+fn a_brokered_retry_gets_the_recorded_answer(mcp: &mut Mcp) {
+    let mut docs = |call: Option<&str>| {
+        let mut args = json!({"op": "remote/docs", "input": {"q": "fan"}});
+        if let Some(call) = call {
+            args["call_id"] = call.into();
+        }
+        mcp.call(
+            "tools/call",
+            &json!({"name": "legionctl_run", "arguments": args}),
+        )["content"]
+            .clone()
+    };
+    let first = docs(None);
+    let call = first[1]["text"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("call ")
+        .unwrap()
+        .to_string();
+    assert_eq!(docs(Some(&call)), first, "the recorded answer");
+}
+
 /// DESIGN/22 rule 1 with B-1 (EV-review-14): a session's only MCP server is legionctl's, which brokers each
 /// configured server: the agent finds, describes and runs a remote server's allowed tool through the three tools, the
 /// proxy logs the call, and the keyring header reaches the server but never a command line (the exec sensor records
@@ -3464,26 +3633,13 @@ fn a_session_runs_a_brokered_servers_tool_through_legionctls_three_tools() {
         ran.contains("'q': 'fan'") && ran.ends_with("key=HEADER_SECRET_VALUE"),
         "the input and the header reach the server: {ran}"
     );
+    a_brokered_retry_gets_the_recorded_answer(&mut mcp);
     let (refused, failed) = mcp.tool("legionctl_run", &json!({"op": "remote/admin"}));
     assert!(
         failed && refused.contains("No operation remote/admin. The closest: remote/docs"),
         "{refused}"
     );
-    let calls: Value = serde_json::from_str(&op.ok(&["tools", "calls", "--json"])).unwrap();
-    let logged: Vec<(&str, &str, &str, &str)> = calls["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| {
-            (
-                c["session"].as_str().unwrap(),
-                c["server"].as_str().unwrap(),
-                c["tool"].as_str().unwrap(),
-                c["outcome"].as_str().unwrap(),
-            )
-        })
-        .collect();
-    assert_eq!(logged, [(id.as_str(), "remote", "docs", "ok")]);
+    two_calls_and_no_third_for_the_retry(&op, &id);
     drop(server);
 }
 
@@ -7504,7 +7660,7 @@ fn the_processes_of_a_test_end_when_it_panics_and_when_its_binary_is_killed() {
 /// todo-122, as on 2026-10-15: the user's operator.db at v10 while an operator of another build runs (a stand-in that
 /// holds `operator.lock` with that build's fingerprint). An operator of this build does not start, and the file stays
 /// at v10 without a backup. After the other operator stopped, this one starts: it keeps the v10 file in
-/// `operator.db.v10.bak`, then takes the database to v15 with its rows.
+/// `operator.db.v10.bak`, then takes the database to v16 with its rows (the MCP tool call log into the call record).
 #[test]
 fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_database() {
     let home = home("holder");
@@ -7528,6 +7684,9 @@ fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_data
                 attempts INTEGER NOT NULL DEFAULT 1, created INTEGER NOT NULL, updated INTEGER NOT NULL, result TEXT,
                 error TEXT);
              INSERT INTO events (ts, actor, kind, payload) VALUES (strftime('%s'), 'cli', 'kept.v10', '{}');
+             INSERT INTO events (ts, actor, kind, payload) VALUES (strftime('%s'), 'mcp-proxy', 'internal.tools.record',
+                '{\"input\": {\"session\": \"s9\", \"server\": \"probe\", \"tool\": \"load\", \"args_hash\": \"ab\",
+                  \"ms\": 12, \"bytes\": 34, \"outcome\": \"ok\"}}');
              PRAGMA user_version = 10;",
         )
         .unwrap();
@@ -7578,13 +7737,44 @@ fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_data
     let op = operator_in("holder", &home);
     let events = op.ok(&["events", "--json"]);
     assert!(events.contains("kept.v10"), "{events}");
-    assert_eq!(version(&db), 15);
+    assert_eq!(version(&db), 16);
     assert_eq!(version(&bak), 10, "the backup is the v10 file");
+    the_old_tool_log_is_in_the_call_record(&op);
     let kept: String = rusqlite::Connection::open(&bak)
         .unwrap()
-        .query_row("SELECT kind FROM events", [], |r| r.get(0))
+        .query_row("SELECT kind FROM events ORDER BY id LIMIT 1", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(kept, "kept.v10");
+}
+
+/// The old MCP tool call log (an `internal.tools.record` event of v10) is in the call record (DESIGN/22 rule 3).
+fn the_old_tool_log_is_in_the_call_record(op: &Operator) {
+    let calls: Value =
+        serde_json::from_str(&op.ok(&["tools", "calls", "--kind", "tool", "--json"])).unwrap();
+    let call = &calls["items"][0];
+    assert_eq!(
+        [
+            &call["call_id"],
+            &call["session"],
+            &call["server"],
+            &call["tool"],
+            &call["outcome"],
+            &call["ms"],
+            &call["bytes"]
+        ],
+        [
+            &json!("event-2"),
+            &json!("s9"),
+            &json!("probe"),
+            &json!("load"),
+            &json!("ok"),
+            &json!(12),
+            &json!(34)
+        ],
+        "{calls}"
+    );
 }
 
 /// The rows of `query` on the SQLite file `db` as JSON arrays (python3's sqlite3: what is on disk).

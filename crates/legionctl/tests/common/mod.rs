@@ -139,11 +139,12 @@ impl Operator {
     }
 
     /// `legionctl` with only `XDG_RUNTIME_DIR` (to find the socket), `PATH`, `env`, the working directory `cwd` and
-    /// `stdin` as its input. An agent session (`LEGIONCTL_SESSION` in `env`) loads the skills of its work at its first
-    /// call, as an agent does when its reminders name them, so their toolsets are its scope (DESIGN/22 rule 2);
-    /// [`Operator::run_bare`] is an agent that loaded none.
+    /// `stdin` as its input. An agent session (`LEGIONCTL_SESSION` or `CLAUDE_CODE_SESSION_ID` in `env`) loads the
+    /// skills of its work at its first call, as an agent does when its reminders name them, so their toolsets are its
+    /// scope (DESIGN/22 rule 2); [`Operator::run_bare`] is an agent that loaded none.
     pub fn run(&self, cwd: &Path, env: &[(&str, &str)], args: &[&str], stdin: &str) -> Output {
-        if let Some((_, session)) = env.iter().find(|(k, _)| *k == "LEGIONCTL_SESSION") {
+        let session_vars = ["LEGIONCTL_SESSION", "CLAUDE_CODE_SESSION_ID"];
+        if let Some((_, session)) = env.iter().find(|(k, _)| session_vars.contains(k)) {
             // the grant is in the HOME's operator database: an operator that starts again on it keeps it
             let home = env.iter().find(|(k, _)| *k == "HOME").map_or_else(
                 || self.runtime.display().to_string(),
@@ -154,7 +155,7 @@ impl Operator {
                 let rest: Vec<(&str, &str)> = env
                     .iter()
                     .copied()
-                    .filter(|(k, _)| *k != "LEGIONCTL_SESSION")
+                    .filter(|(k, _)| !session_vars.contains(k))
                     .collect();
                 // a test of a broken config or a busy database sees that in its own call: the next call loads again
                 if self.skills_loaded(cwd, &rest, session, WORK_SKILLS) {

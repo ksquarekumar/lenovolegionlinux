@@ -1,7 +1,7 @@
 ---
 name: tool-lifecycle
 description: How every legionctl command runs (operator, permission classes, events, MCP tools), the order of a task, and an index of the command groups with the skill that owns each. Use when you do not know which legionctl command fits a task, or before you use a command group for the first time.
-toolsets: [machine-read, session-own]
+toolsets: [machine-read, session-own, mcp-tools]
 user-invocable: true
 ---
 
@@ -31,6 +31,8 @@ user-invocable: true
 9a. Your scope is the read class and the toolsets of the skills you loaded (each skill's `toolsets:`). A call outside
    it asks the user for the toolset that holds it; `legionctl_find` marks such a row "not granted: <toolset>, ask".
    Load the skill of your task first, and you get its toolsets without a question.
+9b. Each `legionctl_run` answer ends with `call <id>`. When an answer does not reach you (a dropped stream, a
+   restart), run it again with `call_id: <id>`: you get the recorded answer, and the change does not run twice.
 10. `--json` prints the operation's JSON output. `--dry-run`, where a command has it, shows the plan and changes nothing.
 11. Read `legionctl <group> --help` before you use a flag. Do not guess.
 12. Check `legionctl load` before builds, test suites and parallel runs. If the machine is busy, run less.

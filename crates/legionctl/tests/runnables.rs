@@ -314,7 +314,9 @@ fn a_start_that_requests_sets_it_may_not_have_is_refused_with_each_reason() {
             "code-work",
             "agent-work",
             "thread-member",
-            "views-write"
+            "views-write",
+            "session-own",
+            "mcp-tools"
         ],
         "{grant:#}"
     );

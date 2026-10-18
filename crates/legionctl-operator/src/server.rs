@@ -18,7 +18,9 @@ use legionctl_api::{
 use legionctl_core::db::Db;
 use serde_json::{Value, json};
 
+use crate::calls::{self, Start};
 use crate::engine::Operator;
+use legionctl_api::CALL_HEADER;
 
 /// The listening socket from systemd socket activation; there is no other way to start the API.
 pub fn activated_listener() -> Result<tokio::net::UnixListener> {
@@ -363,16 +365,23 @@ async fn call(
     Path(name): Path<String>,
     headers: HeaderMap,
     Json(input): Json<Value>,
-) -> (StatusCode, [(&'static str, &'static str); 1], Json<Value>) {
-    let (status, body) = run(operator, name, &headers, input).await;
-    (status, [(API_HEADER, api_fingerprint())], body)
+) -> (StatusCode, HeaderMap, Json<Value>) {
+    let mut reply = HeaderMap::new();
+    reply.insert(
+        API_HEADER,
+        axum::http::HeaderValue::from_static(api_fingerprint()),
+    );
+    let (status, body) = Box::pin(run(operator, name, &headers, input, &mut reply)).await;
+    (status, reply, body)
 }
 
+/// Run one call; a call the record keeps puts its call id into the `reply` headers.
 async fn run(
     operator: Arc<Operator>,
     name: String,
     headers: &HeaderMap,
     mut input: Value,
+    reply: &mut HeaderMap,
 ) -> (StatusCode, Json<Value>) {
     let principal = match principal(headers) {
         Ok(p) => p,
@@ -382,24 +391,16 @@ async fn run(
         }
     };
     let op = OPS.iter().find(|op| op.name == name);
+    let mut recording: Option<calls::OpCall> = None;
     if let Some(op) = op {
         if let Err(mut e) = known_fields(op, &input) {
             e.op.clone_from(&name);
             return refusal(&e);
         }
         own_session(op, &principal, &mut input);
-        // the user who just allowed the toolset for this call is not asked again for the same call
-        let actor = headers.get(ACTOR_HEADER).and_then(|v| v.to_str().ok());
-        let asked = match in_scope(op, &principal, actor, &input).await {
-            Ok(asked) => asked,
-            Err(mut e) => {
-                e.op.clone_from(&name);
-                return refusal(&e);
-            }
-        };
-        if !asked && let Err(mut e) = approved(op, &principal, &input).await {
-            e.op.clone_from(&name);
-            return refusal(&e);
+        match admit(op, &principal, headers, &input, reply).await {
+            Ok(call) => recording = call,
+            Err(answer) => return answer,
         }
     }
     let ctx = Ctx {
@@ -410,13 +411,16 @@ async fn run(
             .to_string(),
         principal,
     };
-    let audit = op.filter(|op| op.class != Class::Read).map(|op| {
-        (
-            ctx.actor.clone(),
-            ctx.principal.clone(),
-            redacted(op, &input),
-        )
-    });
+    // the call record is the record of its own begin and end
+    let audit = op
+        .filter(|op| op.class != Class::Read && !op.name.starts_with("internal.calls."))
+        .map(|op| {
+            (
+                ctx.actor.clone(),
+                ctx.principal.clone(),
+                redacted(op, &input),
+            )
+        });
     let started = std::time::Instant::now();
     // engine methods read files and run programs; keep them off the async threads
     let call = name.clone();
@@ -449,6 +453,9 @@ async fn run(
             op: name.clone(),
         }),
     };
+    if let Some(call) = &recording {
+        calls::end_op(call, &answer);
+    }
     let code = answer.as_ref().err().map(|e| e.code);
     count(op.map_or("unknown", |op| op.name), code, ms);
     if let Some((actor, principal, input)) = audit {
@@ -461,6 +468,61 @@ async fn run(
         Ok(output) if name == op::ResourcesAct::NAME => routed(operator, headers, output).await,
         Ok(output) => (StatusCode::OK, Json(output)),
         Err(error) => refusal(&error),
+    }
+}
+
+/// What runs before an operation: its start in the call record (a retry of an ended call gets the recorded answer),
+/// then the toolset scope and the approval of its class. `Ok`: run it (and end its row, when the record keeps it);
+/// `Err`: the answer to give instead.
+async fn admit(
+    op: &OpInfo,
+    principal: &Principal,
+    headers: &HeaderMap,
+    input: &Value,
+    reply: &mut HeaderMap,
+) -> Result<Option<calls::OpCall>, (StatusCode, Json<Value>)> {
+    let named = |mut e: ApiError| {
+        e.op = op.name.to_string();
+        e
+    };
+    let given = headers.get(CALL_HEADER).and_then(|v| v.to_str().ok());
+    let recording = match calls::begin_op(op, principal, given, input) {
+        Ok(None) => None,
+        Ok(Some(Start::Answer(id, recorded))) => {
+            tag(reply, &id);
+            return Err(match recorded {
+                Ok(output) => (StatusCode::OK, Json(output)),
+                Err(e) => refusal(&e),
+            });
+        }
+        Ok(Some(Start::Run(call))) => {
+            tag(reply, &call.id);
+            Some(call)
+        }
+        Err(e) => return Err(refusal(&named(e))),
+    };
+    let refused = |e: ApiError| {
+        let e = named(e);
+        if let Some(call) = &recording {
+            calls::end_op(call, &Err(e.clone()));
+        }
+        refusal(&e)
+    };
+    // the user who just allowed the toolset for this call is not asked again for the same call
+    let actor = headers.get(ACTOR_HEADER).and_then(|v| v.to_str().ok());
+    let asked = in_scope(op, principal, actor, input)
+        .await
+        .map_err(refused)?;
+    if !asked {
+        approved(op, principal, input).await.map_err(refused)?;
+    }
+    Ok(recording)
+}
+
+/// The call id of a recorded call, as the reply's header.
+fn tag(reply: &mut HeaderMap, id: &str) {
+    if let Ok(value) = axum::http::HeaderValue::from_str(id) {
+        reply.insert(CALL_HEADER, value);
     }
 }
 
@@ -478,11 +540,15 @@ async fn routed(
     if !acted.run {
         return (StatusCode::OK, Json(json!(acted)));
     }
+    // the routed operation is a call of its own: it does not take the route's call id
+    let mut inner = headers.clone();
+    inner.remove(CALL_HEADER);
     let (status, Json(output)) = Box::pin(run(
         operator,
         acted.op.clone(),
-        headers,
+        &inner,
         acted.input.clone(),
+        &mut HeaderMap::new(),
     ))
     .await;
     if status != StatusCode::OK {

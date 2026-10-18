@@ -210,7 +210,25 @@ Deny refuses the call. The user, legionctl's internal operations and an unsandbo
 `runnables scope` gives the caller's toolsets and the toolset each missing tool needs; `legionctl_find` and
 `legionctl_describe` mark such tools "not granted: <toolset>, ask". Shipped toolsets: dossier-write,
 workspace-write, code-work, agent-work, thread-member, views-write, session-own, settings-change, machine-change and
-machine-read. Open: brokered tools (`<server>/<tool>`) are not checked at dispatch yet (rule 3's call record does it).
+machine-read, and mcp-tools (`*/*`: every brokered tool, each within its server's allowlist). A brokered tool
+(`<server>/<tool>`) is checked when its proxy starts the call in the call record.
+
+## The call record (DESIGN/22 rule 3, built 2026-10-18)
+
+operator.db v16 has `calls`: one row per run of an agent's public operation (and of the user's changes), per
+brokered MCP tool call (`legionctl mcp-proxy`: `internal.calls.begin` before it forwards, `internal.calls.end`) and per
+model call of the gateway (written with its usage row; the gateway's cache stays its own). A row is written before the
+call runs (synchronous FULL: control state), with the call id, principal, session, kind (op, tool, model), server,
+name, a BLAKE2b-128 hash of the input, the caller's toolsets, start, end, outcome, size and, for a change or a cached
+read, the answer. The id goes back in `x-legionctl-call` (the socket) and as the last line `call <id>` of a
+`legionctl_run` answer; a caller that retries with it (`call_id`) gets the recorded answer, and nothing runs twice; the
+id of another call (other operation or input) and a call with no end (it runs, or the operator stopped during it) are
+one sentence each. An operation's cache time is in the registry (`Read(300)` for `ops.list`; only reads): an agent's
+same call with the same input and toolsets within that time answers from the record (outcome `cached`).
+`legionctl tools calls [--kind op|tool|model] [--session]` lists the record; the step to v16 moved the rows of the
+earlier MCP tool log (`internal.tools.record` events) into it. Not done: a setting of the DESIGN-20 registry that
+overrides a cache time; the gateway row names no caller.
+
 
 ## Session record
 

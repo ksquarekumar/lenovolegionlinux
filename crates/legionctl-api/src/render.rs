@@ -1696,9 +1696,10 @@ impl Render for Vec<ToolCallRow> {
             .map(|r| {
                 let c = &r.call;
                 format!(
-                    "{:>6} {} {:<10} {}.{:<24} {:<8} {:>6} ms {:>8} B",
+                    "{:>6} {} {:<5} {:<10} {}.{:<24} {:<8} {:>6} ms {:>8} B",
                     r.id,
-                    legionctl_core::views::local(r.at),
+                    legionctl_core::views::local(r.at / 1000),
+                    r.kind,
                     &c.session.0[..c.session.0.len().min(8)],
                     c.server,
                     c.tool,
@@ -1709,6 +1710,12 @@ impl Render for Vec<ToolCallRow> {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+impl Render for crate::CallStart {
+    fn text(&self) -> String {
+        format!("call {}", self.call)
     }
 }
 

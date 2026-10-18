@@ -38,6 +38,16 @@ impl Kill {
 // killed with SIGKILL (the drop does not run). The stray check (`make stray-tests`) finds those.
 pub fn own(cmd: &mut Command) -> &mut Command {
     let parent = rustix::process::getpid();
+    // the agent session of the shell that runs the tests is not the test's: only one that the test set is kept
+    for var in [
+        "CLAUDE_CODE_SESSION_ID",
+        "LEGIONCTL_SESSION",
+        "LEGIONCTL_TOKEN",
+    ] {
+        if !cmd.get_envs().any(|(k, _)| k == var) {
+            cmd.env_remove(var);
+        }
+    }
     cmd.process_group(0);
     // SAFETY: the closure makes only async-signal-safe system calls (prctl, getppid).
     unsafe {

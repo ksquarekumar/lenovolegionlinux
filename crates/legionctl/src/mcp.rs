@@ -374,44 +374,60 @@ impl Legion {
         ))
     }
 
-    async fn run(&self, args: &Value) -> Result<CallToolResult, ApiError> {
+    /// Run an operation or a brokered tool as the call `call_id` (a retry gets the recorded result) or as a new call:
+    /// the answer, and the call id of the record.
+    async fn run(&self, args: &Value) -> (Result<CallToolResult, ApiError>, Option<String>) {
         let name = args["op"].as_str().unwrap_or_default();
+        let given = args["call_id"].as_str();
         let mut input = match &args["input"] {
             Value::Null => json!({}),
             input => input.clone(),
         };
         if let Some((b, t)) = self.brokered_tool(name).await {
             let Value::Object(arguments) = input else {
-                return Err(failed(
+                let error = failed(
                     Code::InvalidInput,
                     format!("{name}: input must be an object"),
                     name,
-                ));
+                );
+                return (Err(error), None);
             };
-            let request = CallToolRequestParams::new(t.name.clone()).with_arguments(arguments);
-            return b
+            // the proxy records the call under this id (rmcp's _meta of the call)
+            let id = match given.map_or_else(legionctl_core::calls::new_id, |g| Ok(g.to_string())) {
+                Ok(id) => id,
+                Err(e) => return (Err(failed(Code::Internal, format!("{e:#}"), name)), None),
+            };
+            let mut meta = rmcp::model::JsonObject::new();
+            meta.insert(crate::proxy::CALL_META.into(), Value::String(id.clone()));
+            let mut request = CallToolRequestParams::new(t.name.clone()).with_arguments(arguments);
+            request.meta = Some(rmcp::model::RequestMetaObject(rmcp::model::MetaObject(
+                meta,
+            )));
+            let answer = b
                 .proxy
                 .peer()
                 .call_tool(request)
                 .await
                 .map_err(|e| failed(Code::Failed, format!("{e:#}"), name));
+            return (answer, Some(id));
         }
         let Some(op) = self.op(name) else {
-            return Err(self.unknown(name).await);
+            return (Err(self.unknown(name).await), None);
         };
         let fail = |e: anyhow::Error| {
             e.downcast_ref::<ApiError>()
                 .cloned()
                 .unwrap_or_else(|| failed(legionctl_api::code_of(&e), format!("{e:#}"), op.name))
         };
-        fill_client_fields(op, &mut input, false).map_err(fail)?;
-        let output = self
-            .client
-            .call_value(op.name, &input)
-            .await
-            .map_err(fail)?;
-        let text = serde_json::to_string_pretty(&output).map_err(|e| fail(e.into()))?;
-        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+        if let Err(e) = fill_client_fields(op, &mut input, false) {
+            return (Err(fail(e)), None);
+        }
+        let (output, id) = self.client.call_recorded(op.name, &input, given).await;
+        let answer = output
+            .and_then(|o| Ok(serde_json::to_string_pretty(&o)?))
+            .map(|text| CallToolResult::success(vec![ContentBlock::text(text)]))
+            .map_err(fail);
+        (answer, id)
     }
 }
 
@@ -450,7 +466,8 @@ impl ServerHandler for Legion {
                  {\"error\": {code, message, op}}. A workspace or machine operation waits for the user's approval.",
                 json!({"type": "object", "properties": {
                     "op": op,
-                    "input": {"type": "object", "description": "The input; default {}."}
+                    "input": {"type": "object", "description": "The input; default {}."},
+                    "call_id": {"type": "string", "description": "The call id of an answer you did not get (its last line: call <id>): the recorded result comes again, and nothing runs twice."}
                 }, "required": ["op"]}),
             ),
         ];
@@ -470,7 +487,14 @@ impl ServerHandler for Legion {
                 .describe(args["op"].as_str().unwrap_or_default())
                 .await
                 .map(text),
-            "legionctl_run" => self.run(&args).await,
+            "legionctl_run" => {
+                let (answer, id) = self.run(&args).await;
+                // the call id goes with the answer: a retry of a dropped answer sends it as call_id
+                let answer = answer.unwrap_or_else(|e| {
+                    CallToolResult::error(vec![ContentBlock::text(json!({"error": e}).to_string())])
+                });
+                return Ok(with_call(answer, id).into());
+            }
             other => {
                 return Err(ErrorData::invalid_params(
                     format!("unknown tool {other}"),
@@ -485,6 +509,16 @@ impl ServerHandler for Legion {
             })
             .into())
     }
+}
+
+/// The answer with one more line: `call <id>`.
+fn with_call(mut answer: CallToolResult, id: Option<String>) -> CallToolResult {
+    if let Some(id) = id {
+        answer
+            .content
+            .push(ContentBlock::text(format!("call {id}")));
+    }
+    answer
 }
 
 /// Serve the public operations, or only those named in `only`, and broker the servers of [`BROKER_ENV`].

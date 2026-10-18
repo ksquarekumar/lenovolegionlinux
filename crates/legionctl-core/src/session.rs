@@ -395,7 +395,11 @@ fn session_files(
     Ok(files)
 }
 
-fn new_id() -> Result<String> {
+/// A new random id (a session's, a call's): a uuid from the kernel.
+///
+/// # Errors
+/// The kernel's uuid file cannot be read.
+pub fn new_id() -> Result<String> {
     Ok(std::fs::read_to_string("/proc/sys/kernel/random/uuid")
         .context("reading a random uuid")?
         .trim()

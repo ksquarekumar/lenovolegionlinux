@@ -101,6 +101,9 @@ pub fn session_from_env() -> Option<String> {
 /// HTTP header with which a client that runs for an agent (its MCP server, its hooks, the CLI in its shell) names
 /// that agent's session; the user token then acts as [`Principal::Agent`].
 pub const AGENT_HEADER: &str = "x-legionctl-agent";
+/// The HTTP header with which a caller retries a call by its id, and the operator answers with the id of a call it
+/// keeps in its call record.
+pub const CALL_HEADER: &str = "x-legionctl-call";
 /// The fingerprint of the operation registry a client and the operator were built with ([`api_fingerprint`]).
 pub const API_HEADER: &str = "x-legionctl-api";
 
@@ -157,6 +160,9 @@ pub struct OpInfo {
     /// The doc comment as one paragraph; see [`OpInfo::summary`].
     pub help: &'static str,
     pub class: Class,
+    /// Seconds an agent's call may be answered from the call record with the same input and scope (`Read(60)`);
+    /// 0: never.
+    pub cache_s: u32,
     /// JSON schema of the input, with every subschema inline.
     pub input: fn() -> Value,
     /// JSON schema of the output, the same way.
@@ -385,16 +391,20 @@ impl DispatchError {
 macro_rules! operations {
     ($(
         $(#[doc = $doc:literal])+
-        $method:ident / $Marker:ident = $name:literal, $class:ident, $in:ty => $out:ty;
+        $method:ident / $Marker:ident = $name:literal, $class:ident $(($cache:literal))?, $in:ty => $out:ty;
     )*) => {
         /// Every operation, in help order.
         pub const OPS: &[OpInfo] = &[$(OpInfo {
             name: $name,
             help: concat!($($doc),+),
             class: Class::$class,
+            cache_s: 0 $(+ $cache)?,
             input: schema_of::<$in>,
             output: schema_of::<$out>,
         }),*];
+
+        // a cache time is for a read only (DESIGN/22 rule 3, lead decision 7)
+        $($(const _: () = assert!(matches!(Class::$class, Class::Read) && $cache > 0, $name);)?)*
 
         /// What `legionctl-operator` implements: one method per operation.
         pub trait Engine: Sync {
@@ -715,8 +725,11 @@ operations! {
     packages_list / PackagesList = "packages.list", Read, Empty => Packages;
     /// Fetch a package into the store (network, scratch home) and pin its content hash.
     packages_fetch / PackagesFetch = "packages.fetch", Workspace, PackageFetchIn => Manifest;
-    /// Log one MCP tool call (legionctl mcp-proxy calls this for each call it forwards or refuses).
-    tools_record / ToolsRecord = "internal.tools.record", Session, ToolCall => Empty;
+    /// Start a brokered MCP tool call (legionctl mcp-proxy, before it forwards or refuses it): its toolset is checked
+    /// and its row is in the call record; a call id that ended before gets its recorded result.
+    calls_begin / CallsBegin = "internal.calls.begin", Session, CallBeginIn => CallStart;
+    /// End a brokered MCP tool call in the call record.
+    calls_end / CallsEnd = "internal.calls.end", Session, CallEndIn => Empty;
     /// Calls through the model gateway: account, model, tokens in and out, replayed or not, status, duration.
     gateway_usage / GatewayUsageOp = "gateway.usage", Read, GatewayUsageIn => Page<GatewayUsage>;
     /// A reusable MCP tool result (legionctl mcp-proxy asks before it calls a tool its config lets it cache).
@@ -732,7 +745,8 @@ operations! {
     jobs_list / JobsList = "jobs.list", Read, PageIn => Page<Job>;
     /// One job, with its result or why it failed.
     jobs_show / JobsShow = "jobs.show", Read, JobIdIn => Job;
-    /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.
+    /// The call record, oldest first: each run of an agent's operation, each brokered MCP tool call (through
+    /// legionctl mcp-proxy) and each model call of the gateway, with its call id, outcome, time and size.
     tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => Page<ToolCallRow>;
     /// A repository's Dockerfiles as a services description (build, entrypoints, ports) and a build-cache description
     /// (base images, lockfiles); with `--write`, into the repository's `.legionctl/`.
@@ -1032,7 +1046,7 @@ operations! {
     thread_import / ThreadImport = "thread.import", Workspace, ThreadImportIn => Lines;
     /// The operation catalog: each public operation with its group, class, summary and whether it has a
     /// dry run; its form comes from its input schema. One line each.
-    ops_list / OpsList = "ops.list", Read, OpsListIn => Vec<OpEntry>;
+    ops_list / OpsList = "ops.list", Read(300), OpsListIn => Vec<OpEntry>;
     /// Add a fact: an entity's attribute with a value, where it holds (scope), when (valid time), at
     /// which commits (ref range) and while which code is the same (anchor); it supersedes the open fact of the same
     /// entity, attribute, scope and source. `--corrects <id>` corrects a fact and keeps the old row in the history.

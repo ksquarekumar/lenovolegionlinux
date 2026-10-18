@@ -361,7 +361,7 @@
   // call outside them asks you for the toolset that holds it (`legionctl runnables scope`).
   "runnables": {
     "allow": ["claude-code", "codex", "rust-dev", "node-dev", "python-dev", "web-read", "github-read", "dossier-write", "machine-read",
-              "workspace-write", "code-work", "agent-work", "thread-member", "views-write", "session-own", "settings-change", "machine-change"]
+              "workspace-write", "code-work", "agent-work", "thread-member", "views-write", "session-own", "settings-change", "machine-change", "mcp-tools"]
   },
 
   // The desktop app (legionctl-app).

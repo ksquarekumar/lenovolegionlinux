@@ -5,12 +5,15 @@
 mod common;
 #[path = "common/desktop.rs"]
 mod desktop;
+#[path = "common/tokens.rs"]
+mod tokens;
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use common::Operator;
 use common::scratch::Scratch;
+use tokens::add_session_token;
 
 const FIXTURE: &str = "../../tests/fixtures/sysroot-82wq-2026-10-12";
 /// The `legionctl_wmi` module's tree of this machine, recorded read-only after the user's opt-in (todo-79): its hwmon
@@ -7624,30 +7627,6 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             "{}",
             std::fs::read_to_string(&log).unwrap()
         );
-    }
-
-    /// A session's token in the operator database of `home`, as `session start` issues it (only its hash is kept), and
-    /// its grant: the toolsets of its own session and of your settings, as a started session's skills give them.
-    fn add_session_token(home: &std::path::Path, token: &str, session: &str) {
-        let added = std::process::Command::new("python3")
-            .args([
-                "-c",
-                "import hashlib, json, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); s = sys.argv[3]; \
-                 c.execute('INSERT INTO tokens VALUES (?, ?, 0)', \
-                 (hashlib.blake2b(sys.argv[2].encode(), digest_size=32).hexdigest(), s)); \
-                 c.execute(\"INSERT INTO sessions (id, agent, dossier, workdir, started) VALUES (?, 'probe', '', '', 0)\", \
-                 (s,)); \
-                 grant = {'runnable': 'session:' + s, 'requested': ['session-own', 'settings-change'], 'sets': [], \
-                          'manifest': {'name': 'session:' + s, 'toolverse': {'classes': ['session', 'workspace']}}}; \
-                 c.execute(\"INSERT INTO facts (entity, attribute, value, scope, scope_id, source, evidence, confidence, \
-                            valid_from, recorded_from) VALUES (?, 'manifest', ?, 'global', '', 'rule', '{}', 1.0, 0, 0)\", \
-                           ('runnable:session:' + s, json.dumps(grant))); c.commit()",
-            ])
-            .arg(home.join(".local/state/legionctl/operator.db"))
-            .args([token, session])
-            .status()
-            .unwrap();
-        assert!(added.success());
     }
 
     /// A repository's hooks file: a command bound to every prompt.

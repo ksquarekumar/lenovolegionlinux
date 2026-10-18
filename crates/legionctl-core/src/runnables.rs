@@ -28,7 +28,7 @@ macro_rules! tables {
 pub(crate) use tables;
 
 /// The shipped sets. A new set is a new file in `config/capabilities/` and a line here.
-const SHIPPED: [&str; 17] = [
+const SHIPPED: [&str; 18] = [
     include_str!("../../../config/capabilities/agent-work.jsonc"),
     include_str!("../../../config/capabilities/claude-code.jsonc"),
     include_str!("../../../config/capabilities/code-work.jsonc"),
@@ -37,6 +37,7 @@ const SHIPPED: [&str; 17] = [
     include_str!("../../../config/capabilities/github-read.jsonc"),
     include_str!("../../../config/capabilities/machine-change.jsonc"),
     include_str!("../../../config/capabilities/machine-read.jsonc"),
+    include_str!("../../../config/capabilities/mcp-tools.jsonc"),
     include_str!("../../../config/capabilities/node-dev.jsonc"),
     include_str!("../../../config/capabilities/python-dev.jsonc"),
     include_str!("../../../config/capabilities/rust-dev.jsonc"),
@@ -686,7 +687,7 @@ fn merge(into: &mut Manifest, set: &Manifest) {
 }
 
 /// A toolset (DESIGN/22 rule 2) holds a tool: its operations or `mcp_tools` name it (`x.*` a group, `server/*` a
-/// server's tools), or it has the operation's class (`read`, `session`, `workspace`, `machine`).
+/// server's tools, `*/*` every brokered tool), or it has the operation's class (`read`, `session`, `workspace`, `machine`).
 #[must_use]
 pub fn holds(toolverse: &Toolverse, name: &str, class: Option<&str>) -> bool {
     let named = |pattern: &String| {
@@ -694,9 +695,9 @@ pub fn holds(toolverse: &Toolverse, name: &str, class: Option<&str>) -> bool {
             || pattern
                 .strip_suffix(".*")
                 .is_some_and(|group| name.starts_with(&format!("{group}.")))
-            || pattern
-                .strip_suffix("/*")
-                .is_some_and(|server| name.starts_with(&format!("{server}/")))
+            || pattern.strip_suffix("/*").is_some_and(|server| {
+                server == "*" && name.contains('/') || name.starts_with(&format!("{server}/"))
+            })
     };
     class.is_some_and(|c| toolverse.classes.iter().any(|x| x == c))
         || toolverse.operations.iter().any(named)

@@ -3,11 +3,15 @@
 on a port the kernel picks and prints it, then serves: no other process can take the port between a test's choice and
 the bind.
 
-Tools `docs` and `admin`; `docs` answers with the `x-api-key` header it received, so the test sees the key arrive.
+Tools `docs` and `admin`; `docs` answers with its call count and the `x-api-key` header it received, so the test sees
+the key arrive and whether a call reached the server.
 """
 
+import itertools
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+CALLS = itertools.count(1)
 
 TOOLS = [
     {"name": "docs", "description": "Look up docs", "inputSchema": {"type": "object"}},
@@ -32,7 +36,7 @@ class Server(BaseHTTPRequestHandler):
         elif method == "tools/list":
             result = {"tools": TOOLS}
         elif method == "tools/call":
-            text = f"docs for {message['params'].get('arguments')} key={self.headers.get('x-api-key')}"
+            text = f"call {next(CALLS)}: docs for {message['params'].get('arguments')} key={self.headers.get('x-api-key')}"
             result = {"content": [{"type": "text", "text": text}]}
         else:
             result = {}

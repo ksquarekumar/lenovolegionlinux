@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    ACTOR_HEADER, AGENT_HEADER, API_HEADER, ApiError, Code, Op, SOCKET, TOKEN_ENV, api_fingerprint,
-    coded, user_token,
+    ACTOR_HEADER, AGENT_HEADER, API_HEADER, ApiError, CALL_HEADER, Code, Op, SOCKET, TOKEN_ENV,
+    api_fingerprint, coded, user_token,
 };
 use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full};
@@ -50,17 +50,42 @@ impl Client {
     /// # Errors
     /// An [`ApiError`]: `unavailable` when the operator does not answer, else the operator's answer.
     pub async fn call_value(&self, name: &str, input: &Value) -> Result<Value> {
-        let request = hyper::Request::post(format!("/v1/ops/{name}"))
-            .header("content-type", "application/json")
-            .body(Full::new(Bytes::from(serde_json::to_vec(input)?)))?;
-        let response = self.send(request).await?;
-        let status = response.status();
-        let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())
-            .context("the operator's answer is not JSON")?;
-        if !status.is_success() {
-            return Err(refusal(status, &body, name).into());
+        self.call_recorded(name, input, None).await.0
+    }
+
+    /// Run the operation `name` as the call `call` (a retry of it: the operator answers with the recorded result) or
+    /// as a new call: the answer, and the call id when the operator keeps the call in its record.
+    pub async fn call_recorded(
+        &self,
+        name: &str,
+        input: &Value,
+        call: Option<&str>,
+    ) -> (Result<Value>, Option<String>) {
+        let mut id = None;
+        let answer = async {
+            let mut request = hyper::Request::post(format!("/v1/ops/{name}"))
+                .header("content-type", "application/json");
+            if let Some(call) = call {
+                request = request.header(CALL_HEADER, call);
+            }
+            let request = request.body(Full::new(Bytes::from(serde_json::to_vec(input)?)))?;
+            let response = self.send(request).await?;
+            id = response
+                .headers()
+                .get(CALL_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(String::from);
+            let status = response.status();
+            let body: Value =
+                serde_json::from_slice(&response.into_body().collect().await?.to_bytes())
+                    .context("the operator's answer is not JSON")?;
+            if !status.is_success() {
+                return Err(refusal(status, &body, name).into());
+            }
+            Ok(body)
         }
-        Ok(body)
+        .await;
+        (answer, id)
     }
 
     /// Follow the operator's event log from `offset` (an event id, or `now`, which is fixed when this returns).

@@ -131,12 +131,12 @@ pub struct Schema {
     pub steps: &'static [(i64, &'static str)],
 }
 
-/// The operator database at v15: the steps of v1-v10 merged into one (todo-68, after the first full release install),
+/// The operator database at v16: the steps of v1-v10 merged into one (todo-68, after the first full release install),
 /// then the rows that span dossiers and the threads (design 23, E1 decision 1; they were in `workspace.db`), then the
 /// pools (design 23, P6b: members that run, effects), then the rlcd decisions (todo-138), then the facts (DESIGN-10),
-/// then each session's granted connections (DESIGN-13).
+/// then each session's granted connections (DESIGN-13), then the call record (DESIGN/22 rule 3).
 pub const OPERATOR: &Schema = &Schema {
-    version: 15,
+    version: 16,
     steps: &[
         (
             10,
@@ -149,6 +149,7 @@ pub const OPERATOR: &Schema = &Schema {
         (12, crate::rlcd::tables!()),
         (13, crate::facts::tables!()),
         (14, crate::runnables::tables!()),
+        (15, crate::calls::tables!()),
     ],
     sql: concat!(
         "CREATE TABLE events (
@@ -197,7 +198,8 @@ pub const OPERATOR: &Schema = &Schema {
         crate::pool::tables!(),
         crate::rlcd::tables!(),
         crate::facts::tables!(),
-        crate::runnables::tables!()
+        crate::runnables::tables!(),
+        crate::calls::tables!()
     ),
 };
 
@@ -744,7 +746,7 @@ impl Db {
             .pop())
     }
 
-    /// Delete events and gateway usage older than `days` (0 keeps everything).
+    /// Delete events, gateway usage and calls older than `days` (0 keeps everything).
     ///
     /// # Errors
     /// The database write fails.
@@ -758,7 +760,11 @@ impl Db {
             .execute("DELETE FROM events WHERE ts < ?1", params![before])?
             + self
                 .conn
-                .execute("DELETE FROM gateway_usage WHERE ts < ?1", params![before])?)
+                .execute("DELETE FROM gateway_usage WHERE ts < ?1", params![before])?
+            + self.conn.execute(
+                "DELETE FROM calls WHERE started < ?1",
+                params![before * 1000],
+            )?)
     }
 
     /// Events from `ts` (seconds since the epoch) on, oldest first.

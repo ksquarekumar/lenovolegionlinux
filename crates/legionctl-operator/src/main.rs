@@ -4,6 +4,7 @@
 
 mod accounts;
 mod acp;
+mod calls;
 mod code;
 mod desktop;
 mod display;

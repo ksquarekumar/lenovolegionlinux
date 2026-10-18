@@ -917,10 +917,17 @@ fn each_gateway_call_is_counted_while_another_writer_floods_the_event_log() {
         }
         assert!(flood.join().unwrap() > 100, "the flood ran all along");
     });
-    let rows: i64 = Db::open(&db, OPERATOR)
-        .unwrap()
-        .conn()
-        .query_row("SELECT count(*) FROM gateway_usage", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(rows, 120, "each call has its usage row");
+    let db = Db::open(&db, OPERATOR).unwrap();
+    let count = |sql: &str| -> i64 { db.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(
+        count("SELECT count(*) FROM gateway_usage"),
+        120,
+        "each call has its usage row"
+    );
+    // DESIGN/22 rule 3: one record of calls, beside the gateway's own cache
+    assert_eq!(
+        count("SELECT count(*) FROM calls WHERE kind = 'model' AND ended IS NOT NULL"),
+        120,
+        "each call has its row in the call record"
+    );
 }

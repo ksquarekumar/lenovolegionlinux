@@ -1,0 +1,8 @@
+// The tools of the MCP servers that legionctl brokers (mcp.servers, each within its allowlist).
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "mcp-tools",
+  "version": 1,
+  "description": "The tools of the MCP servers in mcp.servers, each within its allowlist.",
+  "toolverse": { "mcp_tools": ["*/*"] }
+}

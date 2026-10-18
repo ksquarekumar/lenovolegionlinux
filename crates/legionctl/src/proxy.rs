@@ -1,14 +1,15 @@
 //! `legionctl mcp-proxy`: the only way a session's agent reaches an MCP server (note 14). It starts the server as its
-//! child, offers the agent only the allowed tools, refuses the others, and logs every call to the operator
-//! (`internal.tools.record`): session, server, tool, a hash of the arguments, duration, result size and outcome. Tools its
-//! config lets it cache are answered from the operator's cache while the result is valid (T2).
-
-use std::time::Instant;
+//! child, offers the agent only the allowed tools, refuses the others, and records every call in the operator's call
+//! record before it runs (`internal.calls.begin`, which checks the tool's toolset, then `internal.calls.end`): session,
+//! server, tool, a hash of the arguments, duration, result size and outcome; a retry with the same call id gets the
+//! recorded result. Tools its config lets it cache are answered from the operator's cache while the result is valid (T2).
 
 use blake2::digest::consts::U16;
 use blake2::{Blake2b, Digest};
 use legionctl_api::client::Client;
-use legionctl_api::{CacheGetIn, CachePutIn, CachedCall, ClientPath, Outcome, ToolCall, op};
+use legionctl_api::{
+    CacheGetIn, CachePutIn, CachedCall, CallBeginIn, CallEndIn, CallStart, ClientPath, Outcome, op,
+};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
     PaginatedRequestParams, ServerCapabilities, ServerConfig,
@@ -16,6 +17,9 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RunningService};
 use rmcp::transport::TokioChildProcess;
 use rmcp::{ErrorData, RoleClient, RoleServer, ServerHandler, ServiceExt};
+
+/// The `_meta` key of a tool call with its call id (legionctl's MCP server sends it for a retry).
+pub const CALL_META: &str = "legionctl/call";
 
 /// `--cache tool=ttl[:workspace]`: a tool whose result may be reused for `ttl_s`, keyed also by the git state when it
 /// reads the working copy.
@@ -103,30 +107,45 @@ impl Proxy {
         self.allow.is_empty() || self.allow.iter().any(|a| a == tool)
     }
 
-    async fn log(
+    /// Start the call in the operator's call record (its toolset is checked there): its id, or the recorded result of
+    /// a call id that ended before. A call that cannot be recorded does not run.
+    async fn begin(
         &self,
-        tool: &str,
-        args_hash: String,
-        started: Instant,
-        bytes: usize,
-        outcome: Outcome,
-    ) {
-        let call = ToolCall {
-            session: legionctl_api::SessionId(self.session.clone()),
-            server: self.server.clone(),
-            tool: tool.to_string(),
-            args_hash,
-            ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
+        (request, meta): (&CallToolRequestParams, &rmcp::model::RequestMetaObject),
+        args_hash: &str,
+        refused: bool,
+    ) -> Result<CallStart, ErrorData> {
+        // rmcp gives the call's _meta in its request context
+        let call = meta
+            .0
+            .0
+            .get(CALL_META)
+            .and_then(serde_json::Value::as_str)
+            .map(String::from);
+        self.client
+            .call::<op::CallsBegin>(&CallBeginIn {
+                call,
+                session: legionctl_api::SessionId(self.session.clone()),
+                server: self.server.clone(),
+                tool: request.name.to_string(),
+                args_hash: args_hash.to_string(),
+                refused,
+            })
+            .await
+            .map_err(|e| ErrorData::invalid_request(format!("{e:#}"), None))
+    }
+
+    /// End call `call`; its result is kept for a retry. A failed write goes to stderr: the call ran.
+    async fn end(&self, call: &str, outcome: Outcome, result: Option<&CallToolResult>) {
+        let output = result.and_then(|r| serde_json::to_value(r).ok());
+        let end = CallEndIn {
+            call: call.to_string(),
             outcome,
+            bytes: result.map_or(0, |r| u64::try_from(hit_size(r)).unwrap_or(u64::MAX)),
+            output,
         };
-        // a call is not refused when the log fails (the operator is down; decided by the user 2026-10-14, Q5): the
-        // failure goes to stderr, which the agent shows in its MCP log
-        if let Err(e) = self.client.call::<op::ToolsRecord>(&call).await {
-            eprintln!(
-                "legionctl mcp-proxy: cannot log {}.{tool}: {e:#}",
-                self.server
-            );
+        if let Err(e) = self.client.call::<op::CallsEnd>(&end).await {
+            eprintln!("legionctl mcp-proxy: the end of call {call} is not recorded: {e:#}");
         }
     }
 }
@@ -158,15 +177,14 @@ impl ServerHandler for Proxy {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let started = Instant::now();
         let tool = request.name.to_string();
         let args = serde_json::to_vec(&request.arguments).unwrap_or_default();
         let args_hash = format!("{:x}", Blake2b::<U16>::digest(&args));
         if !self.allowed(&tool) {
-            self.log(&tool, args_hash, started, 0, Outcome::Refused)
-                .await;
+            self.begin((&request, &context.meta), &args_hash, true)
+                .await?;
             return Err(ErrorData::invalid_params(
                 format!(
                     "{tool} is not allowed for {} in this session (mcp.servers.{}.allow)",
@@ -174,6 +192,16 @@ impl ServerHandler for Proxy {
                 ),
                 None,
             ));
+        }
+        let start = self
+            .begin((&request, &context.meta), &args_hash, false)
+            .await?;
+        if let Some(replay) = start.replay {
+            return serde_json::from_value::<CallToolResult>(replay)
+                .map(Into::into)
+                .map_err(|e| {
+                    ErrorData::internal_error(format!("the recorded result of {tool}: {e}"), None)
+                });
         }
         let call = self.cached_call(&tool, &request)?;
         let hit = match &call {
@@ -187,19 +215,11 @@ impl ServerHandler for Proxy {
                     None,
                 )
             })?;
-            self.log(
-                &tool,
-                args_hash,
-                started,
-                hit_size(&result),
-                Outcome::Cached,
-            )
-            .await;
+            self.end(&start.call, Outcome::Cached, Some(&result)).await;
             return Ok(result.into());
         }
         match self.upstream.peer().call_tool(request).await {
             Ok(result) => {
-                let bytes = hit_size(&result);
                 let outcome = if result.is_error == Some(true) {
                     Outcome::Error
                 } else {
@@ -219,12 +239,11 @@ impl ServerHandler for Proxy {
                         );
                     }
                 }
-                self.log(&tool, args_hash, started, bytes, outcome).await;
+                self.end(&start.call, outcome, Some(&result)).await;
                 Ok(result.into())
             }
             Err(e) => {
-                self.log(&tool, args_hash, started, 0, Outcome::Failed)
-                    .await;
+                self.end(&start.call, Outcome::Failed, None).await;
                 Ok(
                     CallToolResult::error(vec![ContentBlock::text(format!(
                         "{}: {e}",

@@ -1432,7 +1432,45 @@ pub struct PackageFetchIn {
     pub force: bool,
 }
 
-/// One MCP tool call through `legionctl mcp-proxy`, as the event log keeps it (no arguments, only their hash).
+/// The start of a brokered MCP tool call (`legionctl mcp-proxy`): its row in the call record before it runs.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CallBeginIn {
+    /// The caller's call id, to retry a call; none: a new id.
+    #[serde(default)]
+    pub call: Option<String>,
+    /// The agent session (`LEGIONCTL_SESSION`); a sandbox's own, whatever it sends.
+    #[serde(default)]
+    pub session: SessionId,
+    pub server: String,
+    pub tool: String,
+    /// BLAKE2b-128 of the arguments' JSON, hex.
+    pub args_hash: String,
+    /// The proxy refuses it (not in `mcp.servers.<server>.allow`): the record keeps it as refused, and no toolset is
+    /// asked for.
+    #[serde(default)]
+    pub refused: bool,
+}
+
+/// A started call: its id, and the recorded result when the id is of a call that ended (a retry gets it again).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CallStart {
+    pub call: String,
+    #[serde(default)]
+    pub replay: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CallEndIn {
+    pub call: String,
+    pub outcome: Outcome,
+    /// Size of the result's JSON.
+    pub bytes: u64,
+    /// The result, kept for a retry of the call.
+    #[serde(default)]
+    pub output: Option<serde_json::Value>,
+}
+
+/// One call of the call record, as `tools calls` lists it (no arguments, only their hash).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ToolCall {
     /// The agent session (`LEGIONCTL_SESSION`); a sandbox's own, whatever it sends.
@@ -1642,6 +1680,8 @@ pub enum Outcome {
     Failed,
     /// The tool is not allowed.
     Refused,
+    /// The call has no end yet: it runs, or the operator stopped during it.
+    Running,
 }
 
 /// A container or a virtual machine.
@@ -1804,6 +1844,9 @@ pub struct GatewayUsageIn {
 pub struct ToolCallsIn {
     /// Only this session's calls (id from `session list`).
     pub session: Option<String>,
+    /// Only calls of this kind: `op` (legionctl's operations), `tool` (brokered MCP tools) or `model` (the gateway).
+    #[serde(default)]
+    pub kind: Option<String>,
     /// Where the page starts: the `next` of the page before; default: the oldest.
     #[serde(default)]
     pub cursor: Option<String>,
@@ -1815,6 +1858,11 @@ pub struct ToolCallsIn {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ToolCallRow {
     pub id: i64,
+    /// The call id (a retry sends it again).
+    pub call_id: String,
+    /// `op`, `tool` or `model`.
+    pub kind: String,
+    /// When it started (ms).
     pub at: i64,
     #[serde(flatten)]
     pub call: ToolCall,

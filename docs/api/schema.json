@@ -7571,12 +7571,20 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
-  "internal.tools.record": {
+  "internal.calls.begin": {
     "class": "session",
     "internal": true,
     "input": {
       "type": "object",
       "properties": {
+        "call": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The caller's call id, to retry a call; none: a new id.",
+          "default": null
+        },
         "session": {
           "type": "string",
           "format": "session",
@@ -7593,16 +7601,47 @@
           "type": "string",
           "description": "BLAKE2b-128 of the arguments' JSON, hex."
         },
-        "ms": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
+        "refused": {
+          "type": "boolean",
+          "description": "The proxy refuses it (not in `mcp.servers.<server>.allow`): the record keeps it as refused, and no toolset is\nasked for.",
+          "default": false
+        }
+      },
+      "required": [
+        "server",
+        "tool",
+        "args_hash"
+      ],
+      "description": "The start of a brokered MCP tool call (`legionctl mcp-proxy`): its row in the call record before it runs.",
+      "title": "CallBeginIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "call": {
+          "type": "string"
         },
-        "bytes": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0,
-          "description": "Size of the result's JSON."
+        "replay": {
+          "default": null
+        }
+      },
+      "required": [
+        "call"
+      ],
+      "description": "A started call: its id, and the recorded result when the id is of a call that ended (a retry gets it again).",
+      "title": "CallStart",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "internal.calls.end": {
+    "class": "session",
+    "internal": true,
+    "input": {
+      "type": "object",
+      "properties": {
+        "call": {
+          "type": "string"
         },
         "outcome": {
           "oneOf": [
@@ -7631,21 +7670,32 @@
               "type": "string",
               "const": "refused",
               "description": "The tool is not allowed."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "The call has no end yet: it runs, or the operator stopped during it."
             }
           ],
           "description": "How a proxied tool call ended."
+        },
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Size of the result's JSON."
+        },
+        "output": {
+          "description": "The result, kept for a retry of the call.",
+          "default": null
         }
       },
       "required": [
-        "server",
-        "tool",
-        "args_hash",
-        "ms",
-        "bytes",
-        "outcome"
+        "call",
+        "outcome",
+        "bytes"
       ],
-      "description": "One MCP tool call through `legionctl mcp-proxy`, as the event log keeps it (no arguments, only their hash).",
-      "title": "ToolCall",
+      "title": "CallEndIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -8117,6 +8167,14 @@
           ],
           "description": "Only this session's calls (id from `session list`)."
         },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only calls of this kind: `op` (legionctl's operations), `tool` (brokered MCP tools) or `model` (the gateway).",
+          "default": null
+        },
         "cursor": {
           "type": [
             "string",
@@ -8142,14 +8200,23 @@
         "items": {
           "type": "array",
           "items": {
-            "description": "One MCP tool call through `legionctl mcp-proxy`, as the event log keeps it (no arguments, only their hash).",
+            "description": "One call of the call record, as `tools calls` lists it (no arguments, only their hash).",
             "type": "object",
             "properties": {
               "id": {
                 "type": "integer",
                 "format": "int64"
               },
+              "call_id": {
+                "description": "The call id (a retry sends it again).",
+                "type": "string"
+              },
+              "kind": {
+                "description": "`op`, `tool` or `model`.",
+                "type": "string"
+              },
               "at": {
+                "description": "When it started (ms).",
                 "type": "integer",
                 "format": "int64"
               },
@@ -8208,12 +8275,19 @@
                     "description": "The tool is not allowed.",
                     "type": "string",
                     "const": "refused"
+                  },
+                  {
+                    "description": "The call has no end yet: it runs, or the operator stopped during it.",
+                    "type": "string",
+                    "const": "running"
                   }
                 ]
               }
             },
             "required": [
               "id",
+              "call_id",
+              "kind",
               "at",
               "server",
               "tool",

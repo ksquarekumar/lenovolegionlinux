@@ -14,7 +14,7 @@ use legionctl_api::{
     Events, EventsIn, GateIn, Guard, GuardIn, HookReply, HookRunIn, InspectIn, IntoWire,
     KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn, Readings, RecordIn, Recording, ReplayIn,
     Samples, SensorsIn, SessionExec, SessionId, SessionIdIn, SessionIn, SessionResumeIn,
-    SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow, ToolCallsIn, TuneIn, TuneReport,
+    SessionStartIn, SessionState, Sessions, ToolCallRow, ToolCallsIn, TuneIn, TuneReport,
     WindowsState, code_of, coded,
 };
 use legionctl_api::{
@@ -3684,30 +3684,37 @@ impl Engine for Operator {
         })
     }
 
-    // the operator's audit row of this call is the record
-    fn tools_record(&self, _: &Ctx, _: ToolCall) -> Result<Empty> {
+    fn calls_begin(
+        &self,
+        ctx: &Ctx,
+        input: legionctl_api::CallBeginIn,
+    ) -> Result<legionctl_api::CallStart> {
+        let name = format!("{}/{}", input.server, input.tool);
+        if let Some(id) = ctx.principal.agent().filter(|_| !input.refused) {
+            let what = format!("the tool {} of the MCP server {}", input.tool, input.server);
+            self.runtime
+                .block_on(crate::scope::check(id, &name, &what))
+                .map_err(anyhow::Error::new)?;
+        }
+        crate::calls::begin_tool(&ctx.principal, &input)
+    }
+
+    fn calls_end(&self, _: &Ctx, input: legionctl_api::CallEndIn) -> Result<Empty> {
+        crate::calls::end_tool(&input)?;
         Ok(Empty {})
     }
 
     fn tools_calls(&self, _: &Ctx, input: ToolCallsIn) -> Result<Page<ToolCallRow>> {
         let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
-        let filter = EventFilter {
-            kinds: &["internal.tools.record"],
-            field: input.session.as_deref().map(|s| ("$.input.session", s)),
-            naming: None,
-            session: None,
-        };
-        let (rows, next) = Db::open_default()?.events_page(&filter, after, limit)?;
+        let (rows, next) = Db::open_default()?.calls_page(
+            (input.session.as_deref(), input.kind.as_deref()),
+            after,
+            limit,
+        )?;
         Ok(Page {
             items: rows
                 .into_iter()
-                .map(|e| {
-                    Ok(ToolCallRow {
-                        id: e.id,
-                        at: e.ts,
-                        call: serde_json::from_value(e.payload["input"].clone())?,
-                    })
-                })
+                .map(crate::calls::row)
                 .collect::<Result<_>>()?,
             next: next.map(|n| n.to_string()),
         })

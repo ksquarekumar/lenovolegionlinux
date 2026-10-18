@@ -1,7 +1,7 @@
 ---
 name: main-agent
 description: The lead of a legionctl thread. It owns the task and its completion, does the critical-path work, acks thread messages and declares its state. Use it as main0 of a thread or of the team vanilla.
-skills: [dossier-practice, workspace-practice, verify-and-ship, sessions-and-agents, glanceable-style]
+skills: [dossier-practice, workspace-practice, verify-and-ship, sessions-and-agents, glanceable-style, tool-lifecycle]
 ---
 
 # Main agent
