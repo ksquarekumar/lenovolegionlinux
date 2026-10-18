@@ -26,6 +26,17 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     Set `key` (dotted) in the computer's settings (`/etc/legionctl/managed.jsonc`) to the JSON `value`, or remove it
+     there (empty `value`); the file and the value it had there (JSON, null: none). The operator checked the key
+     and the value against the settings registry; this checks their form.
+     -->
+    <method name="SetSetting">
+      <arg name="key" type="s" direction="in"/>
+      <arg name="value" type="s" direction="in"/>
+      <arg type="s" direction="out"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
      Turn a layer on or off (`on`, `off`), or give it its default again (`default`: a generated layer is off, the
      others on); `name` is its id (`shipped/20-ac`), its file name, or its name without the order (`tuned`).
      -->

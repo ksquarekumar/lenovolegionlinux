@@ -18,11 +18,11 @@ use legionctl_core::rlcd::{
 };
 use serde_json::json;
 
-/// The backend `name` (none: `rlcd.backend`). A repository layer may select a backend, never set its url, keyring or
-/// shape: it could send the key elsewhere.
+/// The backend `name` (none: `rlcd.backend`). A repository layer may select a backend, never define one: the
+/// setting `rlcd.backends` has no project scope, so a project cannot send the key elsewhere.
 ///
 /// # Errors
-/// No such backend, or the repository layer set one of those fields.
+/// No such backend.
 pub fn backend(resolved: &Resolved, name: Option<&str>) -> Result<(String, Backend)> {
     let name = name.unwrap_or(&resolved.config.rlcd.backend).to_string();
     let found = resolved
@@ -32,21 +32,6 @@ pub fn backend(resolved: &Resolved, name: Option<&str>) -> Result<(String, Backe
         .get(&name)
         .with_context(|| format!("no rlcd.backends.{name}"))?
         .clone();
-    for field in ["url", "keyring", "shape"] {
-        let key = format!("rlcd.backends.{name}.{field}");
-        if let Some(set) = resolved
-            .trace
-            .get(&key)
-            .and_then(|t| t.last())
-            .filter(|s| s.source.layer == "repo")
-        {
-            bail!(
-                "{key} is set by the repository layer ({}): only the defaults, /etc/legionctl and the user layer may \
-                 set a backend's url, keyring or shape",
-                set.source.file
-            );
-        }
-    }
     Ok((name, found))
 }
 

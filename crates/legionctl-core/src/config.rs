@@ -17,10 +17,7 @@ use serde_json::{Map, Value};
 use crate::reminders::Event;
 
 const DEFAULTS: &str = include_str!("../../../config/defaults.jsonc");
-/// The file in the user layer that legionctl writes; it merges after the user's own files.
-pub const MANAGED: &str = "managed.jsonc";
-const MANAGED_HEADER: &str = "// Written by legionctl (reminders, hooks). Change it with legionctl, or move keys into your own file\n\
-                              // in this folder; this file merges after your files.\n";
+use legionctl_machine::settings_file::MANAGED;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -31,7 +28,6 @@ pub struct Config {
     pub hooks: HooksConfig,
     pub dossier: DossierConfig,
     pub session: SessionConfig,
-    pub gates: GatesConfig,
     pub mcp: McpConfig,
     pub packages: BTreeMap<String, PackageConfig>,
     pub gateway: GatewayConfig,
@@ -49,8 +45,8 @@ pub struct Config {
     pub rlcd: crate::rlcd::RlcdConfig,
     /// Views and their composer (DESIGN-09 G5).
     pub views: ViewsConfig,
-    /// Grants of capability sets (DESIGN-13).
-    pub runnables: crate::runnables::RunnablesConfig,
+    /// What agents may and may not do: operations, toolsets, brokered tools, git and shell commands.
+    pub actions: crate::actions::ActionsConfig,
     /// The capability sets of the layers (`<layer>/capabilities/*.jsonc`), filled by [`resolve`].
     #[serde(skip)]
     #[schemars(skip)]
@@ -67,6 +63,7 @@ pub struct ViewsConfig {
     /// rlcd picks one of the stored views for an intent that no stored view has word for word.
     pub rlcd: bool,
     /// rlcd's pick counts from this probability on.
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub rlcd_min: f64,
 }
 
@@ -200,6 +197,7 @@ pub struct SemanticConfig {
     pub account: String,
     pub model: String,
     /// Cosine similarity (0-1) at which a kept answer replays.
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub threshold: f64,
 }
 
@@ -344,9 +342,6 @@ pub struct McpServer {
     /// A package from the store: its `run` line, from the hash-checked folder, without network unless it allows it.
     #[serde(default)]
     pub package: Option<String>,
-    /// Tools the agent may call; empty: every tool the server offers.
-    #[serde(default)]
-    pub allow: Vec<String>,
     /// Tools whose results may be reused: only tools that change nothing and give the same answer for the same
     /// input. Nothing else is cached.
     #[serde(default)]
@@ -431,19 +426,6 @@ pub struct SessionPolicy {
     pub idle_freeze_minutes: u32,
     /// Stop headless runs while memory is under pressure (the `load.busy` limits) and go on with them when it eases.
     pub offload_headless: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct GatesConfig {
-    pub git: GitGate,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct GitGate {
-    /// Refused in a session sandbox: a subcommand and its unsafe flags (`reset --hard`, `clean -f`).
-    pub deny: Vec<String>,
 }
 
 /// `~/x` as a path under the home folder; other paths as they are.
@@ -568,7 +550,13 @@ pub struct Resolved {
     pub problems: Vec<String>,
     /// Repository layer files whose `config.approve` keys wait for the user's first answer.
     pub unapproved: Vec<Unapproved>,
+    /// Settings whose value does not pass its deep check (DESIGN-20 rule 9): key -> why, with the step that fixes it
+    /// and the value that applies until then (the last one below it that passes, or the default).
+    pub held: BTreeMap<String, String>,
     user_dir: PathBuf,
+    repo_dir: Option<PathBuf>,
+    /// Only the defaults and /etc/legionctl set these keys: `config.locked` and the settings of the computer only.
+    locks: Vec<String>,
 }
 
 /// A repository layer file that sets keys of `config.approve` with content the user did not answer yet.
@@ -794,7 +782,7 @@ impl Merge<'_> {
             }
             if self.approve.is_some() && removes(self.repo_never) {
                 self.problems.push(format!(
-                    "{}: {path} is set only outside a repository (who pays for an agent); ignored",
+                    "{}: {path} is not a project setting; ignored",
                     self.source.file
                 ));
                 continue;
@@ -922,6 +910,28 @@ pub fn read_layer_file(file: &Path) -> Result<Value> {
     }
 }
 
+/// The locked keys, the keys a repository file sets only after the user allowed it, and the keys it never sets: the
+/// registry's scopes and classes, and the lists of the defaults and /etc/legionctl (`list`) on top of them.
+fn trust_lists(
+    list: &dyn Fn(&str) -> Result<Vec<String>>,
+) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+    use crate::settings::{Class, Scope};
+    let (mut locks, mut approve, mut repo_never) =
+        (list("locked")?, list("approve")?, list("repo_never")?);
+    for setting in crate::settings::registry()? {
+        if setting.class != Class::Safe {
+            approve.push(setting.key.clone());
+        }
+        if !setting.scope.contains(&Scope::Project) {
+            repo_never.push(setting.key.clone());
+        }
+        if setting.scope == [Scope::Computer] {
+            locks.push(setting.key.clone());
+        }
+    }
+    Ok((locks, approve, repo_never))
+}
+
 /// Resolve the config for work in `project` (its repository layer applies), or without a repository.
 ///
 /// # Errors
@@ -959,8 +969,8 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
     let list = |key: &str| -> Result<Vec<String>> {
         serde_json::from_value(trusted_meta(key)).with_context(|| format!("config.{key}"))
     };
-    let (precedence, locks) = (list("precedence")?, list("locked")?);
-    let (approve, repo_never) = (list("approve")?, list("repo_never")?);
+    let (locks, approve, repo_never) = trust_lists(&list)?;
+    let precedence = list("precedence")?;
     // the repository's config files and capability sets need the user's answers
     let approvals = if repo_dir.is_some() {
         Approvals::read()?
@@ -1009,7 +1019,8 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         &mut trace,
         &mut problems,
     );
-    let value = Value::Object(merged);
+    let mut value = Value::Object(merged);
+    let held = hold_unusable(&mut value, &trace);
     let mut config = typed(&value, &trace)?;
     let mut unapproved = unapproved;
     let mut set_layers = vec![("system", system_dir.clone()), ("user", user_dir.clone())];
@@ -1026,7 +1037,10 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         trace,
         problems,
         unapproved,
+        held,
         user_dir,
+        repo_dir,
+        locks,
     })
 }
 
@@ -1051,8 +1065,71 @@ fn typed(value: &Value, trace: &BTreeMap<String, Vec<Setting>>) -> Result<Config
     })
 }
 
-/// A reminder goes into every prompt: one that does not fit is not used, from whichever file it came.
+/// A value that a layer file set and that does not pass its setting's deep check does not apply (DESIGN-20 rule 9):
+/// the last value below it that passes applies (the default at the end), and the setting says why.
+fn hold_unusable(
+    value: &mut Value,
+    trace: &BTreeMap<String, Vec<Setting>>,
+) -> BTreeMap<String, String> {
+    let mut held = BTreeMap::new();
+    let Ok(registry) = crate::settings::registry() else {
+        return held;
+    };
+    // a port is checked when it changes: in use, legionctl itself holds it
+    for setting in registry
+        .iter()
+        .filter(|s| s.check.is_some_and(|c| c != crate::settings::Check::Port))
+    {
+        let Some(sets) = trace.get(&setting.key) else {
+            continue;
+        };
+        let Some(why) = sets
+            .last()
+            .filter(|s| s.source.layer != "defaults")
+            .and_then(|s| crate::settings::deep_check(setting, &s.value))
+        else {
+            continue;
+        };
+        let good = sets
+            .iter()
+            .rev()
+            .skip(1)
+            .find(|s| crate::settings::deep_check(setting, &s.value).is_none())
+            .map_or_else(|| setting.default.clone(), |s| s.value.clone());
+        let mut at = &mut *value;
+        let parts: Vec<&str> = setting.key.split('.').collect();
+        for part in &parts[..parts.len() - 1] {
+            at = &mut at[*part];
+        }
+        let shown = good.as_str().map_or_else(|| good.to_string(), String::from);
+        at[parts[parts.len() - 1]] = good;
+        held.insert(
+            setting.key.clone(),
+            format!("{why} Until then legionctl uses {shown}."),
+        );
+    }
+    held
+}
+
+/// An entry of the action lists that does not fit names nothing: it is not used, with the reason.
+fn drop_unfit_rules(config: &mut Config, problems: &mut Vec<String>) {
+    for (list, rules) in [
+        ("allow", &mut config.actions.allow),
+        ("forbid", &mut config.actions.forbid),
+    ] {
+        rules.retain(|rule| match crate::actions::unfit(rule) {
+            None => true,
+            Some(why) => {
+                problems.push(format!("actions.{list}: {why}; not used"));
+                false
+            }
+        });
+    }
+}
+
+/// A reminder goes into every prompt (and an action entry binds every agent): one that does not fit is not used, from whichever file it came.
 fn drop_unfit_reminders(config: &mut Config, problems: &mut Vec<String>) {
+    drop_unfit_rules(config, problems);
     config
         .reminders
         .retain(|id, r| match crate::reminders::check(id, &r.text) {
@@ -1095,7 +1172,7 @@ impl Resolved {
         Explanation {
             key: key.to_string(),
             value,
-            locked: locked(&self.config.config.locked, key),
+            locked: self.locked_key(key),
             settings: self
                 .trace
                 .iter()
@@ -1105,45 +1182,21 @@ impl Resolved {
         }
     }
 
-    /// Set `key` (dotted) in the user layer's managed file; `null` removes the key there.
-    ///
-    /// # Errors
-    /// The key is locked, or the managed file cannot be read or written.
-    pub fn set_user(&self, key: &str, value: Value) -> Result<()> {
-        ensure!(
-            !locked(&self.config.config.locked, key) && !key.starts_with("config"),
-            "{key} is locked by /etc/legionctl; see `legionctl config explain {key}`"
-        );
-        let path = self.user_dir.join(MANAGED);
-        let mut managed = match read_jsonc(&path) {
-            Ok(Value::Object(map)) => map,
-            Ok(_) => bail!("{} is not a JSON object", path.display()),
-            Err(_) if !path.exists() => Map::new(),
-            Err(e) => return Err(e),
-        };
-        let parts: Vec<&str> = key.split('.').collect();
-        let (last, parents) = parts.split_last().context("empty key")?;
-        let mut at = &mut managed;
-        for part in parents {
-            let next = at
-                .entry((*part).to_string())
-                .or_insert_with(|| Value::Object(Map::new()));
-            if !next.is_object() {
-                *next = Value::Object(Map::new());
-            }
-            at = next.as_object_mut().context("object")?;
-        }
-        at.insert((*last).to_string(), value);
-        std::fs::create_dir_all(&self.user_dir)?;
-        let tmp = path.with_extension("jsonc.tmp");
-        std::fs::write(
-            &tmp,
-            format!(
-                "{MANAGED_HEADER}{}\n",
-                serde_json::to_string_pretty(&managed)?
-            ),
-        )?;
-        std::fs::rename(&tmp, &path)?;
-        Ok(())
+    /// The user layer's folder.
+    #[must_use]
+    pub fn user_dir(&self) -> &Path {
+        &self.user_dir
+    }
+
+    /// The repository layer's folder, when a repository applies.
+    #[must_use]
+    pub fn repo_dir(&self) -> Option<&Path> {
+        self.repo_dir.as_deref()
+    }
+
+    /// Whether only the defaults and /etc/legionctl set `key`.
+    #[must_use]
+    pub fn locked_key(&self, key: &str) -> bool {
+        key == "config" || key.starts_with("config.") || locked(&self.locks, key)
     }
 }

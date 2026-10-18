@@ -54,8 +54,9 @@ struct Proxy {
     server: String,
     /// The server's command: part of each cache key (for a package it names the store version).
     command: Vec<String>,
-    /// Empty: every tool.
+    /// The tool patterns of `actions.allow` (empty: every tool) and `actions.forbid` for this server.
     allow: Vec<String>,
+    forbid: Vec<String>,
     cache: Vec<CacheRule>,
     upstream: RunningService<RoleClient, ()>,
     client: Client,
@@ -96,7 +97,7 @@ impl Proxy {
     }
 
     fn allowed(&self, tool: &str) -> bool {
-        self.allow.is_empty() || self.allow.iter().any(|a| a == tool)
+        legionctl_core::actions::ActionsConfig::tool_passes(&self.allow, &self.forbid, tool)
     }
 
     /// Start the call in the operator's call record (its toolset is checked there): its id, or the recorded result of
@@ -179,8 +180,8 @@ impl ServerHandler for Proxy {
                 .await?;
             return Err(ErrorData::invalid_params(
                 format!(
-                    "{tool} is not allowed for {} in this session (mcp.servers.{}.allow)",
-                    self.server, self.server
+                    "{tool} is not allowed for {} in this session (actions.allow, actions.forbid)",
+                    self.server
                 ),
                 None,
             ));
@@ -311,7 +312,7 @@ async fn connect(upstream: &Upstream) -> anyhow::Result<RunningService<RoleClien
 /// The server does not start, or the stdio transport fails.
 pub async fn serve(
     server: String,
-    allow: Vec<String>,
+    (allow, forbid): (Vec<String>, Vec<String>),
     cache: Vec<CacheRule>,
     upstream: Upstream,
 ) -> anyhow::Result<()> {
@@ -325,6 +326,7 @@ pub async fn serve(
         server,
         command,
         allow,
+        forbid,
         cache,
         upstream: upstream_service,
         client: Client::new("mcp-proxy")?,

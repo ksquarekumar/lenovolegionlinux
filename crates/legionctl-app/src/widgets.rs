@@ -87,11 +87,48 @@ impl LegionApp {
         if !data.versions.is_empty() {
             head = head.child(Self::history_bar(data, t, cx));
         }
+        // the gear: the settings that change what this view shows
+        if data.settings > 0 && data.name != "settings" {
+            let view = data.name.clone();
+            head = head.child(
+                Button::new(SharedString::from(format!("view-{}-settings", data.name)))
+                    .small()
+                    .ghost()
+                    .icon(IconName::Settings)
+                    .tooltip("Settings of this view")
+                    .accessibility_label("Settings of this view")
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.open_tab(
+                            crate::Tab::View {
+                                name: "settings".into(),
+                                params: vec![format!("view={view}")],
+                            },
+                            cx,
+                        );
+                    })),
+            );
+        }
+        let find = self
+            .find
+            .as_ref()
+            .filter(|f| data.inputs.contains(&f.param))
+            .map(|f| {
+                div()
+                    .id(SharedString::from(format!("view-{}-find", data.name)))
+                    .max_w(px(420.))
+                    .child(
+                        gpui_kit::component::input::Input::new(&f.field)
+                            .small()
+                            .aria_label(crate::forms::label(&f.param)),
+                    )
+                    .test_support()
+            });
         div()
             .id(SharedString::from(format!("view-{}", data.name)))
             .v_flex()
             .gap(S4)
             .child(head)
+            .children(find)
             .when(!data.actions.is_empty(), |d| {
                 d.child(Self::buttons(&data.name, "action", &data.actions, cx))
             })

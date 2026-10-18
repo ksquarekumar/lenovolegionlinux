@@ -22,6 +22,7 @@ mod scope;
 mod semantic;
 mod server;
 mod session;
+mod settings;
 mod system1;
 mod thread;
 mod translate;

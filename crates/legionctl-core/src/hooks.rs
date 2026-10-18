@@ -118,7 +118,7 @@ fn bound(config: &Resolved, event: Event) -> Vec<String> {
 ///
 /// # Errors
 /// `action` does not exist or is already bound, the key is locked, or the managed file cannot be written.
-pub fn bind(config: &Resolved, event: Event, action: &str) -> Result<()> {
+pub fn bind(config: &Resolved, by: &str, event: Event, action: &str) -> Result<()> {
     ensure!(
         actions(config).iter().any(|a| a.id == action),
         "no action named {action}; see `legionctl hooks list`"
@@ -130,12 +130,17 @@ pub fn bind(config: &Resolved, event: Event, action: &str) -> Result<()> {
         event_key(event)
     );
     ids.push(action.to_string());
-    config.set_user(&format!("hooks.bindings.{}", event_key(event)), json!(ids))
+    crate::settings::set_mine(
+        config,
+        by,
+        &format!("hooks.bindings.{}", event_key(event)),
+        json!(ids),
+    )
 }
 
 /// # Errors
 /// `action` is not bound to `event`, the key is locked, or the managed file cannot be written.
-pub fn unbind(config: &Resolved, event: Event, action: &str) -> Result<()> {
+pub fn unbind(config: &Resolved, by: &str, event: Event, action: &str) -> Result<()> {
     let mut ids = bound(config, event);
     let before = ids.len();
     ids.retain(|a| a != action);
@@ -144,14 +149,25 @@ pub fn unbind(config: &Resolved, event: Event, action: &str) -> Result<()> {
         "{action} is not bound to {}",
         event_key(event)
     );
-    config.set_user(&format!("hooks.bindings.{}", event_key(event)), json!(ids))
+    crate::settings::set_mine(
+        config,
+        by,
+        &format!("hooks.bindings.{}", event_key(event)),
+        json!(ids),
+    )
 }
 
 /// Define a shell-command action. It runs as you, with `sh -c`, under a timeout; its stdout goes to the agent.
 ///
 /// # Errors
 /// `id`, `command` or `timeout_s` is not valid, the key is locked, or the managed file cannot be written.
-pub fn add_command(config: &Resolved, id: &str, command: &str, timeout_s: u32) -> Result<()> {
+pub fn add_command(
+    config: &Resolved,
+    by: &str,
+    id: &str,
+    command: &str,
+    timeout_s: u32,
+) -> Result<()> {
     validate_id(id)?;
     ensure!(
         !BUILTIN_ACTIONS.iter().any(|b| b.0 == id),
@@ -166,7 +182,9 @@ pub fn add_command(config: &Resolved, id: &str, command: &str, timeout_s: u32) -
         (1..=30).contains(&timeout_s),
         "timeout must be 1-30 seconds; hooks block the agent while they run"
     );
-    config.set_user(
+    crate::settings::set_mine(
+        config,
+        by,
         &format!("hooks.actions.{id}"),
         json!({"command": command.trim(), "timeout": timeout_s}),
     )
@@ -176,7 +194,7 @@ pub fn add_command(config: &Resolved, id: &str, command: &str, timeout_s: u32) -
 ///
 /// # Errors
 /// `id` is built in or not known, a key is locked, or the managed file cannot be written.
-pub fn remove_action(config: &Resolved, id: &str) -> Result<()> {
+pub fn remove_action(config: &Resolved, by: &str, id: &str) -> Result<()> {
     if BUILTIN_ACTIONS.iter().any(|b| b.0 == id) {
         bail!("{id} is built in; unbind it instead");
     }
@@ -186,10 +204,10 @@ pub fn remove_action(config: &Resolved, id: &str) -> Result<()> {
     );
     for event in config.config.hooks.bindings.keys() {
         if bound(config, *event).iter().any(|a| a == id) {
-            unbind(config, *event, id)?;
+            unbind(config, by, *event, id)?;
         }
     }
-    config.set_user(&format!("hooks.actions.{id}"), Value::Null)
+    crate::settings::set_mine(config, by, &format!("hooks.actions.{id}"), Value::Null)
 }
 
 /// Where a command action runs: a repository layer's action in the calling session's sandbox (O-1); the user's own,
@@ -328,15 +346,21 @@ mod tests {
             system: dir.join("etc"),
             user: dir.join("user"),
         };
+        // the layer as a test's file: the writes of `hooks add` and `hooks bind` go through the operator (e2e)
+        std::fs::create_dir_all(&dirs.user).unwrap();
+        std::fs::write(
+            dirs.user.join("hooks.jsonc"),
+            r#"{"hooks": {
+                "actions": {
+                    "hello": {"command": "echo hello", "timeout": 2},
+                    "broken": {"command": "exit 3", "timeout": 2},
+                    "slow": {"command": "sleep 5", "timeout": 1}
+                },
+                "bindings": {"prompt": ["broken", "slow", "hello"]}
+            }}"#,
+        )
+        .unwrap();
         let config = || resolve(&dirs, None).unwrap();
-        unbind(&config(), Event::Prompt, "reminders").unwrap();
-        unbind(&config(), Event::Prompt, "load-if-busy").unwrap();
-        add_command(&config(), "hello", "echo hello", 2).unwrap();
-        add_command(&config(), "broken", "exit 3", 2).unwrap();
-        add_command(&config(), "slow", "sleep 5", 1).unwrap();
-        for id in ["broken", "slow", "hello"] {
-            bind(&config(), Event::Prompt, id).unwrap();
-        }
         let out = run(
             &config(),
             Event::Prompt,
@@ -353,12 +377,5 @@ mod tests {
             "timeout stops slow actions: {out}"
         );
         assert_eq!(lines[2], "hello", "later actions still run");
-
-        remove_action(&config(), "slow").unwrap();
-        assert_eq!(
-            bound(&config(), Event::Prompt),
-            ["broken", "hello"],
-            "removing an action drops its bindings"
-        );
     }
 }

@@ -19,6 +19,14 @@ pub(crate) const CONTEXT: &str = "Input";
 /// The chat bar's key context: Ctrl+J there is a new line.
 pub(crate) const CHAT: &str = "ChatBar";
 
+/// The field above a view for one of its parameters (`inputs`): the tab it belongs to, the parameter, the field.
+pub(crate) struct Find {
+    pub tab: String,
+    pub param: String,
+    pub field: Entity<InputState>,
+    _enter: gpui_kit::Subscription,
+}
+
 /// What takes the keys over the tab: a form, a pending change, or neither.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Modal {
@@ -85,6 +93,49 @@ impl LegionApp {
         }
     }
 
+    /// The view of the tab has a field for a parameter: make it once per tab, with the parameter's value; Enter reads
+    /// the view again with the text.
+    fn settle_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self.tab_key();
+        let Some(data) = self.screen.view_data.get(&key) else {
+            return;
+        };
+        let Some(param) = data.inputs.first().cloned() else {
+            self.find = None;
+            return;
+        };
+        if self
+            .find
+            .as_ref()
+            .is_some_and(|f| f.tab == key && f.param == param)
+        {
+            return;
+        }
+        let value = data.params.get(&param).cloned().unwrap_or_default();
+        let field = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(format!("{}…", crate::forms::label(&param)))
+                .default_value(value)
+        });
+        let name = param.clone();
+        let enter = cx.subscribe_in(
+            &field,
+            window,
+            move |app: &mut LegionApp, field, event, _, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    let text = field.read(cx).value().trim().to_string();
+                    app.set_param(&name, &text, cx);
+                }
+            },
+        );
+        self.find = Some(Find {
+            tab: key,
+            param,
+            field,
+            _enter: enter,
+        });
+    }
+
     /// Before each frame: the chat bar shows the tab's text, a new form gets its text fields, and the keys go to a
     /// new form's first field or a new pending change's safe button, and back when it closes.
     pub(crate) fn settle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -102,12 +153,15 @@ impl LegionApp {
             }
         });
         self.chat_synced = (text, hint);
+        self.settle_find(window, cx);
         let mut first = None;
         if let Some(form) = self.state.form.as_mut() {
             for f in &form.fields {
                 if !matches!(
                     f.kind,
-                    legionctl_api::form::Kind::Bool | legionctl_api::form::Kind::Choice(_)
+                    legionctl_api::form::Kind::Bool
+                        | legionctl_api::form::Kind::Choice(_)
+                        | legionctl_api::form::Kind::Choices(_)
                 ) && !form.inputs.contains_key(&f.name)
                 {
                     let value = form.values.get(&f.name).cloned().unwrap_or_default();
@@ -124,6 +178,7 @@ impl LegionApp {
                     form.inputs.insert(f.name.clone(), input);
                 }
             }
+            dropdowns(form, window, cx);
             first = form
                 .fields
                 .iter()
@@ -276,5 +331,43 @@ impl LegionApp {
                     .aria_label("Message"),
             )
             .test_support()
+    }
+}
+
+/// A form's choices with more words than buttons get their dropdown, once; a choice goes into the form's texts.
+fn dropdowns(form: &mut crate::Form, window: &mut Window, cx: &mut Context<LegionApp>) {
+    for f in &form.fields {
+        if let legionctl_api::form::Kind::Choice(words) = &f.kind
+            && words.len() > legionctl_api::form::BUTTONS
+            && !form.selects.contains_key(&f.name)
+        {
+            let value = form.values.get(&f.name).cloned().unwrap_or_default();
+            let at = words.iter().position(|w| *w == value);
+            let select = cx.new(|cx| {
+                gpui_kit::component::select::SelectState::new(
+                    gpui_kit::component::select::SearchableVec::new(words.clone()),
+                    at.map(gpui_kit::component::IndexPath::new),
+                    window,
+                    cx,
+                )
+            });
+            let name = f.name.clone();
+            let chosen = cx.subscribe_in(
+                &select,
+                window,
+                move |app: &mut LegionApp, _, event, _, cx| {
+                    let gpui_kit::component::select::SelectEvent::Confirm(Some(word)) = event
+                    else {
+                        return;
+                    };
+                    if let Some(form) = app.state.form.as_mut() {
+                        form.values.insert(name.clone(), word.clone());
+                    }
+                    cx.notify();
+                },
+            );
+            form.selects
+                .insert(f.name.clone(), (select, std::rc::Rc::new(chosen)));
+        }
     }
 }

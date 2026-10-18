@@ -171,7 +171,7 @@ def prompt(params):
         "mcp: " + ",".join(sorted(s.get("name", "?") for s in mcp_servers)),
         f"permission: {outcome.get('optionId', outcome.get('outcome'))}",
         "COMMIT_OK" if committed else "COMMIT_FAILED",
-        "PUSH_REFUSED" if (not pushed and "gates.git.deny" in push_output) else "PUSH_NOT_REFUSED",
+        "PUSH_REFUSED" if (not pushed and "actions.forbid" in push_output) else "PUSH_NOT_REFUSED",
         "inside: " + where(),
         "folder: " + os.getcwd(),
         "bound: " + json.dumps({"mcp": [{k: s.get(k) for k in ("name", "command", "args")} for s in mcp_servers], "meta": meta,

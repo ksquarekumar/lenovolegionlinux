@@ -272,6 +272,9 @@ pub struct View {
     /// A parameter's value when none is given.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub defaults: BTreeMap<String, String>,
+    /// The string parameters that the person types in a field above the view (a search).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
     /// Who made it when not the user: `agent:<composer>` for the composer's views. Its buttons confirm every change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<String>,
@@ -374,7 +377,7 @@ pub fn schema() -> Result<(&'static str, Value)> {
 }
 
 /// The seeds that legionctl ships: (name, text).
-const SEEDS: [(&str, &str); 13] = [
+const SEEDS: [(&str, &str); 16] = [
     (
         "machine-now",
         include_str!("../../../config/views/machine-now.jsonc"),
@@ -418,6 +421,18 @@ const SEEDS: [(&str, &str); 13] = [
         include_str!("../../../config/views/composer-cost.jsonc"),
     ),
     ("about", include_str!("../../../config/views/about.jsonc")),
+    (
+        "settings",
+        include_str!("../../../config/views/settings.jsonc"),
+    ),
+    (
+        "settings-changed",
+        include_str!("../../../config/views/settings-changed.jsonc"),
+    ),
+    (
+        "settings-actions",
+        include_str!("../../../config/views/settings-actions.jsonc"),
+    ),
 ];
 
 /// The seed of `name`, if legionctl ships one.
@@ -607,6 +622,7 @@ impl View {
             .into_iter()
             .flatten()
             .chain(self.defaults.keys())
+            .chain(&self.inputs)
         {
             ensure!(
                 self.params.contains_key(name),
@@ -967,6 +983,10 @@ pub struct Rendered {
     pub params: BTreeMap<String, String>,
     /// It reads the code of a git repository, and its folder is in none: the client asks for one.
     pub needs_repository: bool,
+    /// The parameters that the person types in a field above the view.
+    pub inputs: Vec<String>,
+    /// How many settings change what the view shows (its gear opens them: the view `settings` with `view=<name>`).
+    pub settings: usize,
 }
 
 /// A node of a graph.
@@ -1306,6 +1326,12 @@ impl Rendered {
             legend: String::new(),
             params: BTreeMap::new(),
             needs_repository: false,
+            inputs: view.inputs.clone(),
+            settings: crate::settings::registry()
+                .unwrap_or_default()
+                .iter()
+                .filter(|s| s.affects.contains(&view.name))
+                .count(),
         }
     }
 

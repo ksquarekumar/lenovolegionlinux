@@ -239,7 +239,7 @@ impl LegionApp {
     }
 
     /// Set a parameter of the tab's view; the tab reads the view again with it.
-    fn set_param(&mut self, param: &str, value: &str, cx: &mut Context<Self>) {
+    pub(crate) fn set_param(&mut self, param: &str, value: &str, cx: &mut Context<Self>) {
         let Some(Tab::View { params, .. }) = self.screen.tabs.get_mut(self.screen.active) else {
             return;
         };

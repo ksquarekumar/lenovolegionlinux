@@ -1000,8 +1000,22 @@ operations! {
     config_show / ConfigShow = "config.show", Read, Empty => ConfigView;
     /// Which file set a key, the values it overrode, and whether /etc/legionctl locks it.
     config_explain / ConfigExplain = "config.explain", Read, ExplainIn => Explanation;
-    /// Every setting: what it does, its value, where the value comes from, and its built-in default.
-    config_settings / ConfigSettings = "config.settings", Read, Empty => SettingsView;
+    /// Every setting: what it does, its value, where the value comes from, its built-in default, who may change it,
+    /// and what it affects; search, by module, by view, or only what you changed.
+    config_settings / ConfigSettings = "config.settings", Read, SettingsIn => SettingsView;
+    /// Change a setting: the value is checked against the setting, then written for you (or for the project, or for
+    /// this computer), and kept in the history.
+    config_set / ConfigSet = "config.set", Workspace, ConfigSetIn => SettingChanged;
+    /// Remove a setting's value from one layer (you, the project or this computer): the value below it applies again.
+    config_unset / ConfigUnset = "config.unset", Workspace, ConfigUnsetIn => SettingChanged;
+    /// Add an entry to a list setting, such as a forbidden action with its reason.
+    config_add / ConfigAdd = "config.add", Workspace, ConfigItemIn => SettingChanged;
+    /// Remove an entry from a list setting.
+    config_remove / ConfigRemove = "config.remove", Workspace, ConfigItemIn => SettingChanged;
+    /// Undo a change of a setting: the value before it applies again, in the same layer.
+    config_revert / ConfigRevert = "config.revert", Workspace, ConfigRevertIn => SettingChanged;
+    /// The changes of settings, newest first: what changed, where, from what to what, and who changed it.
+    config_history / ConfigHistory = "config.history", Read, ConfigHistoryIn => SettingsHistory;
     /// The config layers in merge order, their files, and the locked keys.
     config_layers / ConfigLayers = "config.layers", Read, Empty => LayerList;
     /// Each resource of the machine (VMs, GPU, mounts, configsets, sessions and workspaces): its state, what uses it,

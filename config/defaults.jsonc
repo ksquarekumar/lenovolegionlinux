@@ -1,8 +1,8 @@
 // legionctl defaults: the lowest config layer, compiled into every legionctl binary.
 //
 // Layers, lowest first: these defaults, /etc/legionctl/*.jsonc (system), ~/.config/legionctl/*.jsonc (user),
-// <repo>/.legionctl/*.jsonc (repository). Files in a layer merge in name order; in the user layer, managed.jsonc
-// (written by `legionctl reminders` and `legionctl hooks`) merges last.
+// <repo>/.legionctl/*.jsonc (repository). Files in a layer merge in name order; managed.jsonc (written by `legionctl
+// config set` and the operations that change settings) merges last. config/settings.jsonc declares each setting.
 //
 // Merge: objects merge per key; any other value replaces the lower one; `null` removes the key; "name+": [...]
 // appends to the array "name". `legionctl config explain <key>` shows which file set a value.
@@ -10,16 +10,17 @@
   "config": {
     // Only these defaults and /etc/legionctl may set "config". Lowest first.
     "precedence": ["defaults", "system", "user", "repo"],
-    // Keys or prefixes ("hooks.actions") that only the defaults and /etc/legionctl may set.
+    // More keys or prefixes ("hooks.actions") that only the defaults and /etc/legionctl may set, besides every
+    // setting with the computer scope only.
     "locked": [],
-    // Keys or prefixes that a repository's .legionctl file sets only after you allow that file once (trust on first
-    // use): legionctl asks with a desktop notification the first time, and again when the file changes. Until you
-    // allow it, and after Deny, the file's values of these keys are not used (`legionctl config layers` says so).
-    "approve": ["hooks", "session", "gates", "gateway", "mcp", "packages", "plugins", "dossier", "workspace", "runnables",
-                "reminders", "agents", "checks", "views", "app"],
-    // Keys or prefixes that a repository's .legionctl file never sets, also after you allow the file: who pays for an
-    // agent (its account). "*" stands for one key part.
-    "repo_never": ["agents.configs.*.account", "agents.accounts"]
+    // More keys or prefixes that a repository's .legionctl file sets only after you allow that file once (trust on
+    // first use), besides every powerful and machine setting (config/settings.jsonc): legionctl asks with a desktop
+    // notification the first time, and again when the file changes. Until you allow it, and after Deny, the file's
+    // values of these keys are not used (`legionctl config layers` says so).
+    "approve": [],
+    // More keys or prefixes that a repository's .legionctl file never sets, also after you allow the file, besides
+    // every setting without the project scope: who pays for an agent (its account). "*" stands for one key part.
+    "repo_never": ["agents.configs.*.account"]
   },
 
   "workspace": {
@@ -203,9 +204,10 @@
     ]
   },
 
-  // MCP servers for session agents: name -> { "command": [...] or "package": name, "allow": [tools] }. The agent reaches each only
+  // MCP servers for session agents: name -> { "command": [...] or "package": name }. The agent reaches each only
   // through legionctl's MCP server (legionctl_find, legionctl_describe, legionctl_run with op "<server>/<tool>"), which
-  // starts it behind legionctl mcp-proxy: only the allowed tools, every call logged (legionctl tools calls).
+  // starts it behind legionctl mcp-proxy: only the tools that actions allows (tool:<server>/<tool>), every call logged
+  // (legionctl tools calls).
   "mcp": {
     "servers": {}
   },
@@ -320,17 +322,6 @@
     "timeout_minutes": 60
   },
 
-  "gates": {
-    "git": {
-      // Refused: a subcommand and the flags that make it unsafe. Merge goes through workspace_merge; pushes and
-      // history changes stay with the user.
-      "deny": [
-        "push", "fetch", "pull", "remote", "reset --hard", "rebase", "clean -f", "branch -D",
-        "branch --delete --force", "filter-branch", "gc --prune", "update-ref", "reflog expire"
-      ]
-    }
-  },
-
   // When the load counts as busy or overloaded (`legionctl load`). Pressure values are PSI avg10 percentages.
   "load": {
     "disk_busy_percent": 10,
@@ -354,14 +345,54 @@
   // in the folder capabilities/ of /etc/legionctl, ~/.config/legionctl and a repository's .legionctl. A session gets
   // the set of its harness and of its repository's languages by itself, and the sets that it names (its config, a
   // team member's config, `session start --capability <set>`). The grant is the subset that its environment, its
-  // parent and this layer allow; anything else refuses the start with the reason. "allow": the shipped, system and
-  // user sets that a grant may hold; a repository's own set needs no entry, but its powerful parts (host, storage,
-  // toolverse, connections, harness) need your first-use answer. `legionctl runnables show <session>` gives a grant.
-  // A set with a toolverse is a toolset (DESIGN/22): an agent holds the read class and the toolsets of its skills; a
-  // call outside them asks you for the toolset that holds it (`legionctl runnables scope`).
-  "runnables": {
-    "allow": ["claude-code", "codex", "rust-dev", "node-dev", "python-dev", "web-read", "github-read", "dossier-write", "machine-read",
-              "workspace-write", "code-work", "agent-work", "thread-member", "views-write", "session-own", "settings-change", "machine-change", "mcp-tools"]
+  // parent and actions.allow allow (below); anything else refuses the start with the reason. A repository's own set
+  // needs no entry, but its powerful parts (host, storage, toolverse, connections, harness) need your first-use
+  // answer. `legionctl runnables show <session>` gives a grant. A set with a toolverse is a toolset (DESIGN/22): an
+  // agent holds the read class and the toolsets of its skills; a call outside them asks you for the toolset that
+  // holds it (`legionctl runnables scope`).
+  //
+  // What agents may and may not do (`legionctl config add actions.forbid "<kind>:<name>" --reason "..."`, Settings).
+  // A pattern is <kind>:<name>, "*" any text: op:<operation> (allowed: no toolset question; forbidden: refused),
+  // toolset:<set> (allowed: a shipped, system or user set that a grant may hold), tool:<server>/<tool> (a server with
+  // allowed entries offers only those), git:<subcommand> <flags> (the git gate of a session sandbox; a short flag
+  // also matches in a bundle such as -fd), cmd:<command> (Claude Code's permissions.deny in a session). Forbidden
+  // wins over allowed. Merge goes through the workspace merge; pushes and history changes stay with you.
+  "actions": {
+    "allow": [
+      { "pattern": "toolset:claude-code", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:codex", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:rust-dev", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:node-dev", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:python-dev", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:web-read", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:github-read", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:dossier-write", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:machine-read", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:workspace-write", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:code-work", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:agent-work", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:thread-member", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:views-write", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:session-own", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:settings-change", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:machine-change", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:mcp-tools", "reason": "Ships with legionctl." }
+    ],
+    "forbid": [
+      { "pattern": "git:push", "reason": "Pushes stay with you." },
+      { "pattern": "git:fetch", "reason": "Remotes stay with you." },
+      { "pattern": "git:pull", "reason": "Remotes stay with you." },
+      { "pattern": "git:remote", "reason": "Remotes stay with you." },
+      { "pattern": "git:reset --hard", "reason": "It deletes work; merge with the workspace merge." },
+      { "pattern": "git:rebase", "reason": "History changes stay with you." },
+      { "pattern": "git:clean -f", "reason": "It deletes files that git does not keep." },
+      { "pattern": "git:branch -D", "reason": "It deletes a branch that is not merged." },
+      { "pattern": "git:branch --delete --force", "reason": "It deletes a branch that is not merged." },
+      { "pattern": "git:filter-branch", "reason": "History changes stay with you." },
+      { "pattern": "git:gc --prune", "reason": "It deletes old commits for good." },
+      { "pattern": "git:update-ref", "reason": "It moves branches past the gates." },
+      { "pattern": "git:reflog expire", "reason": "It deletes the record of old commits." }
+    ]
   },
 
   // The desktop app (legionctl-app).

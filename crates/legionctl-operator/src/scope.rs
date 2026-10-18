@@ -39,12 +39,35 @@ fn internal(e: &anyhow::Error) -> ApiError {
     }
 }
 
+/// Refuse an agent's call of an operation that `actions.forbid` names, in the settings of the call's folder (its
+/// project's layer too).
+///
+/// # Errors
+/// The operation is forbidden, or the settings cannot be read.
+pub(crate) fn forbidden(name: &str, folder: Option<&std::path::Path>) -> Result<(), ApiError> {
+    let config = crate::engine::config(folder)
+        .map_err(|e| internal(&e))?
+        .config;
+    match config.actions.forbidden("op", name) {
+        Some(rule) => Err(denied(format!(
+            "{name} is forbidden for agents: {} (actions.forbid)",
+            rule.reason
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Whether agent `id` may run `name` now: in its scope (false), or after the user allowed the toolset that holds it
 /// (true). `what` is the call in words, for the question.
 ///
 /// # Errors
 /// No toolset holds the tool, the user did not allow it or could not be asked, or the grant cannot be read or written.
-pub(crate) async fn check(id: &str, name: &str, what: &str) -> Result<bool, ApiError> {
+pub(crate) async fn check(
+    id: &str,
+    name: &str,
+    what: &str,
+    folder: Option<&std::path::Path>,
+) -> Result<bool, ApiError> {
     let class = class_of(name);
     if class == Some("read") {
         return Ok(false);
@@ -55,13 +78,16 @@ pub(crate) async fn check(id: &str, name: &str, what: &str) -> Result<bool, ApiE
     if holds(&scope.manifest.toolverse, name, class) {
         return Ok(false);
     }
-    let config = crate::engine::config(None)
+    let config = crate::engine::config(folder)
         .map_err(|e| internal(&e))?
         .config;
+    if config.actions.allowed("op", name) {
+        return Ok(false);
+    }
     let Some(set) = toolset_for(&config, name, class) else {
         return Err(denied(format!(
-            "{name} is in no toolset that legionctl may grant: add it to a capability set's toolverse and to \
-             runnables.allow"
+            "{name} is in no toolset that legionctl may grant: add it to a capability set's toolverse and allow \
+             that set (actions.allow)"
         )));
     };
     let short = &id[..id.len().min(8)];

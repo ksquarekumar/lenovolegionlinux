@@ -85,24 +85,31 @@ pub fn list(config: &Resolved) -> Vec<Reminder> {
 
 /// # Errors
 /// No reminder has this id, the key is locked, or the managed file cannot be written.
-pub fn set_enabled(config: &Resolved, id: &str, enabled: bool) -> Result<()> {
+pub fn set_enabled(config: &Resolved, by: &str, id: &str, enabled: bool) -> Result<()> {
     ensure!(
         config.config.reminders.contains_key(id),
         "no reminder named {id}; see `legionctl reminders list`"
     );
-    config.set_user(&format!("reminders.{id}.enabled"), Value::Bool(enabled))
+    crate::settings::set_mine(
+        config,
+        by,
+        &format!("reminders.{id}.enabled"),
+        Value::Bool(enabled),
+    )
 }
 
 /// # Errors
 /// `id` or `text` is not valid, `id` is a built-in reminder, the key is locked, or the file cannot be written.
-pub fn add(config: &Resolved, id: &str, text: &str, event: Event) -> Result<()> {
+pub fn add(config: &Resolved, by: &str, id: &str, text: &str, event: Event) -> Result<()> {
     validate_id(id)?;
     validate_text(text)?;
     ensure!(
         !config.built_in(&format!("reminders.{id}")),
         "{id} is a built-in reminder; turn it on or off instead"
     );
-    config.set_user(
+    crate::settings::set_mine(
+        config,
+        by,
         &format!("reminders.{id}"),
         json!({"text": text.trim(), "event": event, "enabled": true}),
     )
@@ -110,7 +117,7 @@ pub fn add(config: &Resolved, id: &str, text: &str, event: Event) -> Result<()> 
 
 /// # Errors
 /// `id` is built in or not known, the key is locked, or the managed file cannot be written.
-pub fn remove(config: &Resolved, id: &str) -> Result<()> {
+pub fn remove(config: &Resolved, by: &str, id: &str) -> Result<()> {
     ensure!(
         !config.built_in(&format!("reminders.{id}")),
         "{id} is built in and cannot be removed; turn it off instead"
@@ -119,7 +126,7 @@ pub fn remove(config: &Resolved, id: &str) -> Result<()> {
         config.config.reminders.contains_key(id),
         "no reminder named {id}"
     );
-    config.set_user(&format!("reminders.{id}"), Value::Null)
+    crate::settings::set_mine(config, by, &format!("reminders.{id}"), Value::Null)
 }
 
 /// The built-in reminder to keep the session's dossier; it applies only to a session with a dossier.

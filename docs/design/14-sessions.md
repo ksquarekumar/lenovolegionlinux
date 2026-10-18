@@ -21,7 +21,7 @@ Builds on 12-operator (harness, sandbox, gateway) and 13-daemon (one-writer data
   and writable: the workspace, the dossier and what a commit writes in the repository's `.git`. The rest is the
   hardening below (EV-review-08, 2026-10-16).
 - The git gate: `/usr/bin/git` in the sandbox is the `legionctl` binary; started as `git`, it asks the operator
-  (`internal.gates.check`, config `gates.git.deny`, lockable from `/etc`) and runs the real git (mounted read-only in the
+  (`internal.gates.check`, the `git:` entries of setting `actions.forbid`, lockable from `/etc`) and runs the real git (mounted read-only in the
   session's runtime folder) or refuses. Default (decided 2026-10-13): local commands run; push, fetch, pull, remote,
   reset --hard, rebase, clean -f, branch -D, filter-branch, gc --prune, update-ref and reflog expire are refused;
   git aliases are refused, because an alias could name a denied command.
@@ -30,7 +30,7 @@ Builds on 12-operator (harness, sandbox, gateway) and 13-daemon (one-writer data
   (pause/offload/resume, sessions as model calls), the tool proxy and cache.
 
 Built (2026-10-13, S2a): agent permission generation. `session start` writes
-`$XDG_RUNTIME_DIR/legionctl/sessions/<id>/claude-settings.json` with each `gates.git.deny` rule as a Claude Code
+`$XDG_RUNTIME_DIR/legionctl/sessions/<id>/claude-settings.json` with each `git:` and `cmd:` entry of `actions.forbid` as a Claude Code
 `permissions.deny` entry (`Bash(git push:*)`), and the `claude` template passes it with `--settings {settings}`. The
 e2e session test reads the file from inside the sandbox. Codex keeps its command: its own sandbox inside bwrap is
 still to be checked live.
@@ -164,12 +164,12 @@ Hardened (2026-10-16, EV-review-08, user decision "approve all, do it first"):
 - O-1: the repository's commands for a session (checks, test runs, the checkpoint's commit with the commit hooks,
   repository layer hooks) run in a sandbox of the session (`session::Jail`: the same mounts with a throwaway home
   layer, no runtime folder and no network), never on the host. The user's own calls run on the host.
-- O-2: a repository layer file sets the keys of `config.approve` (hooks, session, gates, gateway, mcp, packages,
-  plugins, dossier, workspace, runnables, reminders, agents, checks, views, app) only after the user allowed its
+- O-2: a repository layer file sets the powerful and machine settings (`config/settings.jsonc`, and the keys that
+  `/etc/legionctl` adds in `config.approve`) only after the user allowed its
   content once (desktop question, answer in `approvals.json` with the content hash, named by the file's path in the
   main checkout, so one answer holds in every worktree); a changed file asks again. Every path that reads the
-  repository layer asks (the operator's asker in core). `config.repo_never` (who pays: `agents.configs.*.account`,
-  `agents.accounts`) is never taken from a repository.
+  repository layer asks (the operator's asker in core). A setting without the project scope, and
+  `config.repo_never` (who pays: `agents.configs.*.account`), is never taken from a repository.
 
 Trust fixes (2026-10-17, EV-review-14, plan#todo-198):
 - A-1, A-6, A-4, A-5: the repository's reminders, agent configs, checks (and so the branch's own gates at merge),

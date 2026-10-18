@@ -1,5 +1,5 @@
 //! Trust on first use of a repository's config layer (O-2, user decision 2026-10-16): a `.legionctl` file that sets
-//! a key of `config.approve` (hooks, sandbox, gates, gateway, ...) is used for these keys only after the user allowed
+//! a powerful or machine setting (or a key of `config.approve`) is used for these keys only after the user allowed
 //! its content once, through the same desktop question as an agent's call outside its session. The config resolves
 //! without them meanwhile; the answer is stored with the content's hash, so a changed file asks again.
 

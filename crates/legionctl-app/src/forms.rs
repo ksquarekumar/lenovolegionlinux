@@ -46,10 +46,14 @@ impl LegionApp {
                 let value = form.values.get(&f.name).cloned().unwrap_or_default();
                 let control = match &f.kind {
                     Kind::Bool => choice(&f.name, &["yes", "no"], &value, cx),
+                    Kind::Choice(_) if form.selects.contains_key(&f.name) => {
+                        dropdown(&f.name, &form.selects[&f.name].0)
+                    }
                     Kind::Choice(words) => {
                         let words: Vec<&str> = words.iter().map(String::as_str).collect();
                         choice(&f.name, &words, &value, cx)
                     }
+                    Kind::Choices(words) => several(&f.name, words, &value, cx),
                     // the render makes the text field before this frame's elements
                     _ => self.text_box(f).unwrap_or_else(|| div().into_any_element()),
                 };
@@ -180,6 +184,61 @@ fn choice(name: &str, words: &[&str], value: &str, cx: &mut Context<LegionApp>) 
                     }
                     cx.notify();
                 }))
+        }))
+        .into_any_element()
+}
+
+/// The dropdown state of a choice with more words than buttons.
+pub type Dropdown =
+    gpui_kit::component::select::SelectState<gpui_kit::component::select::SearchableVec<String>>;
+
+/// A dropdown of the words; its choice goes into the form.
+fn dropdown(name: &str, state: &gpui_kit::Entity<Dropdown>) -> AnyElement {
+    gpui_kit::component::select::Select::new(state)
+        .id(SharedString::from(format!("form-{name}")))
+        .small()
+        .min_w(px(220.))
+        .accessibility_label(label(name))
+        .into_any_element()
+}
+
+/// A check box per word: any of them (the words are a list, with commas in the form's text).
+fn several(name: &str, words: &[String], value: &str, cx: &mut Context<LegionApp>) -> AnyElement {
+    let chosen: Vec<&str> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .collect();
+    let app = cx.entity().downgrade();
+    div()
+        .h_flex()
+        .flex_wrap()
+        .gap(S2)
+        .children(words.iter().map(|w| {
+            let (field, word, app) = (name.to_string(), w.clone(), app.clone());
+            gpui_kit::component::checkbox::Checkbox::new(SharedString::from(format!(
+                "form-{name}-{w}"
+            )))
+            .label(w.clone())
+            .checked(chosen.contains(&w.as_str()))
+            .on_click(move |on, _, cx| {
+                let _ = app.update(cx, |app, cx| {
+                    let Some(form) = app.state.form.as_mut() else {
+                        return;
+                    };
+                    let text = form.values.get(&field).cloned().unwrap_or_default();
+                    let mut words: Vec<String> = text
+                        .split(',')
+                        .map(|w| w.trim().to_string())
+                        .filter(|w| !w.is_empty() && *w != word)
+                        .collect();
+                    if *on {
+                        words.push(word.clone());
+                    }
+                    form.values.insert(field.clone(), words.join(", "));
+                    cx.notify();
+                });
+            })
         }))
         .into_any_element()
 }

@@ -16,13 +16,18 @@ pub enum Kind {
     Integer,
     Number,
     Bool,
-    /// One of these words.
+    /// One of these words: a button each for up to [`BUTTONS`], else a dropdown.
     Choice(Vec<String>),
+    /// Any of these words (a list of words): a multi-select.
+    Choices(Vec<String>),
     /// Values with commas between them.
     List {
         integers: bool,
     },
 }
+
+/// A choice of up to this many words shows a button each; more is a dropdown.
+pub const BUTTONS: usize = 3;
 
 /// One field of an operation's form.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,7 +65,28 @@ fn choices(prop: &Value) -> Option<Vec<String>> {
 /// environment) and `dry_run` (the approval flow sets it).
 #[must_use]
 pub fn fields(op: &OpInfo) -> Vec<Field> {
-    let schema = (op.input)();
+    fields_for(op, &BTreeMap::new())
+}
+
+/// The fields of `op`'s form for the texts `given`: a setting's value (`x-setting-value` names the key's field) is
+/// the field of that setting, from the registry (a choice, yes or no, a number with its range, a list).
+#[must_use]
+pub fn fields_for(op: &OpInfo, given: &BTreeMap<String, String>) -> Vec<Field> {
+    let mut schema = (op.input)();
+    if let Some(props) = schema["properties"].as_object_mut() {
+        for prop in props.values_mut() {
+            let setting = prop["x-setting-value"]
+                .as_str()
+                .and_then(|field| given.get(field))
+                .and_then(|key| Some((legionctl_core::settings::setting_of(key)?, key)));
+            if let Some((setting, key)) = setting {
+                let mut kind = legionctl_core::settings::kind_of(key).unwrap_or_default();
+                let fits = legionctl_core::settings::describe(&kind);
+                kind["description"] = format!("{} It takes {fits}.", setting.help).into();
+                *prop = kind;
+            }
+        }
+    }
     let required: Vec<&str> = schema["required"]
         .as_array()
         .into_iter()
@@ -88,6 +114,9 @@ pub fn fields(op: &OpInfo) -> Vec<Field> {
                 Kind::Integer
             } else if types.contains(&"number") {
                 Kind::Number
+            } else if let (true, Some(words)) = (types.contains(&"array"), choices(&prop["items"]))
+            {
+                Kind::Choices(words)
             } else if types.contains(&"array") {
                 Kind::List {
                     integers: prop["items"]["type"] == "integer",
@@ -123,7 +152,7 @@ pub fn fields(op: &OpInfo) -> Vec<Field> {
 /// A required field is empty, or a value is not of its field's kind.
 pub fn input(op: &OpInfo, values: &BTreeMap<String, String>) -> Result<Value> {
     let mut out = Map::new();
-    for field in fields(op) {
+    for field in fields_for(op, values) {
         let text = values.get(&field.name).map_or("", |v| v.trim());
         if text.is_empty() {
             if field.required {
@@ -153,6 +182,23 @@ pub fn input(op: &OpInfo, values: &BTreeMap<String, String>) -> Result<Value> {
                 }
                 Value::from(text)
             }
+            Kind::Choices(words) => text
+                .split(',')
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+                .map(|w| {
+                    if words.iter().any(|k| k == w) {
+                        Ok(Value::from(w))
+                    } else {
+                        bail!(
+                            "{} has {w}, which is not one of {}",
+                            what(),
+                            words.join(", ")
+                        )
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into(),
             Kind::List { integers } => text
                 .split(',')
                 .map(str::trim)
@@ -226,8 +272,13 @@ pub fn route(op: &OpInfo) -> Route {
 pub fn needed(op: &OpInfo, input: &Value) -> bool {
     let fields = fields(op);
     let given = input.as_object().map_or(0, Map::len);
-    fields
-        .iter()
-        .any(|f| f.required && input.get(&f.name).is_none_or(Value::is_null))
+    // a setting's new value is always chosen in the form
+    let setting = (op.input)()["properties"]
+        .as_object()
+        .is_some_and(|p| p.values().any(|prop| prop["x-setting-value"].is_string()));
+    setting
+        || fields
+            .iter()
+            .any(|f| f.required && input.get(&f.name).is_none_or(Value::is_null))
         || (given == 0 && !fields.is_empty())
 }

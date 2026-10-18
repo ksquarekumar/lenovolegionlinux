@@ -1,0 +1,117 @@
+// Every setting of legionctl, next to its key in the config: what the person sees and how legionctl treats it.
+// label: the setting's name for the person; help: one short sentence for the person who uses legionctl (Settings, `legionctl config settings`, tooltips).
+// scope: the layers that may set it: computer (/etc/legionctl, through the system service), user (~/.config/legionctl),
+//   project (the repository's .legionctl). class: safe (no question), powerful (an agent's change asks you; a project
+//   file sets it only after you allow that file), machine (as powerful; for this computer the system asks for your
+//   password). restart: what must start again before a change applies: none, operator, login or reboot. affects: the
+//   views and operation groups that use it (the gear of a view opens these settings). check: what legionctl checks
+//   when the value is used: path (it exists), folder (a folder legionctl can write or make), port (free on this
+//   computer). A test checks that every config key has an entry here and that no entry names a key that is gone.
+{
+  "config.precedence": {"label": "Order of settings files", "help": "The order in which settings files apply, from the built-in defaults to the project.", "scope": ["computer"], "class": "machine", "restart": "none", "affects": ["config"]},
+  "config.locked": {"label": "Settings for the administrator only", "help": "More settings that only this computer's administrator can change.", "scope": ["computer"], "class": "machine", "restart": "none", "affects": ["config"]},
+  "config.approve": {"label": "Project settings that ask first", "help": "More settings that a project can change only after you allow its files once.", "scope": ["computer"], "class": "machine", "restart": "none", "affects": ["config"]},
+  "config.repo_never": {"label": "Settings a project never changes", "help": "More settings that a project can never change, also after you allow its files.", "scope": ["computer"], "class": "machine", "restart": "none", "affects": ["config"]},
+
+  "workspace.root": {"label": "Working copies folder", "help": "The folder where legionctl makes the working copies of your projects.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["workspace"], "check": "folder"},
+  "workspace.nudge": {"label": "Remind agents to use a working copy", "help": "When agents get a reminder to work in their own working copy.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["workspace"]},
+
+  "reminders": {"label": "Reminders for agents", "help": "Short notes that agents get at the start of a session or with each prompt.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["reminders"]},
+
+  "hooks.actions": {"label": "Hook commands", "help": "Commands that run when an agent starts, gets a prompt or ends.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["hooks"]},
+  "hooks.bindings": {"label": "When hook commands run", "help": "Which hook commands run at which agent event.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["hooks"]},
+
+  "dossier.root": {"label": "Notes folder", "help": "The folder that keeps the notes, plans and records of your projects.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["dossier", "dossiers", "plan-graph"], "check": "folder"},
+  "dossier.gate": {"label": "Agents must use the notes", "help": "Stop agents in a project with notes until they work with those notes.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["dossier", "dossiers", "plan-graph"]},
+  "dossier.auto_bind": {"label": "Give agents the last notes", "help": "Give an agent the project's last notes by itself when it starts.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["dossier", "dossiers", "plan-graph"]},
+  "dossier.nudge": {"label": "When to remind about notes", "help": "When agents get a reminder to write their work into the notes.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["dossier", "dossiers", "plan-graph"]},
+  "dossier.nudge_turns": {"label": "Replies before a notes reminder", "help": "How many agent replies may change files before a reminder to write notes.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["dossier", "dossiers", "plan-graph"]},
+  "dossier.stale_hours": {"label": "Hours before notes are free again", "help": "After how many idle hours another agent session can take over a session's notes.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["dossier", "dossiers", "plan-graph"]},
+  "dossier.message_chars": {"label": "Long message limit", "help": "Long messages between agents get a hint to put the details into the notes.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["dossier", "dossiers", "plan-graph"]},
+  "dossier.classes": {"label": "Kinds of records", "help": "The kinds of records that notes can keep.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["dossier", "dossiers", "plan-graph"]},
+  "dossier.immutable_classes": {"label": "Records that cannot change", "help": "Records that cannot change once they are written.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["dossier", "dossiers", "plan-graph"]},
+  "dossier.plan_sections": {"label": "Plan sections", "help": "The sections of a project plan.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["dossier", "dossiers", "plan-graph"]},
+
+  "session.agents": {"label": "Agents", "help": "The agents that legionctl can start, and how to start each.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.writable": {"label": "Agent files a session can change", "help": "Agent files that a session may change; your real files stay as they are.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.caches": {"label": "Tool caches per session", "help": "Tool caches that each session gets its own copy of.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.resume": {"label": "How to continue a session", "help": "How to continue an agent session that ended.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.acp": {"label": "Agent connections", "help": "How the app talks to each agent.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.acp_packages": {"label": "Agent connection programs", "help": "The program that legionctl installs for each agent connection.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.scope": {"label": "Own process group per session", "help": "Keep each agent session in its own group of processes, so that you can pause or stop it.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.hidden": {"label": "Hidden from agents", "help": "Files and folders that agents can never see.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.skills": {"label": "Skills for every session", "help": "Skills that every agent session gets.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.policy.idle_freeze_minutes": {"label": "Pause idle sessions after (minutes)", "help": "Pause an agent session after it waits this many minutes for you; 0 never pauses.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["session"]},
+  "session.policy.offload_headless": {"label": "Pause background runs when busy", "help": "Pause background agent runs while the computer is busy.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["session"]},
+  "session.container.base": {"label": "Container base image", "help": "The image that container sessions start from.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.container.npm": {"label": "Container programs", "help": "Programs that legionctl adds to the container image.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.container.client": {"label": "legionctl in containers", "help": "The legionctl program that runs inside containers.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"], "check": "path"},
+  "session.vm.base": {"label": "Virtual machine base disk", "help": "The disk image that virtual machine sessions start from.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"]},
+  "session.vm.disk_gib": {"label": "Virtual machine disk (GiB)", "help": "Disk size of a virtual machine session, in GiB.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["session"]},
+  "session.vm.memory_mib": {"label": "Virtual machine memory (MiB)", "help": "Memory of a virtual machine session, in MiB.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["session"]},
+  "session.vm.cpus": {"label": "Virtual machine processors", "help": "Processors of a virtual machine session.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["session"]},
+  "session.vm.virtiofsd": {"label": "Folder sharing program", "help": "The program that shares your project folder with a virtual machine.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session"], "check": "path"},
+
+  "mcp.servers": {"label": "Tool servers", "help": "Extra tool servers that agents get.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools"]},
+
+  "packages": {"label": "Packages", "help": "Packages that legionctl can fetch for your projects.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["packages"]},
+
+  "gateway.port": {"label": "Model gateway port", "help": "The local port of the model gateway; 0 turns the port off.", "scope": ["computer", "user"], "class": "powerful", "restart": "operator", "affects": ["gateway", "composer-cost"], "check": "port"},
+  "gateway.accounts": {"label": "Model accounts", "help": "The model accounts that the gateway can use.", "scope": ["computer", "user"], "class": "powerful", "restart": "none", "affects": ["gateway", "composer-cost"]},
+  "gateway.pool": {"label": "Accounts per model", "help": "Which account serves each model, in order.", "scope": ["computer", "user"], "class": "powerful", "restart": "none", "affects": ["gateway", "composer-cost"]},
+  "gateway.cache_ttl_s": {"label": "Model cache time (seconds)", "help": "How long the gateway can answer the same request from its cache, in seconds.", "scope": ["computer", "user"], "class": "safe", "restart": "none", "affects": ["gateway", "composer-cost"]},
+  "gateway.budgets": {"label": "Budgets", "help": "How much each account can spend per day and per month.", "scope": ["computer", "user"], "class": "powerful", "restart": "none", "affects": ["gateway", "composer-cost"]},
+  "gateway.prices": {"label": "Model prices", "help": "Model prices, to show costs and keep budgets.", "scope": ["computer", "user"], "class": "safe", "restart": "none", "affects": ["gateway", "composer-cost"]},
+  "gateway.semantic": {"label": "Answers for similar requests", "help": "Answer similar requests from the cache; empty turns it off.", "scope": ["computer", "user"], "class": "powerful", "restart": "none", "affects": ["gateway", "composer-cost"]},
+
+  "load.disk_busy_percent": {"label": "Busy disk use (%)", "help": "Disk use at which the computer counts as busy.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["load", "machine-now"]},
+  "load.busy.cpu_pressure": {"label": "Busy CPU wait", "help": "CPU wait at which the computer counts as busy.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["load", "machine-now"]},
+  "load.busy.memory_pressure": {"label": "Busy memory wait", "help": "Memory wait at which the computer counts as busy.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["load", "machine-now"]},
+  "load.busy.io_pressure": {"label": "Busy disk wait", "help": "Disk wait at which the computer counts as busy.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["load", "machine-now"]},
+  "load.busy.memory_available_percent": {"label": "Busy free memory (%)", "help": "Free memory below which the computer counts as busy.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["load", "machine-now"]},
+  "load.busy.load_per_cpu": {"label": "Busy load per processor", "help": "Load per processor at which the computer counts as busy.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["load", "machine-now"]},
+  "load.overloaded.cpu_pressure": {"label": "Overloaded CPU wait", "help": "CPU wait at which the computer counts as overloaded.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["load", "machine-now"]},
+  "load.overloaded.memory_pressure": {"label": "Overloaded memory wait", "help": "Memory wait at which the computer counts as overloaded.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["load", "machine-now"]},
+  "load.overloaded.io_pressure": {"label": "Overloaded disk wait", "help": "Disk wait at which the computer counts as overloaded.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["load", "machine-now"]},
+  "load.overloaded.memory_available_percent": {"label": "Overloaded free memory (%)", "help": "Free memory below which the computer counts as overloaded.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["load", "machine-now"]},
+  "load.overloaded.load_per_cpu": {"label": "Overloaded load per processor", "help": "Load per processor at which the computer counts as overloaded.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["load", "machine-now"]},
+
+  "plugins.marketplaces": {"label": "Plugin sources", "help": "Where agent plugins come from.", "scope": ["computer", "user"], "class": "powerful", "restart": "none", "affects": ["agents"]},
+
+  "events.keep_days": {"label": "Days of activity log", "help": "How many days legionctl keeps its activity log; 0 keeps everything.", "scope": ["computer", "user"], "class": "safe", "restart": "operator", "affects": ["events"]},
+
+  "cache": {"label": "Cache sizes", "help": "How much space each kind of cached data can use.", "scope": ["computer", "user"], "class": "safe", "restart": "none", "affects": ["cache"]},
+
+  "windows.vm.host_cpus": {"label": "Windows processors on this computer", "help": "Processors that Windows uses when it runs in a virtual machine.", "scope": ["computer", "user"], "class": "machine", "restart": "none", "affects": ["windows"]},
+  "windows.vm.vcpus": {"label": "Windows processors", "help": "Processors that Windows sees in the virtual machine.", "scope": ["computer", "user"], "class": "machine", "restart": "none", "affects": ["windows"]},
+  "windows.vm.memory_mib": {"label": "Windows memory (MiB)", "help": "Memory of the Windows virtual machine, in MiB.", "scope": ["computer", "user"], "class": "machine", "restart": "none", "affects": ["windows"]},
+  "windows.vm.reserve_mib": {"label": "Memory kept for Linux (MiB)", "help": "Memory that stays free for Linux while Windows runs, in MiB.", "scope": ["computer", "user"], "class": "machine", "restart": "none", "affects": ["windows"]},
+  "windows.vm.usb": {"label": "USB devices for Windows", "help": "USB devices that Windows gets.", "scope": ["computer", "user"], "class": "machine", "restart": "none", "affects": ["windows"]},
+  "windows.vm.shares": {"label": "Folders for Windows", "help": "Linux folders that Windows can open.", "scope": ["computer", "user"], "class": "machine", "restart": "none", "affects": ["windows"]},
+  "windows.vm.looking_glass_mib": {"label": "Windows in a Linux window (MiB)", "help": "Memory to show Windows in a Linux window while it has the graphics card; 0 turns it off.", "scope": ["computer", "user"], "class": "machine", "restart": "none", "affects": ["windows"]},
+  "windows.vm.ovmf_code": {"label": "Windows firmware", "help": "The firmware program of the Windows virtual machine.", "scope": ["computer", "user"], "class": "machine", "restart": "none", "affects": ["windows"], "check": "path"},
+  "windows.vm.ovmf_vars": {"label": "Windows firmware settings", "help": "The firmware settings file of the Windows virtual machine.", "scope": ["computer", "user"], "class": "machine", "restart": "none", "affects": ["windows"], "check": "path"},
+
+  "agents.configs": {"label": "Agent setups", "help": "Your own agent setups: model, account, skills and limits.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["agents", "thread", "accounts"]},
+
+  "checks.*": {"label": "Project checks", "help": "The checks of a project and the commands that run them.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["code"]},
+  "checks.required": {"label": "Required checks", "help": "The checks that every project must have, such as lint and tests.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["code"]},
+  "checks.nudge": {"label": "Remind about missing checks", "help": "Tell agents when a project misses a required check.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["code"]},
+  "checks.keep_runs": {"label": "Check runs to keep", "help": "How many check runs legionctl keeps for each check.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["code"]},
+  "checks.timeout_minutes": {"label": "Check time limit (minutes)", "help": "Stop a check after this many minutes.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["code"]},
+
+  "actions.allow": {"label": "Allowed actions", "help": "Actions that agents can do without a question, such as a tool set or a tool of a tool server.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools", "runnables", "settings-actions"]},
+  "actions.forbid": {"label": "Forbidden actions", "help": "Actions that agents can never do, such as a git command or an operation.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools", "runnables", "settings-actions"]},
+
+  "app.agent": {"label": "App agent", "help": "The agent that the app uses when you do not choose one.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["thread"]},
+
+  "rlcd.backend": {"label": "Fast decision model", "help": "The fast decision model that legionctl uses.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["rlcd"]},
+  "rlcd.backends": {"label": "Fast decision models", "help": "The fast decision models that legionctl can use.", "scope": ["computer", "user"], "class": "powerful", "restart": "none", "affects": ["rlcd"]},
+
+  "views.composer_models": {"label": "View maker models", "help": "The model that each agent uses to make views.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["views", "composer-cost"]},
+  "views.rlcd": {"label": "Reuse views with the fast model", "help": "Use the fast decision model to find a view you already have.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["views", "composer-cost"]},
+  "views.rlcd_min": {"label": "Reuse confidence (0 to 1)", "help": "How sure the fast decision model must be before it reuses a view.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["views", "composer-cost"]},
+
+  "actions.allow": {"label": "Allowed actions", "help": "Actions that agents can do without a question, such as a tool set or a tool of a tool server.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools", "runnables", "settings-actions"]},
+  "actions.forbid": {"label": "Forbidden actions", "help": "Actions that agents can never do, such as a git command or an operation.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools", "runnables", "settings-actions"]}
+}

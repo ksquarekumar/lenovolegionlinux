@@ -1,0 +1,35 @@
+// Seed (DESIGN-14): only the settings whose value is not the built-in default, with where each value comes from, and
+// the newest changes with Undo.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "settings-changed",
+  "title": "Changed settings",
+  "intent": "what I changed in the settings",
+  "space": "agents",
+  "widget": "stack",
+  "views": [
+    {
+      "name": "settings-changed-now",
+      "title": "Not the default",
+      "widget": "table",
+      "source": { "op": "config.settings", "input": { "changed": true }, "path": "$.items" },
+      "columns": ["label", "text", "from"],
+      "labels": { "label": "Setting", "text": "Value", "from": "Set by" },
+      "row_actions": [
+        { "label": "Change", "op": "config.set", "input": { "key": "{row.key}", "value": "{row.edit}" } },
+        { "label": "Reset", "op": "config.unset", "input": { "key": "{row.key}" } }
+      ]
+    },
+    {
+      "name": "settings-history",
+      "title": "Changes",
+      "widget": "table",
+      "source": { "op": "config.history", "path": "$.items" },
+      "columns": ["at", "key", "scope", "new", "by"],
+      "labels": { "at": "When", "key": "Setting", "scope": "For", "new": "New value", "by": "By" },
+      "formats": { "at": "time" },
+      "row_actions": [{ "label": "Undo", "op": "config.revert", "input": { "id": "{row.id}" } }]
+    }
+  ],
+  "refresh": { "events": ["config.*", "hooks.*", "reminders.*"] }
+}

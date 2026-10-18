@@ -44,6 +44,26 @@ pub struct ExplainIn {
     pub key: String,
 }
 
+/// Which settings `config settings` lists: all, or those that match every filter given.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SettingsIn {
+    /// Words in a setting's name, key or help (any case).
+    #[serde(default)]
+    pub search: Option<String>,
+    /// Only one module: the key's first part (`dossier`, `gateway`).
+    #[serde(default)]
+    pub module: Option<String>,
+    /// Only this setting, by its key.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Only the settings that a view or an operation group uses (the gear of a view).
+    #[serde(default)]
+    pub view: Option<String>,
+    /// Only the settings whose value is not the built-in default.
+    #[serde(default)]
+    pub changed: bool,
+}
+
 /// Every setting with its value now and where that value comes from (DESIGN-20).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SettingsView {
@@ -57,8 +77,92 @@ pub struct SettingRow {
     pub setting: legionctl_core::settings::Setting,
     /// The value in use.
     pub value: serde_json::Value,
-    /// The layer that set the value in use: defaults, system, user or repo.
+    /// The value in use in a line: plain text as it is, other values as JSON, a long list or map as its count.
+    pub text: String,
+    /// The value in use for a form: the value, and empty text for none.
+    pub edit: serde_json::Value,
+    /// Where the value in use comes from: defaults, computer, user or project.
     pub from: String,
+    /// Only this computer's administrator may change it.
+    pub locked: bool,
+    /// Why the value in use does not work, with the step that fixes it (its deep check); empty when it works.
+    pub finding: String,
+    /// A list's entries, each with where it comes from (a list of rules: pattern, reason, from).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<serde_json::Value>,
+}
+
+/// The layer that a change goes into.
+fn for_you() -> legionctl_core::settings::Scope {
+    legionctl_core::settings::Scope::User
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigSetIn {
+    /// Dotted key of the setting, or of an entry in a map setting (`reminders.ste100.enabled`).
+    pub key: String,
+    /// The new value: text for a setting that takes text, else JSON (`5`, `true`, `["a", "b"]`).
+    #[schemars(extend("x-setting-value" = "key"))]
+    pub value: serde_json::Value,
+    /// For whom: user (you), project (the repository's settings, for everybody who works in it) or computer (every
+    /// user of this computer; the system asks for an administrator's password).
+    #[serde(default = "for_you")]
+    pub scope: legionctl_core::settings::Scope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigUnsetIn {
+    /// Dotted key of the setting.
+    pub key: String,
+    /// The layer to remove it from: user, project or computer.
+    #[serde(default = "for_you")]
+    pub scope: legionctl_core::settings::Scope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigItemIn {
+    /// Dotted key of a list setting (`actions.forbid`, `session.hidden`).
+    pub key: String,
+    /// The entry: for a list of rules its pattern (`git:push`, `op:boot.*`), else the item (text or JSON).
+    pub value: serde_json::Value,
+    /// For a list of rules: why, in a few words.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// For whom: user, project or computer.
+    #[serde(default = "for_you")]
+    pub scope: legionctl_core::settings::Scope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigRevertIn {
+    /// The change to undo: its number in `config history`.
+    pub id: i64,
+}
+
+fn twenty() -> u32 {
+    20
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigHistoryIn {
+    /// Only this setting (and the keys inside it).
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default = "twenty")]
+    pub limit: u32,
+}
+
+/// A setting changed: the change kept in the history, and what the person needs to know.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SettingChanged {
+    pub change: legionctl_core::settings::Change,
+    pub lines: Vec<String>,
+}
+
+/// The changes of settings, newest first.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SettingsHistory {
+    pub items: Vec<legionctl_core::settings::Change>,
 }
 
 /// The merged config and what was not used.
@@ -1371,7 +1475,7 @@ pub struct CallBeginIn {
     pub tool: String,
     /// BLAKE2b-128 of the arguments' JSON, hex.
     pub args_hash: String,
-    /// The proxy refuses it (not in `mcp.servers.<server>.allow`): the record keeps it as refused, and no toolset is
+    /// The proxy refuses it (`actions.allow` and `actions.forbid` of its tools): the record keeps it as refused, and no toolset is
     /// asked for.
     #[serde(default)]
     pub refused: bool,

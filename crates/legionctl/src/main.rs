@@ -28,7 +28,8 @@ fn client_only() -> Vec<Command> {
         Command::new("mcp-proxy")
             .about("A session agent's way to an MCP server: only the allowed tools, every call logged (tools calls)")
             .arg(Arg::new("server").long("server").required(true))
-            .arg(Arg::new("allow").long("allow").action(ArgAction::Append).help("A tool the agent may call; none: all"))
+            .arg(Arg::new("allow").long("allow").action(ArgAction::Append).help("A tool the agent may call (`*` is any text); none: all"))
+            .arg(Arg::new("forbid").long("forbid").action(ArgAction::Append).help("A tool the agent may never call (`*` is any text)"))
             .arg(
                 Arg::new("cache")
                     .long("cache")
@@ -365,7 +366,7 @@ fn main() -> Result<()> {
             let server = sub.get_one::<String>("server").cloned().unwrap_or_default();
             return tokio::runtime::Runtime::new()?.block_on(proxy::serve(
                 server,
-                strings("allow"),
+                (strings("allow"), strings("forbid")),
                 strings("cache")
                     .iter()
                     .map(|r: &String| r.parse())

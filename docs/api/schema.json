@@ -2485,7 +2485,7 @@
                 "type": "string"
               },
               "trust": {
-                "description": "Whether a capability set may be used, by its layer: layer (`runnables.allow` decides), plain (a repository set\nwith no powerful part), allowed, waits (for the user's first answer) or denied.",
+                "description": "Whether a capability set may be used, by its layer: layer (`actions.allow` decides), plain (a repository set\nwith no powerful part), allowed, waits (for the user's first answer) or denied.",
                 "type": "string",
                 "enum": [
                   "layer",
@@ -7397,7 +7397,7 @@
         },
         "refused": {
           "type": "boolean",
-          "description": "The proxy refuses it (not in `mcp.servers.<server>.allow`): the record keeps it as refused, and no toolset is\nasked for.",
+          "description": "The proxy refuses it (`actions.allow` and `actions.forbid` of its tools): the record keeps it as refused, and no toolset is\nasked for.",
           "default": false
         }
       },
@@ -14030,7 +14030,47 @@
     "internal": false,
     "input": {
       "type": "object",
-      "title": "Empty",
+      "properties": {
+        "search": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Words in a setting's name, key or help (any case).",
+          "default": null
+        },
+        "module": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only one module: the key's first part (`dossier`, `gateway`).",
+          "default": null
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only this setting, by its key.",
+          "default": null
+        },
+        "view": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only the settings that a view or an operation group uses (the gear of a view).",
+          "default": null
+        },
+        "changed": {
+          "type": "boolean",
+          "description": "Only the settings whose value is not the built-in default.",
+          "default": false
+        }
+      },
+      "description": "Which settings `config settings` lists: all, or those that match every filter given.",
+      "title": "SettingsIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -14050,42 +14090,153 @@
                 "description": "The module that owns it: the key's first part.",
                 "type": "string"
               },
+              "label": {
+                "description": "Its name for the person.",
+                "type": "string"
+              },
               "help": {
-                "description": "What it does, for the user (`config/settings-help.jsonc`; the code's doc comments are for builders).",
+                "description": "What it does, for the person.",
                 "type": "string"
               },
               "kind": {
-                "description": "The JSON schema of its value."
+                "description": "The JSON schema of its value, every part inline; `x-rules`: a list of patterns with a reason each."
               },
               "default": {
                 "description": "The built-in default (null: none)."
               },
-              "locked": {
-                "description": "Only the built-in defaults and /etc/legionctl set it.",
-                "type": "boolean"
+              "scope": {
+                "description": "The layers that may set it.",
+                "type": "array",
+                "items": {
+                  "description": "A layer that a setting may be set in.",
+                  "oneOf": [
+                    {
+                      "description": "`/etc/legionctl`, through the system service (the system asks for an administrator's password).",
+                      "type": "string",
+                      "const": "computer"
+                    },
+                    {
+                      "description": "`~/.config/legionctl`.",
+                      "type": "string",
+                      "const": "user"
+                    },
+                    {
+                      "description": "The repository's `.legionctl`.",
+                      "type": "string",
+                      "const": "project"
+                    }
+                  ]
+                }
               },
-              "approve": {
-                "description": "A repository's file sets it only after the user allowed that file once.",
-                "type": "boolean"
+              "class": {
+                "description": "How a change is approved.",
+                "oneOf": [
+                  {
+                    "description": "No question.",
+                    "type": "string",
+                    "const": "safe"
+                  },
+                  {
+                    "description": "An agent's change asks you; a project file sets it only after you allowed that file.",
+                    "type": "string",
+                    "const": "powerful"
+                  },
+                  {
+                    "description": "As powerful, and it changes how this computer runs.",
+                    "type": "string",
+                    "const": "machine"
+                  }
+                ]
+              },
+              "restart": {
+                "description": "What must start again before a change applies.",
+                "type": "string",
+                "enum": [
+                  "none",
+                  "operator",
+                  "login",
+                  "reboot"
+                ]
+              },
+              "affects": {
+                "description": "The views and operation groups that use it.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "check": {
+                "anyOf": [
+                  {
+                    "description": "What legionctl checks when it uses a value (DESIGN-20 rule 9).",
+                    "oneOf": [
+                      {
+                        "description": "The file or folder is there.",
+                        "type": "string",
+                        "const": "path"
+                      },
+                      {
+                        "description": "A folder that legionctl can write, or make.",
+                        "type": "string",
+                        "const": "folder"
+                      },
+                      {
+                        "description": "A port that is free on this computer (checked when it changes).",
+                        "type": "string",
+                        "const": "port"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "value": {
                 "description": "The value in use."
               },
-              "from": {
-                "description": "The layer that set the value in use: defaults, system, user or repo.",
+              "text": {
+                "description": "The value in use in a line: plain text as it is, other values as JSON, a long list or map as its count.",
                 "type": "string"
+              },
+              "edit": {
+                "description": "The value in use for a form: the value, and empty text for none."
+              },
+              "from": {
+                "description": "Where the value in use comes from: defaults, computer, user or project.",
+                "type": "string"
+              },
+              "locked": {
+                "description": "Only this computer's administrator may change it.",
+                "type": "boolean"
+              },
+              "finding": {
+                "description": "Why the value in use does not work, with the step that fixes it (its deep check); empty when it works.",
+                "type": "string"
+              },
+              "entries": {
+                "description": "A list's entries, each with where it comes from (a list of rules: pattern, reason, from).",
+                "type": "array",
+                "items": true
               }
             },
             "required": [
               "key",
               "module",
+              "label",
               "help",
               "kind",
               "default",
-              "locked",
-              "approve",
+              "scope",
+              "class",
+              "restart",
+              "affects",
               "value",
-              "from"
+              "text",
+              "edit",
+              "from",
+              "locked",
+              "finding"
             ]
           }
         },
@@ -14102,6 +14253,717 @@
       ],
       "description": "Every setting with its value now and where that value comes from (DESIGN-20).",
       "title": "SettingsView",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "config.set": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Dotted key of the setting, or of an entry in a map setting (`reminders.ste100.enabled`)."
+        },
+        "value": {
+          "description": "The new value: text for a setting that takes text, else JSON (`5`, `true`, `[\"a\", \"b\"]`).",
+          "x-setting-value": "key"
+        },
+        "scope": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "computer",
+              "description": "`/etc/legionctl`, through the system service (the system asks for an administrator's password)."
+            },
+            {
+              "type": "string",
+              "const": "user",
+              "description": "`~/.config/legionctl`."
+            },
+            {
+              "type": "string",
+              "const": "project",
+              "description": "The repository's `.legionctl`."
+            }
+          ],
+          "description": "For whom: user (you), project (the repository's settings, for everybody who works in it) or computer (every\nuser of this computer; the system asks for an administrator's password).",
+          "default": "user"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "title": "ConfigSetIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "change": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The history entry's id."
+            },
+            "at": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Seconds since the epoch."
+            },
+            "key": {
+              "type": "string"
+            },
+            "scope": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "const": "computer",
+                  "description": "`/etc/legionctl`, through the system service (the system asks for an administrator's password)."
+                },
+                {
+                  "type": "string",
+                  "const": "user",
+                  "description": "`~/.config/legionctl`."
+                },
+                {
+                  "type": "string",
+                  "const": "project",
+                  "description": "The repository's `.legionctl`."
+                }
+              ],
+              "description": "A layer that a setting may be set in."
+            },
+            "file": {
+              "type": "string",
+              "description": "The layer file."
+            },
+            "old": {
+              "description": "The value it had in that layer before (null: none there)."
+            },
+            "new": {
+              "description": "The value it has there now (null: none there)."
+            },
+            "by": {
+              "type": "string",
+              "description": "`user`, `agent:<id>` or `session:<id>`."
+            }
+          },
+          "required": [
+            "id",
+            "at",
+            "key",
+            "scope",
+            "file",
+            "old",
+            "new",
+            "by"
+          ],
+          "description": "A change of one setting in one layer."
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "change",
+        "lines"
+      ],
+      "description": "A setting changed: the change kept in the history, and what the person needs to know.",
+      "title": "SettingChanged",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "config.unset": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Dotted key of the setting."
+        },
+        "scope": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "computer",
+              "description": "`/etc/legionctl`, through the system service (the system asks for an administrator's password)."
+            },
+            {
+              "type": "string",
+              "const": "user",
+              "description": "`~/.config/legionctl`."
+            },
+            {
+              "type": "string",
+              "const": "project",
+              "description": "The repository's `.legionctl`."
+            }
+          ],
+          "description": "The layer to remove it from: user, project or computer.",
+          "default": "user"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "title": "ConfigUnsetIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "change": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The history entry's id."
+            },
+            "at": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Seconds since the epoch."
+            },
+            "key": {
+              "type": "string"
+            },
+            "scope": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "const": "computer",
+                  "description": "`/etc/legionctl`, through the system service (the system asks for an administrator's password)."
+                },
+                {
+                  "type": "string",
+                  "const": "user",
+                  "description": "`~/.config/legionctl`."
+                },
+                {
+                  "type": "string",
+                  "const": "project",
+                  "description": "The repository's `.legionctl`."
+                }
+              ],
+              "description": "A layer that a setting may be set in."
+            },
+            "file": {
+              "type": "string",
+              "description": "The layer file."
+            },
+            "old": {
+              "description": "The value it had in that layer before (null: none there)."
+            },
+            "new": {
+              "description": "The value it has there now (null: none there)."
+            },
+            "by": {
+              "type": "string",
+              "description": "`user`, `agent:<id>` or `session:<id>`."
+            }
+          },
+          "required": [
+            "id",
+            "at",
+            "key",
+            "scope",
+            "file",
+            "old",
+            "new",
+            "by"
+          ],
+          "description": "A change of one setting in one layer."
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "change",
+        "lines"
+      ],
+      "description": "A setting changed: the change kept in the history, and what the person needs to know.",
+      "title": "SettingChanged",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "config.add": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Dotted key of a list setting (`actions.forbid`, `session.hidden`)."
+        },
+        "value": {
+          "description": "The entry: for a list of rules its pattern (`git:push`, `op:boot.*`), else the item (text or JSON)."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "For a list of rules: why, in a few words.",
+          "default": null
+        },
+        "scope": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "computer",
+              "description": "`/etc/legionctl`, through the system service (the system asks for an administrator's password)."
+            },
+            {
+              "type": "string",
+              "const": "user",
+              "description": "`~/.config/legionctl`."
+            },
+            {
+              "type": "string",
+              "const": "project",
+              "description": "The repository's `.legionctl`."
+            }
+          ],
+          "description": "For whom: user, project or computer.",
+          "default": "user"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "title": "ConfigItemIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "change": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The history entry's id."
+            },
+            "at": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Seconds since the epoch."
+            },
+            "key": {
+              "type": "string"
+            },
+            "scope": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "const": "computer",
+                  "description": "`/etc/legionctl`, through the system service (the system asks for an administrator's password)."
+                },
+                {
+                  "type": "string",
+                  "const": "user",
+                  "description": "`~/.config/legionctl`."
+                },
+                {
+                  "type": "string",
+                  "const": "project",
+                  "description": "The repository's `.legionctl`."
+                }
+              ],
+              "description": "A layer that a setting may be set in."
+            },
+            "file": {
+              "type": "string",
+              "description": "The layer file."
+            },
+            "old": {
+              "description": "The value it had in that layer before (null: none there)."
+            },
+            "new": {
+              "description": "The value it has there now (null: none there)."
+            },
+            "by": {
+              "type": "string",
+              "description": "`user`, `agent:<id>` or `session:<id>`."
+            }
+          },
+          "required": [
+            "id",
+            "at",
+            "key",
+            "scope",
+            "file",
+            "old",
+            "new",
+            "by"
+          ],
+          "description": "A change of one setting in one layer."
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "change",
+        "lines"
+      ],
+      "description": "A setting changed: the change kept in the history, and what the person needs to know.",
+      "title": "SettingChanged",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "config.remove": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Dotted key of a list setting (`actions.forbid`, `session.hidden`)."
+        },
+        "value": {
+          "description": "The entry: for a list of rules its pattern (`git:push`, `op:boot.*`), else the item (text or JSON)."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "For a list of rules: why, in a few words.",
+          "default": null
+        },
+        "scope": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "computer",
+              "description": "`/etc/legionctl`, through the system service (the system asks for an administrator's password)."
+            },
+            {
+              "type": "string",
+              "const": "user",
+              "description": "`~/.config/legionctl`."
+            },
+            {
+              "type": "string",
+              "const": "project",
+              "description": "The repository's `.legionctl`."
+            }
+          ],
+          "description": "For whom: user, project or computer.",
+          "default": "user"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "title": "ConfigItemIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "change": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The history entry's id."
+            },
+            "at": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Seconds since the epoch."
+            },
+            "key": {
+              "type": "string"
+            },
+            "scope": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "const": "computer",
+                  "description": "`/etc/legionctl`, through the system service (the system asks for an administrator's password)."
+                },
+                {
+                  "type": "string",
+                  "const": "user",
+                  "description": "`~/.config/legionctl`."
+                },
+                {
+                  "type": "string",
+                  "const": "project",
+                  "description": "The repository's `.legionctl`."
+                }
+              ],
+              "description": "A layer that a setting may be set in."
+            },
+            "file": {
+              "type": "string",
+              "description": "The layer file."
+            },
+            "old": {
+              "description": "The value it had in that layer before (null: none there)."
+            },
+            "new": {
+              "description": "The value it has there now (null: none there)."
+            },
+            "by": {
+              "type": "string",
+              "description": "`user`, `agent:<id>` or `session:<id>`."
+            }
+          },
+          "required": [
+            "id",
+            "at",
+            "key",
+            "scope",
+            "file",
+            "old",
+            "new",
+            "by"
+          ],
+          "description": "A change of one setting in one layer."
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "change",
+        "lines"
+      ],
+      "description": "A setting changed: the change kept in the history, and what the person needs to know.",
+      "title": "SettingChanged",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "config.revert": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The change to undo: its number in `config history`."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "ConfigRevertIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "change": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The history entry's id."
+            },
+            "at": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Seconds since the epoch."
+            },
+            "key": {
+              "type": "string"
+            },
+            "scope": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "const": "computer",
+                  "description": "`/etc/legionctl`, through the system service (the system asks for an administrator's password)."
+                },
+                {
+                  "type": "string",
+                  "const": "user",
+                  "description": "`~/.config/legionctl`."
+                },
+                {
+                  "type": "string",
+                  "const": "project",
+                  "description": "The repository's `.legionctl`."
+                }
+              ],
+              "description": "A layer that a setting may be set in."
+            },
+            "file": {
+              "type": "string",
+              "description": "The layer file."
+            },
+            "old": {
+              "description": "The value it had in that layer before (null: none there)."
+            },
+            "new": {
+              "description": "The value it has there now (null: none there)."
+            },
+            "by": {
+              "type": "string",
+              "description": "`user`, `agent:<id>` or `session:<id>`."
+            }
+          },
+          "required": [
+            "id",
+            "at",
+            "key",
+            "scope",
+            "file",
+            "old",
+            "new",
+            "by"
+          ],
+          "description": "A change of one setting in one layer."
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "change",
+        "lines"
+      ],
+      "description": "A setting changed: the change kept in the history, and what the person needs to know.",
+      "title": "SettingChanged",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "config.history": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only this setting (and the keys inside it).",
+          "default": null
+        },
+        "limit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 20
+        }
+      },
+      "title": "ConfigHistoryIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "description": "A change of one setting in one layer.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "description": "The history entry's id.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "at": {
+                "description": "Seconds since the epoch.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "key": {
+                "type": "string"
+              },
+              "scope": {
+                "description": "A layer that a setting may be set in.",
+                "oneOf": [
+                  {
+                    "description": "`/etc/legionctl`, through the system service (the system asks for an administrator's password).",
+                    "type": "string",
+                    "const": "computer"
+                  },
+                  {
+                    "description": "`~/.config/legionctl`.",
+                    "type": "string",
+                    "const": "user"
+                  },
+                  {
+                    "description": "The repository's `.legionctl`.",
+                    "type": "string",
+                    "const": "project"
+                  }
+                ]
+              },
+              "file": {
+                "description": "The layer file.",
+                "type": "string"
+              },
+              "old": {
+                "description": "The value it had in that layer before (null: none there)."
+              },
+              "new": {
+                "description": "The value it has there now (null: none there)."
+              },
+              "by": {
+                "description": "`user`, `agent:<id>` or `session:<id>`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "at",
+              "key",
+              "scope",
+              "file",
+              "old",
+              "new",
+              "by"
+            ]
+          }
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "description": "The changes of settings, newest first.",
+      "title": "SettingsHistory",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -18348,6 +19210,19 @@
             "needs_repository": {
               "type": "boolean",
               "description": "It reads the code of a git repository, and its folder is in none: the client asks for one."
+            },
+            "inputs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The parameters that the person types in a field above the view (a search)."
+            },
+            "settings": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "description": "How many settings change what the view shows: its gear opens them (the view settings, view=<name>)."
             }
           },
           "required": [
@@ -18377,7 +19252,9 @@
             "edges",
             "legend",
             "params",
-            "needs_repository"
+            "needs_repository",
+            "inputs",
+            "settings"
           ],
           "description": "The view with its data (the terminal form prints it)."
         },
@@ -18845,6 +19722,19 @@
             "needs_repository": {
               "type": "boolean",
               "description": "It reads the code of a git repository, and its folder is in none: the client asks for one."
+            },
+            "inputs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The parameters that the person types in a field above the view (a search)."
+            },
+            "settings": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "description": "How many settings change what the view shows: its gear opens them (the view settings, view=<name>)."
             }
           },
           "required": [
@@ -18874,7 +19764,9 @@
             "edges",
             "legend",
             "params",
-            "needs_repository"
+            "needs_repository",
+            "inputs",
+            "settings"
           ],
           "description": "A view with its data in the shape of its widget."
         },
@@ -19350,6 +20242,19 @@
         "needs_repository": {
           "type": "boolean",
           "description": "It reads the code of a git repository, and its folder is in none: the client asks for one."
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The parameters that the person types in a field above the view (a search)."
+        },
+        "settings": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many settings change what the view shows: its gear opens them (the view settings, view=<name>)."
         }
       },
       "required": [
@@ -19379,7 +20284,9 @@
         "edges",
         "legend",
         "params",
-        "needs_repository"
+        "needs_repository",
+        "inputs",
+        "settings"
       ],
       "description": "A view with its data in the shape of its widget.",
       "title": "ViewData",

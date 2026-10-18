@@ -762,7 +762,7 @@ pub struct Sources {
     pub repo: Option<PathBuf>,
     /// The user's config folder, for the user's teams.
     user_dir: PathBuf,
-    /// The config with the repository layer: its capability sets and `runnables.allow`.
+    /// The config with the repository layer: its capability sets and `actions`.
     config: crate::config::Config,
     /// The layers' problems with capability sets.
     set_problems: Vec<String>,

@@ -8,9 +8,9 @@ use crate::{
     FirmwareDevices, GpuState, GreeterState, Guard, HookReply, HookTable, KernelBench, Knob,
     KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView,
     Reading, Recording, Reminder, RgbState, RuleDetail, RuleState, Rules, RunEnv, RunnableGrant,
-    RunnablesCheck, Sample, SessionState, SettingsView, SetupReport, SkillInfo, Snapshot,
-    TestDetail, TestReview, TestRow, ToolCallRow, TuneReport, Validation, VfioDevices,
-    WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
+    RunnablesCheck, Sample, SessionState, SettingChanged, SettingsHistory, SettingsView,
+    SetupReport, SkillInfo, Snapshot, TestDetail, TestReview, TestRow, ToolCallRow, TuneReport,
+    Validation, VfioDevices, WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -991,21 +991,69 @@ impl Render for SettingsView {
                 module = &row.setting.module;
                 out.push(module.to_string());
             }
-            let changed = if row.from == "defaults" {
-                String::new()
-            } else {
-                format!("  (set in {})", row.from)
+            let from = match row.from.as_str() {
+                "defaults" => String::new(),
+                "user" => "  (set for you)".into(),
+                "project" => "  (set for this project)".into(),
+                other => format!("  (set for this {other})"),
             };
-            out.push(format!("  {} = {}{changed}", row.setting.key, row.value));
-            if !row.setting.help.is_empty() {
-                out.push(format!(
-                    "      {}",
-                    row.setting.help.lines().next().unwrap_or_default()
-                ));
+            out.push(format!(
+                "  {} = {}{from}  [{}]",
+                row.setting.label, row.text, row.setting.key
+            ));
+            out.push(format!("      {}", row.setting.help));
+            if !row.finding.is_empty() {
+                out.push(format!("      ! {}", row.finding));
             }
+        }
+        if self.items.is_empty() {
+            out.push("No setting matches.".into());
         }
         out.extend(self.problems.iter().cloned());
         out.join("\n")
+    }
+}
+
+/// A setting's value in a line: plain text as it is, other values as JSON, a long list or map as its count, none as
+/// "not set".
+fn value_text(value: &serde_json::Value) -> String {
+    let all = value.to_string();
+    match value {
+        serde_json::Value::Null => "not set".into(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) if all.len() > 60 => format!("{} items", items.len()),
+        serde_json::Value::Object(map) if all.len() > 60 => format!("{} entries", map.len()),
+        _ => all,
+    }
+}
+
+impl Render for SettingChanged {
+    fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+}
+
+impl Render for SettingsHistory {
+    fn text(&self) -> String {
+        if self.items.is_empty() {
+            return "No setting changed yet.".into();
+        }
+        self.items
+            .iter()
+            .map(|c| {
+                format!(
+                    "{:>5} {} {} ({}): {} -> {}  by {}",
+                    c.id,
+                    legionctl_core::views::local(c.at),
+                    c.key,
+                    c.scope.name(),
+                    value_text(&c.old),
+                    value_text(&c.new),
+                    c.by
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 

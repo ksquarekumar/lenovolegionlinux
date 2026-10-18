@@ -7,6 +7,10 @@ mod adapter;
 #[path = "common/clauth.rs"]
 mod clauth;
 mod common;
+#[path = "common/desktop.rs"]
+mod desktop;
+#[path = "common/mcp.rs"]
+mod mcp;
 #[path = "common/plain.rs"]
 mod plain;
 #[path = "common/portal.rs"]
@@ -479,7 +483,8 @@ fn an_operation_of_the_catalog_runs_through_the_form_of_its_input_schema(cx: &mu
     });
     middle_click(cx, "form-field-value");
     click(cx, "form-more".into());
-    click(cx, "form-scope-project".into());
+    // a choice of more than three words is a dropdown (todo-195)
+    choose(cx, &app, ("scope", 2), "project");
     click(cx, "form-submit".into());
     // a change of the user's own session runs at once: no confirm
     app.read_with(cx, |a, _| {
@@ -505,6 +510,31 @@ fn an_operation_of_the_catalog_runs_through_the_form_of_its_input_schema(cx: &mu
         (Some("user"), Some("project"))
     );
     drop(runtime);
+}
+
+/// In the form's dropdown of `field`, go down `downs` times and press Enter; the form then has `value`.
+fn choose(
+    cx: &mut VisualTestContext,
+    app: &Entity<LegionApp>,
+    (field, downs): (&str, usize),
+    value: &str,
+) {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .within(SharedString::from(format!("form-{field}")))
+            .click("input", cx);
+        for _ in 0..downs {
+            window.press("down", cx);
+        }
+        window.press("enter", cx);
+    });
+    wait(cx, app, "the choice", |a| {
+        a.state
+            .form
+            .as_ref()
+            .is_some_and(|f| f.values.get(field).is_some_and(|v| v == value))
+    });
 }
 
 /// git in the lab's repository as the user.
@@ -1386,6 +1416,268 @@ fn the_resources_seed_lists_the_resources_and_a_row_action_runs_its_operation(
             .any(|e| e["actor"] == "app"),
         "the app's apply is an event"
     );
+    drop(runtime);
+}
+
+/// What keeps a private bus and its stand-in desktop: its folder, the bus, the desktop's runtime and connection.
+type Desktop = (
+    Scratch,
+    common::process::Kill,
+    tokio::runtime::Runtime,
+    zbus::Connection,
+);
+
+/// What the stand-in desktop was asked, in order.
+type Asked = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+/// A private session bus with a stand-in desktop that answers the operator's questions in order: the bus, what
+/// it was asked, and the bus address for the operator.
+fn private_desktop(tag: &str, answers: &'static [&'static str]) -> (Desktop, Asked, String) {
+    let tokio = tokio::runtime::Runtime::new().unwrap();
+    let dir = Scratch::new(format!("/var/tmp/lc-{tag}-{}", std::process::id()));
+    let bus_path = dir.join("bus");
+    let bus = common::process::Kill::spawn(
+        std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--nopidfile"])
+            .arg(format!("--address=unix:path={}", bus_path.display())),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !bus_path.exists() {
+        assert!(Instant::now() < deadline, "the private bus");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let address = format!("unix:path={}", bus_path.display());
+    let (desktop, asked) = tokio.block_on(desktop::answering(&address, answers));
+    ((dir, bus, tokio, desktop), asked, address)
+}
+
+/// The Settings tab of an app under test: its clicks, rows, search, form and Apply.
+struct SettingsTab<'a> {
+    app: &'a Entity<LegionApp>,
+}
+
+impl SettingsTab<'_> {
+    fn click(cx: &mut VisualTestContext, id: &str) {
+        reveal(cx, id);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(SharedString::from(id.to_string()), cx);
+        });
+    }
+
+    /// The row of the setting `label`: its index and its cells.
+    fn setting(&self, cx: &mut VisualTestContext, label: &str) -> Option<(usize, Vec<String>)> {
+        self.app.read_with(cx, |a, _| {
+            let view = shown(a, "settings")?;
+            view.rows
+                .iter()
+                .position(|r| r[0] == label)
+                .map(|i| (i, view.rows[i].clone()))
+        })
+    }
+
+    /// The words typed in the view's search field, then Enter.
+    fn search(&self, cx: &mut VisualTestContext, words: &str) {
+        Self::click(cx, "view-settings-find");
+        cx.update(|window, cx| {
+            window.press("ctrl-a", cx);
+            window.input(words, cx);
+            window.press("enter", cx);
+        });
+        let param = format!("search={words}");
+        wait(cx, self.app, "the search", |a| {
+            a.tab().is_some_and(|t| t.key().contains(&param)) && shown(a, "settings").is_some()
+        });
+    }
+
+    /// Change of a row: its form has the setting's own field for the value, of `kind`; its help.
+    fn change(
+        &self,
+        cx: &mut VisualTestContext,
+        row: usize,
+        kind: &legionctl_api::form::Kind,
+    ) -> String {
+        Self::click(cx, &format!("view-settings-row-{row}-action-0"));
+        self.app.read_with(cx, |a, _| {
+            let form = a.state.form.as_ref().expect("the form");
+            let value = form.fields.iter().find(|f| f.name == "value").unwrap();
+            assert_eq!(value.kind, *kind, "{value:?}");
+            value.help.clone()
+        })
+    }
+
+    /// Continue, then Apply of the confirm; the message says `said`.
+    fn apply(&self, cx: &mut VisualTestContext, said: &str) {
+        Self::click(cx, "form-submit");
+        Self::click(cx, "apply");
+        wait(cx, self.app, said, |a| {
+            a.state.message.as_deref().is_some_and(|m| m.contains(said))
+        });
+    }
+
+    /// The row `label` shows `cells` (value and where it comes from), after the view read again by itself.
+    fn shows(&self, cx: &mut VisualTestContext, label: &str, cells: [&str; 2]) {
+        wait(cx, self.app, label, |a| {
+            shown(a, "settings")
+                .is_some_and(|v| v.rows.iter().any(|r| r[0] == label && r[1..3] == cells))
+        });
+    }
+
+    /// A list of words is a multi-select (todo-195): a check box per word, any of them.
+    fn several(&self, cx: &mut VisualTestContext) {
+        self.search(cx, "remind about notes");
+        let (row, _) = self
+            .setting(cx, "When to remind about notes")
+            .expect("the row");
+        self.change(
+            cx,
+            row,
+            &legionctl_api::form::Kind::Choices(vec![
+                "session-start".into(),
+                "prompt".into(),
+                "stop".into(),
+            ]),
+        );
+        Self::click(cx, "form-value-stop");
+        Self::click(cx, "form-value-prompt");
+        self.apply(
+            cx,
+            r#"When to remind about notes: set for you. In use now: ["session-start","prompt"]."#,
+        );
+    }
+
+    /// The gear of the view `name` opens the settings that change it: all of `module`, in plain words.
+    fn gear_opens_its_settings(&self, cx: &mut VisualTestContext, name: &str, module: &str) {
+        self.app.update(cx, |a, cx| a.open_tab(view(name), cx));
+        wait(cx, self.app, "the view", |a| shown(a, name).is_some());
+        Self::click(cx, &format!("view-{name}-settings"));
+        let key = format!("view:settings:view={name}");
+        wait(cx, self.app, "the view's settings", |a| {
+            a.tab().is_some_and(|t| t.key() == key)
+                && shown(a, "settings").is_some_and(|v| !v.rows.is_empty())
+        });
+        self.app.read_with(cx, |a, _| {
+            let view = shown(a, "settings").unwrap();
+            assert_eq!(view.group_order, [module], "{view:?}");
+            for cells in &view.rows {
+                plain::assert_plain(&cells[0], &cells.join(" "));
+            }
+        });
+    }
+}
+
+/// Settings are a view of the registry (DESIGN-14, DESIGN-20) in the app, the CLI and `legionctl_run` on one operator:
+/// the Settings view groups every setting by module with its value and where it comes from; its search field reads it
+/// again with the words; Change opens the form of config.set with the setting's own field (a whole number with its
+/// range, yes or no) and Apply writes it for you; an agent's change through `legionctl_run` shows in the open view at
+/// once (the view reads again on the change's event); the gear of another view opens only the settings that change it.
+#[gpui_kit::test]
+fn the_settings_view_changes_a_setting_through_its_own_field_and_a_views_gear_opens_its_settings(
+    cx: &mut TestAppContext,
+) {
+    let (_desktop, asked, address) = private_desktop("appset", &["allow"]);
+    let (op, home, repo) =
+        thread_lab_on("settings", &[("DBUS_SESSION_BUS_ADDRESS", address.into())]);
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    let tab = SettingsTab { app: &app };
+    SettingsTab::click(cx, "space-agents");
+    wait(cx, &app, "the views", |a| {
+        a.screen.views.iter().any(|v| v.name == "settings")
+    });
+    SettingsTab::click(cx, "nav-settings");
+    wait(cx, &app, "the settings", |a| {
+        shown(a, "settings").is_some_and(|v| v.rows.len() > 50)
+    });
+    app.read_with(cx, |a, _| {
+        let view = shown(a, "settings").unwrap();
+        assert_eq!(view.columns, ["Setting", "Value", "Set by", "What it does"]);
+        assert!(
+            view.group_order.contains(&"dossier".to_string()),
+            "{view:?}"
+        );
+    });
+
+    tab.search(cx, "reminder");
+    let (row, cells) = tab
+        .setting(cx, "Replies before a notes reminder")
+        .expect("the row");
+    assert_eq!(cells[1..3], ["5", "defaults"]);
+    app.read_with(cx, |a, _| {
+        let rows = &shown(a, "settings").unwrap().rows;
+        assert!(rows.len() < 10, "{rows:?}");
+        assert!(rows.iter().all(|r| {
+            format!("{} {}", r[0], r[3])
+                .to_lowercase()
+                .contains("reminder")
+        }));
+    });
+    let help = tab.change(cx, row, &legionctl_api::form::Kind::Integer);
+    assert!(help.ends_with("It takes a whole number from 0."), "{help}");
+    SettingsTab::click(cx, "form-field-value");
+    cx.update(|window, cx| {
+        window.press("ctrl-a", cx);
+        window.input("8", cx);
+    });
+    tab.apply(
+        cx,
+        "Replies before a notes reminder: set for you. In use now: 8.",
+    );
+    let cli: serde_json::Value = serde_json::from_str(&user_cli(
+        &op,
+        &home,
+        &repo,
+        &[
+            "config",
+            "settings",
+            "--key",
+            "dossier.nudge_turns",
+            "--json",
+        ],
+    ))
+    .unwrap();
+    assert_eq!(
+        (
+            cli["items"][0]["value"].clone(),
+            cli["items"][0]["from"].clone()
+        ),
+        (serde_json::json!(8), serde_json::json!("user"))
+    );
+    tab.shows(cx, "Replies before a notes reminder", ["8", "user"]);
+
+    // an agent's change through legionctl_run, on the same operator: the open view reads it at once
+    tab.search(cx, "hours");
+    tab.shows(cx, "Hours before notes are free again", ["12", "defaults"]);
+    let mut agent = mcp::Mcp::start(
+        &op,
+        None,
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "s1"),
+        ],
+        &[],
+    );
+    let (out, failed) = agent.run(
+        "config.set",
+        &serde_json::json!({"key": "dossier.stale_hours", "value": 20}),
+    );
+    assert!(!failed, "{out}");
+    assert_eq!(asked.lock().unwrap().len(), 1, "the toolset question");
+    tab.shows(cx, "Hours before notes are free again", ["20", "user"]);
+
+    tab.search(cx, "must use");
+    let (row, _) = tab
+        .setting(cx, "Agents must use the notes")
+        .expect("the row");
+    tab.change(cx, row, &legionctl_api::form::Kind::Bool);
+    SettingsTab::click(cx, "form-value-no");
+    tab.apply(
+        cx,
+        "Agents must use the notes: set for you. In use now: false.",
+    );
+
+    tab.several(cx);
+    tab.gear_opens_its_settings(cx, "dossiers", "dossier");
     drop(runtime);
 }
 

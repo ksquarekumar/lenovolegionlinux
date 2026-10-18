@@ -85,6 +85,11 @@ pub struct Form {
     pub values: std::collections::BTreeMap<String, String>,
     /// The text fields, by field name; the render makes them (they need the window).
     pub inputs: std::collections::BTreeMap<String, Entity<InputState>>,
+    /// The dropdowns of the choices with more words than buttons, by field name, and what they tell the form.
+    pub selects: std::collections::BTreeMap<
+        String,
+        (Entity<forms::Dropdown>, std::rc::Rc<gpui_kit::Subscription>),
+    >,
     /// The optional fields show.
     pub all: bool,
     pub error: Option<String>,
@@ -105,6 +110,7 @@ impl Form {
             fields,
             values,
             inputs: std::collections::BTreeMap::new(),
+            selects: std::collections::BTreeMap::new(),
             all,
             error: None,
         }
@@ -160,6 +166,8 @@ pub struct LegionApp {
     body_scroll: gpui_kit::ScrollHandle,
     /// The chat bar's list of commands: the picked one scrolls into view.
     list_scroll: gpui_kit::ScrollHandle,
+    /// The field above a view that the person types a parameter in (a search): the tab and the parameter it sets.
+    pub(crate) find: Option<input::Find>,
     _refresh: Task<()>,
     _events: Task<()>,
     _follower: Follower,
@@ -216,6 +224,7 @@ impl LegionApp {
             body_focus: cx.focus_handle().tab_index(0).tab_stop(true),
             body_scroll: gpui_kit::ScrollHandle::new(),
             list_scroll: gpui_kit::ScrollHandle::new(),
+            find: None,
             _refresh: refresh,
             _events: events,
             _follower: follower,
@@ -488,11 +497,12 @@ impl LegionApp {
             .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
         if legionctl_api::form::needed(info, &button.input) {
             self.state.pending = None;
+            let texts = legionctl_api::form::texts(&button.input);
             self.state.form = Some(Form::new(
                 button.clone(),
                 Then::Run,
-                legionctl_api::form::fields(info),
-                legionctl_api::form::texts(&button.input),
+                legionctl_api::form::fields_for(info, &texts),
+                texts,
                 false,
             ));
             cx.notify();

@@ -236,7 +236,7 @@ fn a_start_that_requests_sets_it_may_not_have_is_refused_with_each_reason() {
     );
     write(
         &lab.home.join(".config/legionctl/runnables.jsonc"),
-        r#"{ "runnables": { "allow+": ["vm-only", "keys"] } }"#,
+        r#"{ "actions": { "allow+": [{ "pattern": "toolset:vm-only", "reason": "test" }, { "pattern": "toolset:keys", "reason": "test" }] } }"#,
     );
     let refused = lab.start(
         "probe",
@@ -257,7 +257,7 @@ fn a_start_that_requests_sets_it_may_not_have_is_refused_with_each_reason() {
     for reason in [
         "capability sets refused at start",
         "no-such-set: no such capability set",
-        "deploy: your config layer does not allow it (runnables.allow)",
+        "deploy: your settings do not allow it (actions.allow)",
         "vm-only: it runs only in vm; this session runs in host",
         "keys: storage ~/.ssh/known: it reaches",
     ] {
@@ -297,7 +297,7 @@ fn a_start_that_requests_sets_it_may_not_have_is_refused_with_each_reason() {
         .unwrap_or_else(|| panic!("{check:#}"));
     assert_eq!(
         deploy["refusal"],
-        "your config layer does not allow it (runnables.allow)"
+        "your settings do not allow it (actions.allow)"
     );
 
     let launch = launch(&lab.start("probe", "refuse", &[]));
@@ -595,7 +595,7 @@ fn a_session_reaches_its_granted_connections_through_the_gateway_tunnel_and_noth
     );
     write(
         &lab.home.join(".config/legionctl/runnables.jsonc"),
-        r#"{ "runnables": { "allow+": ["service"] } }"#,
+        r#"{ "actions": { "allow+": [{ "pattern": "toolset:service", "reason": "test" }] } }"#,
     );
     // curl through the session's proxy: the answer of a granted host, then the tunnel status of two others
     let through = |host: &str| {

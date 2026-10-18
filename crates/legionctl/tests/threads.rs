@@ -2868,10 +2868,22 @@ fn rlcd_ask_sends_each_wire_shape_and_fails_a_failed_call_at_once() {
         &lab.lab.repo.join(".legionctl/rlcd.jsonc"),
         r#"{"rlcd": {"backends": {"oa": {"url": "http://127.0.0.1:9/elsewhere"}}}}"#,
     );
-    let moved = lab.refusal(&["--backend", "oa", "--state", "x"]);
+    lab.answer(&[], &["--backend", "oa", "--state", "x"]);
+    assert_eq!(
+        lab.last_call()["path"],
+        "/ignore/v1/decisions",
+        "the backend stays the user's"
+    );
+    let layers = lab.lab.op.run(
+        &lab.lab.repo,
+        &[("HOME", lab.lab.home.to_str().unwrap())],
+        &["config", "layers"],
+        "",
+    );
+    let layers = String::from_utf8_lossy(&layers.stdout);
     assert!(
-        moved.contains("rlcd.backends.oa.url is set by the repository layer"),
-        "{moved}"
+        layers.contains("rlcd.jsonc: rlcd.backends is not a project setting; ignored"),
+        "{layers}"
     );
 }
 

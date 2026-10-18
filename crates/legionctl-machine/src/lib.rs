@@ -27,6 +27,7 @@ pub mod react;
 pub mod rgb;
 pub mod sensors;
 pub mod sets;
+pub mod settings_file;
 pub mod snapshot;
 pub mod sysroot;
 pub mod system;

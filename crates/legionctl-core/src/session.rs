@@ -1126,16 +1126,14 @@ fn codex_bound_home(
     Ok(())
 }
 
-/// Claude Code settings for a session (layer 1 of the gates, note 14): the git gate's refusals and the grant's
-/// forbidden commands as `permissions.deny`, so the agent learns them before it runs a command (the git shim in the
+/// Claude Code settings for a session (layer 1 of the gates, note 14): the forbidden git and shell commands of
+/// `actions.forbid` and the grant's forbidden commands as `permissions.deny`, so the agent learns them before it runs a command (the git shim in the
 /// sandbox stays the authority for git), with the harness set's settings over them (its own sandbox off).
 fn claude_settings(config: &Config, manifest: &crate::runnables::Manifest) -> serde_json::Value {
-    let deny: Vec<String> = config
-        .gates
-        .git
-        .deny
-        .iter()
-        .map(|rule| format!("git {rule}"))
+    let forbid = &config.actions.forbid;
+    let deny: Vec<String> = crate::actions::ActionsConfig::names(forbid, "git")
+        .map(|(rule, _)| format!("git {rule}"))
+        .chain(crate::actions::ActionsConfig::names(forbid, "cmd").map(|(c, _)| c.to_string()))
         .chain(manifest.host.forbidden_commands.iter().cloned())
         .map(|command| format!("Bash({command}:*)"))
         .collect();
@@ -1189,8 +1187,12 @@ pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<ser
     let mut servers = serde_json::Map::new();
     for (name, server) in &config.mcp.servers {
         let mut args = vec!["mcp-proxy".to_string(), "--server".into(), name.clone()];
-        for tool in &server.allow {
-            args.extend(["--allow".into(), tool.clone()]);
+        let actions = &config.actions;
+        for tool in crate::actions::ActionsConfig::tools_of(&actions.allow, name) {
+            args.extend(["--allow".into(), tool]);
+        }
+        for tool in crate::actions::ActionsConfig::tools_of(&actions.forbid, name) {
+            args.extend(["--forbid".into(), tool]);
         }
         for (tool, rule) in &server.cache {
             let scope = if rule.workspace { ":workspace" } else { "" };

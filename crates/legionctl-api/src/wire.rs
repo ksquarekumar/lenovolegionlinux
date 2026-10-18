@@ -135,7 +135,7 @@ impl IntoWire<Value> for core::runnables::Manifest {
 }
 
 wire_enum! {
-    /// Whether a capability set may be used, by its layer: layer (`runnables.allow` decides), plain (a repository set
+    /// Whether a capability set may be used, by its layer: layer (`actions.allow` decides), plain (a repository set
     /// with no powerful part), allowed, waits (for the user's first answer) or denied.
     enum SetTrust from core::runnables::Trust as "kebab-case" { Layer, Plain, Allowed, Waits, Denied }
 
@@ -1606,6 +1606,10 @@ wire! {
         params: BTreeMap<String, String>,
         /// It reads the code of a git repository, and its folder is in none: the client asks for one.
         needs_repository: bool,
+        /// The parameters that the person types in a field above the view (a search).
+        inputs: Vec<String>,
+        /// How many settings change what the view shows: its gear opens them (the view settings, view=<name>).
+        settings: usize,
     }
 
     /// A node of a graph view.

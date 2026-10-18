@@ -261,9 +261,9 @@ pub struct Schema {
 /// then the rows that span dossiers and the threads (design 23, E1 decision 1; they were in `workspace.db`), then the
 /// pools (design 23, P6b: members that run, effects), then the rlcd decisions (todo-138), then the facts (DESIGN-10),
 /// then each session's granted connections (DESIGN-13), then the call record (DESIGN/22 rule 3), then the folder of
-/// each call and of each agent session (DESIGN-20 rule 7).
+/// each call and of each agent session (DESIGN-20 rule 7), then the settings history (DESIGN-14).
 pub const OPERATOR: &Schema = &Schema {
-    version: 17,
+    version: 18,
     steps: &[
         (
             10,
@@ -278,6 +278,7 @@ pub const OPERATOR: &Schema = &Schema {
         (14, crate::runnables::tables!()),
         (15, crate::calls::tables!()),
         (16, crate::calls::folders!()),
+        (17, crate::settings::tables!()),
     ],
     sql: concat!(
         "CREATE TABLE events (
@@ -328,7 +329,8 @@ pub const OPERATOR: &Schema = &Schema {
         crate::facts::tables!(),
         crate::runnables::tables!(),
         crate::calls::tables!(),
-        crate::calls::folders!()
+        crate::calls::folders!(),
+        crate::settings::tables!()
     ),
 };
 

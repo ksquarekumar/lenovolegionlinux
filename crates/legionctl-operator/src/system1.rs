@@ -81,6 +81,9 @@ pub trait System1 {
     fn reload(&self) -> zbus::Result<Vec<String>>;
     /// Write a system layer (`/etc/legionctl/configsets/<name>.jsonc`); empty content removes it.
     fn set_layer(&self, name: &str, content: &str) -> zbus::Result<Vec<String>>;
+    /// Set `key` in the computer's settings (`/etc/legionctl/managed.jsonc`) to the JSON `value`, or remove it there
+    /// (empty); the file and the value it had there (JSON, null: none).
+    fn set_setting(&self, key: &str, value: &str) -> zbus::Result<(String, String)>;
     /// Turn a layer on, off, or back to its default.
     fn set_layer_state(&self, name: &str, state: &str) -> zbus::Result<Vec<String>>;
     /// Send this connection the program starts and the opened files of its user's agent sessions (`SessionExec`,

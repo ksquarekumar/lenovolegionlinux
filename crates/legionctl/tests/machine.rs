@@ -3233,6 +3233,105 @@ mod operator_and_daemon {
         );
     }
 
+    /// A setting for this computer goes only through the system service: polkit asks for each change, the service
+    /// writes /etc/legionctl/managed.jsonc, your own value applies over it, the history keeps who changed what for
+    /// which layer, and a setting that this computer locks is refused for you and changes for the computer only.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_computer_setting_goes_through_the_system_service_with_polkit_and_its_history() {
+        let m = Machine::new("cfgsys");
+        let (_stand_ins, asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "cfgsys");
+        let row = |key: &str| -> Value {
+            serde_json::from_str::<Value>(&op.ok(&["config", "settings", "--key", key, "--json"]))
+                .unwrap()["items"][0]
+                .clone()
+        };
+        let said = op.ok(&[
+            "config",
+            "set",
+            "dossier.nudge_turns",
+            "9",
+            "--scope",
+            "computer",
+        ]);
+        assert_eq!(
+            said.trim(),
+            "Replies before a notes reminder: set for this computer. In use now: 9."
+        );
+        assert!(
+            m.file("/etc/legionctl/managed.jsonc")
+                .contains("\"nudge_turns\": 9"),
+            "{}",
+            m.file("/etc/legionctl/managed.jsonc")
+        );
+        assert_eq!(row("dossier.nudge_turns")["from"], "computer");
+        op.ok(&["config", "set", "dossier.nudge_turns", "4"]);
+        let turns = row("dossier.nudge_turns");
+        assert_eq!(
+            (turns["value"].clone(), turns["from"].clone()),
+            (serde_json::json!(4), serde_json::json!("user"))
+        );
+
+        op.ok(&[
+            "config",
+            "set",
+            "config.locked",
+            r#"["dossier.gate"]"#,
+            "--scope",
+            "computer",
+        ]);
+        let refused = op.cli(&["config", "set", "dossier.gate", "false"]);
+        let why = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            !refused.status.success()
+                && why.contains(
+                    "Agents must use the notes (dossier.gate) is locked: only this computer's administrator can change it"
+                ),
+            "{why}"
+        );
+        op.ok(&[
+            "config",
+            "set",
+            "dossier.gate",
+            "false",
+            "--scope",
+            "computer",
+        ]);
+        assert_eq!(row("dossier.gate")["value"], false);
+        assert_eq!(row("dossier.gate")["locked"], true);
+
+        let history: Value =
+            serde_json::from_str(&op.ok(&["config", "history", "--json"])).unwrap();
+        let rows: Vec<(&str, &str)> = history["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| (c["key"].as_str().unwrap(), c["scope"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("dossier.gate", "computer"),
+                ("config.locked", "computer"),
+                ("dossier.nudge_turns", "user"),
+                ("dossier.nudge_turns", "computer")
+            ]
+        );
+        let first = history["items"][3]["id"].as_i64().unwrap().to_string();
+        op.ok(&["config", "revert", &first]);
+        assert!(
+            !m.file("/etc/legionctl/managed.jsonc")
+                .contains("nudge_turns"),
+            "{}",
+            m.file("/etc/legionctl/managed.jsonc")
+        );
+        let actions: Vec<String> = asked.lock().unwrap().iter().map(|a| a.1.clone()).collect();
+        assert_eq!(
+            actions, ["org.legionctl.settings"; 4],
+            "the computer's changes ask; yours do not"
+        );
+    }
+
     /// A system layer that an admin writes applies through inotify, and its lock beats your layer; a disabled shipped
     /// layer stays off; reset removes your layers, and with `--system` the system layers and the on/off states: the
     /// shipped state. Each system change asks polkit.

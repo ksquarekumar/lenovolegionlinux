@@ -1,0 +1,39 @@
+// Seed (DESIGN-14, DESIGN-22): what agents may never do and what they may do without a question, each entry with
+// its reason and where it comes from; Remove takes an entry out, Forbid and Allow add one (a pattern and a reason).
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "settings-actions",
+  "title": "Allowed and forbidden actions",
+  "intent": "what agents may and may not do",
+  "space": "agents",
+  "widget": "stack",
+  "views": [
+    {
+      "name": "actions-forbid",
+      "title": "Forbidden for agents",
+      "widget": "table",
+      "source": { "op": "config.settings", "input": { "key": "actions.forbid" }, "path": "$.items.0.entries" },
+      "columns": ["pattern", "reason", "from"],
+      "labels": { "pattern": "Action", "reason": "Why", "from": "Set by" },
+      "row_actions": [
+        { "label": "Remove", "op": "config.remove", "input": { "key": "actions.forbid", "value": "{row.pattern}" } }
+      ]
+    },
+    {
+      "name": "actions-allow",
+      "title": "Allowed without a question",
+      "widget": "table",
+      "source": { "op": "config.settings", "input": { "key": "actions.allow" }, "path": "$.items.0.entries" },
+      "columns": ["pattern", "reason", "from"],
+      "labels": { "pattern": "Action", "reason": "Why", "from": "Set by" },
+      "row_actions": [
+        { "label": "Remove", "op": "config.remove", "input": { "key": "actions.allow", "value": "{row.pattern}" } }
+      ]
+    }
+  ],
+  "actions": [
+    { "label": "Forbid an action", "op": "config.add", "input": { "key": "actions.forbid" } },
+    { "label": "Allow an action", "op": "config.add", "input": { "key": "actions.allow" } }
+  ],
+  "refresh": { "events": ["config.*"] }
+}

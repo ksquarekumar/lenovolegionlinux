@@ -2131,6 +2131,10 @@ impl Engine for Operator {
             Ok(found) => findings.extend(found),
             Err(e) => findings.push(not_run("agent setup", &e)),
         }
+        match crate::settings::findings() {
+            Ok(found) => findings.extend(found),
+            Err(e) => findings.push(not_run("settings", &e)),
+        }
         // nothing moves in silence: the user logs in to each old profile in clauth (user decision 2026-10-17)
         if let Some((folder, names)) = legionctl_core::accounts::old_profiles() {
             findings.push(legionctl_api::Finding {
@@ -2931,18 +2935,29 @@ impl Engine for Operator {
     }
 
     fn reminders_on(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
-        reminders::set_enabled(&config(Some(ctx.folder()?))?, &input.id, true)?;
+        reminders::set_enabled(
+            &config(Some(ctx.folder()?))?,
+            &crate::calls::principal_key(&ctx.principal),
+            &input.id,
+            true,
+        )?;
         Ok(reminders::list(&config(Some(ctx.folder()?))?).into_wire())
     }
 
     fn reminders_off(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
-        reminders::set_enabled(&config(Some(ctx.folder()?))?, &input.id, false)?;
+        reminders::set_enabled(
+            &config(Some(ctx.folder()?))?,
+            &crate::calls::principal_key(&ctx.principal),
+            &input.id,
+            false,
+        )?;
         Ok(reminders::list(&config(Some(ctx.folder()?))?).into_wire())
     }
 
     fn reminders_add(&self, ctx: &Ctx, input: ReminderAddIn) -> Result<Reminders> {
         reminders::add(
             &config(Some(ctx.folder()?))?,
+            &crate::calls::principal_key(&ctx.principal),
             &input.id,
             &input.text,
             input.event.into(),
@@ -2951,7 +2966,11 @@ impl Engine for Operator {
     }
 
     fn reminders_rm(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
-        reminders::remove(&config(Some(ctx.folder()?))?, &input.id)?;
+        reminders::remove(
+            &config(Some(ctx.folder()?))?,
+            &crate::calls::principal_key(&ctx.principal),
+            &input.id,
+        )?;
         Ok(reminders::list(&config(Some(ctx.folder()?))?).into_wire())
     }
 
@@ -2962,6 +2981,7 @@ impl Engine for Operator {
     fn hooks_bind(&self, ctx: &Ctx, input: HookBindIn) -> Result<HookTable> {
         hooks::bind(
             &config(Some(ctx.folder()?))?,
+            &crate::calls::principal_key(&ctx.principal),
             input.event.into(),
             &input.action,
         )?;
@@ -2971,6 +2991,7 @@ impl Engine for Operator {
     fn hooks_unbind(&self, ctx: &Ctx, input: HookBindIn) -> Result<HookTable> {
         hooks::unbind(
             &config(Some(ctx.folder()?))?,
+            &crate::calls::principal_key(&ctx.principal),
             input.event.into(),
             &input.action,
         )?;
@@ -2980,6 +3001,7 @@ impl Engine for Operator {
     fn hooks_add(&self, ctx: &Ctx, input: HookAddIn) -> Result<HookTable> {
         hooks::add_command(
             &config(Some(ctx.folder()?))?,
+            &crate::calls::principal_key(&ctx.principal),
             &input.id,
             &input.command,
             input.timeout_s,
@@ -2988,7 +3010,11 @@ impl Engine for Operator {
     }
 
     fn hooks_rm(&self, ctx: &Ctx, input: IdIn) -> Result<HookTable> {
-        hooks::remove_action(&config(Some(ctx.folder()?))?, &input.id)?;
+        hooks::remove_action(
+            &config(Some(ctx.folder()?))?,
+            &crate::calls::principal_key(&ctx.principal),
+            &input.id,
+        )?;
         Ok(Self::hook_table(&config(Some(ctx.folder()?))?))
     }
 
@@ -3697,7 +3723,7 @@ impl Engine for Operator {
         if let Some(id) = ctx.principal.agent().filter(|_| !input.refused) {
             let what = format!("the tool {} of the MCP server {}", input.tool, input.server);
             self.runtime
-                .block_on(crate::scope::check(id, &name, &what))
+                .block_on(crate::scope::check(id, &name, &what, ctx.folder.as_deref()))
                 .map_err(anyhow::Error::new)?;
         }
         crate::calls::begin_tool((&ctx.principal, ctx.folder.as_deref()), &input)
@@ -5489,7 +5515,10 @@ impl Engine for Operator {
 
     fn gates_check(&self, ctx: &Ctx, input: GateIn) -> Result<Guard> {
         let dir = ctx.folder()?;
-        let deny = config(Some(ctx.folder()?))?.config.gates.git.deny;
+        let forbid = config(Some(ctx.folder()?))?.config.actions.forbid;
+        let deny: Vec<(&str, &str)> = legionctl_core::actions::ActionsConfig::names(&forbid, "git")
+            .map(|(rule, r)| (rule, r.reason.as_str()))
+            .collect();
         // an alias is resolved by the real git outside the sandbox, so the agent cannot hide a denied command
         // git config --get: 0 found, 1 not set, another code an error
         let is_alias = |sub: &str| -> Result<bool> {
@@ -5515,27 +5544,60 @@ impl Engine for Operator {
         Ok(config(Some(ctx.folder()?))?.explain(&input.key).into_wire())
     }
 
-    fn config_settings(&self, ctx: &Ctx, _: Empty) -> Result<legionctl_api::SettingsView> {
-        let resolved = config(Some(ctx.folder()?))?;
-        let items = legionctl_core::settings::registry()?
-            .into_iter()
-            .map(|setting| {
-                let explained = resolved.explain(&setting.key);
-                let from = explained
-                    .settings
-                    .last()
-                    .map_or_else(|| "defaults".to_string(), |(_, s)| s.source.layer.clone());
-                legionctl_api::SettingRow {
-                    setting,
-                    value: explained.value,
-                    from,
-                }
-            })
-            .collect();
-        Ok(legionctl_api::SettingsView {
-            items,
-            problems: resolved.problems,
-        })
+    fn config_settings(
+        &self,
+        ctx: &Ctx,
+        input: legionctl_api::SettingsIn,
+    ) -> Result<legionctl_api::SettingsView> {
+        crate::settings::list(ctx, &input)
+    }
+
+    fn config_set(
+        &self,
+        ctx: &Ctx,
+        input: legionctl_api::ConfigSetIn,
+    ) -> Result<legionctl_api::SettingChanged> {
+        self.settings_set(ctx, &input)
+    }
+
+    fn config_unset(
+        &self,
+        ctx: &Ctx,
+        input: legionctl_api::ConfigUnsetIn,
+    ) -> Result<legionctl_api::SettingChanged> {
+        self.settings_unset(ctx, &input)
+    }
+
+    fn config_add(
+        &self,
+        ctx: &Ctx,
+        input: legionctl_api::ConfigItemIn,
+    ) -> Result<legionctl_api::SettingChanged> {
+        self.settings_add(ctx, &input)
+    }
+
+    fn config_remove(
+        &self,
+        ctx: &Ctx,
+        input: legionctl_api::ConfigItemIn,
+    ) -> Result<legionctl_api::SettingChanged> {
+        self.settings_remove(ctx, &input)
+    }
+
+    fn config_revert(
+        &self,
+        ctx: &Ctx,
+        input: legionctl_api::ConfigRevertIn,
+    ) -> Result<legionctl_api::SettingChanged> {
+        self.settings_revert(ctx, &input)
+    }
+
+    fn config_history(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::ConfigHistoryIn,
+    ) -> Result<legionctl_api::SettingsHistory> {
+        crate::settings::history(&input)
     }
 
     fn config_layers(&self, ctx: &Ctx, _: Empty) -> Result<LayerList> {

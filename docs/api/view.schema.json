@@ -49,6 +49,13 @@
         "type": "string"
       }
     },
+    "inputs": {
+      "description": "The string parameters that the person types in a field above the view (a search).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "made_by": {
       "description": "Who made it when not the user: `agent:<composer>` for the composer's views. Its buttons confirm every change.",
       "type": [

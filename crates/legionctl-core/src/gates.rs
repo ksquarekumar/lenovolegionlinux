@@ -52,11 +52,11 @@ fn has_flag(arg: &str, flag: &str) -> bool {
     }
 }
 
-/// Why `git <args>` is refused under `deny`, or `None` when it may run. `is_alias` says whether a subcommand is a
-/// git alias in this repository.
+/// Why `git <args>` is refused under `deny` (each rule with its reason), or `None` when it may run. `is_alias` says
+/// whether a subcommand is a git alias in this repository.
 pub fn git_refusal(
     args: &[String],
-    deny: &[String],
+    deny: &[(&str, &str)],
     is_alias: impl Fn(&str) -> anyhow::Result<bool>,
 ) -> Option<String> {
     let (sub, rest) = split(args)?;
@@ -70,16 +70,13 @@ pub fn git_refusal(
         // the gate cannot see what the command runs: it refuses
         Err(e) => return Some(format!("legionctl gate: cannot check git aliases: {e:#}")),
     }
-    deny.iter().find_map(|rule| {
+    deny.iter().find_map(|(rule, reason)| {
         let mut words = rule.split_whitespace();
         let rule_sub = words.next()?;
         let flags: Vec<&str> = words.collect();
         let matches = rule_sub == sub && flags.iter().all(|f| rest.iter().any(|a| has_flag(a, f)));
         matches.then(|| {
-            format!(
-                "legionctl gate: 'git {rule}' is refused in this session (config gates.git.deny). Merge with \
-                 workspace_merge, and leave pushes and history changes to the user."
-            )
+            format!("legionctl gate: 'git {rule}' is forbidden in this session (actions.forbid): {reason}")
         })
     })
 }
@@ -90,15 +87,14 @@ mod tests {
 
     #[test]
     fn unsafe_git_is_refused_through_global_options_bundles_and_aliases() {
-        let deny: Vec<String> = [
+        let deny = [
             "push",
             "reset --hard",
             "clean -f",
             "branch -D",
             "gc --prune",
         ]
-        .map(String::from)
-        .to_vec();
+        .map(|r| (r, "test"));
         let refused = |line: &str| {
             let args: Vec<String> = line.split_whitespace().map(String::from).collect();
             git_refusal(&args, &deny, |sub| Ok(sub == "p")).is_some()

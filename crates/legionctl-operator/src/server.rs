@@ -242,16 +242,37 @@ pub(crate) fn own_session(op: &OpInfo, principal: &Principal, input: &mut Value)
 /// for it, such as the dossier release at its end) have no scope. True: the user was asked and allowed it.
 async fn in_scope(
     op: &OpInfo,
-    principal: &Principal,
+    (principal, folder): (&Principal, Option<&std::path::Path>),
     actor: Option<&str>,
     input: &Value,
 ) -> Result<bool, ApiError> {
     let hook = matches!(principal, Principal::Agent(_)) && actor == Some("hook");
     match principal.agent() {
         Some(id) if !op.internal() && !hook => {
-            crate::scope::check(id, op.name, &op.sentence(&redacted(op, input))).await
+            crate::scope::forbidden(op.name, folder)?;
+            crate::scope::check(id, op.name, &op.sentence(&redacted(op, input)), folder).await
         }
         _ => Ok(false),
+    }
+}
+
+/// Whether an agent's call changes a setting of the powerful or machine class (the settings operations, and the
+/// operations that change hooks and reminders, which are such settings): the user is asked each time.
+fn powerful_setting(op: &OpInfo, input: &Value) -> bool {
+    use legionctl_core::settings::{Class as Kind, setting_of};
+    let class = |key: &str| setting_of(key).map_or(Kind::Powerful, |s| s.class);
+    match op.name {
+        "config.set" | "config.unset" | "config.add" | "config.remove" => {
+            input["key"].as_str().is_none_or(|k| class(k) != Kind::Safe)
+        }
+        "config.revert" => input["id"]
+            .as_i64()
+            .and_then(|id| Db::open_default().ok()?.settings_change(id).ok()?)
+            .is_none_or(|c| class(&c.key) != Kind::Safe),
+        _ => {
+            op.class == Class::Workspace
+                && matches!(op.name.split('.').next(), Some("hooks" | "reminders"))
+        }
     }
 }
 
@@ -275,10 +296,7 @@ async fn approved(
                     .any(|(field, prop)| prop["x-approval"] == true && input[field] == true)
         }
         // it is the user's own process otherwise: the gate is on what reaches every later session
-        Principal::Agent(_) => {
-            op.class == Class::Workspace
-                && matches!(op.name.split('.').next(), Some("hooks" | "reminders"))
-        }
+        Principal::Agent(_) => powerful_setting(op, input),
     };
     let Some(session) = principal.agent().filter(|_| asks) else {
         return Ok(());
@@ -613,7 +631,7 @@ async fn admit(
     };
     // the user who just allowed the toolset for this call is not asked again for the same call
     let actor = headers.get(ACTOR_HEADER).and_then(|v| v.to_str().ok());
-    let asked = in_scope(op, principal, actor, input)
+    let asked = in_scope(op, (principal, folder), actor, input)
         .await
         .map_err(refused)?;
     if !asked {

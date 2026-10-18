@@ -1,7 +1,7 @@
 //! Runnables and capability sets (DESIGN-13 M1). A capability set is a named, versioned part of a runnable's manifest
 //! (`config/capabilities/<name>.jsonc`, shipped; the same folder name in `/etc/legionctl`, the user's config and a
 //! repository's `.legionctl`). A session or member requests sets; the grant is the subset that its environment (where
-//! it runs), its parent (the main agent, for a member) and the user layer (`runnables.allow`) allow, and a repository
+//! it runs), its parent (the main agent, for a member) and the user layer (`actions.allow`) allow, and a repository
 //! set with a powerful part only after the user allowed its content once (trust on first use, O-2). Anything else
 //! refuses the start, with the reason. The granted manifest is a fact (`runnable:session:<id>`, attribute `manifest`).
 
@@ -299,7 +299,7 @@ impl Manifest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Trust {
-    /// Shipped, `/etc/legionctl` or the user's: `runnables.allow` decides.
+    /// Shipped, `/etc/legionctl` or the user's: `actions.allow` decides.
     Layer,
     /// A repository's set with no powerful part.
     Plain,
@@ -417,15 +417,6 @@ pub(crate) fn load(
     Ok(out)
 }
 
-/// The user layer's rules for grants (`runnables`).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RunnablesConfig {
-    /// The sets of the shipped, system and user layers that a session or member may get. A repository's own set
-    /// needs no entry: its powerful parts need the user's first-use answer instead.
-    pub allow: Vec<String>,
-}
-
 /// Why a set cannot be used now, when it cannot; `None`: it may be granted.
 #[must_use]
 pub fn refusal(config: &Config, name: &str) -> Option<String> {
@@ -436,9 +427,12 @@ pub fn refusal(config: &Config, name: &str) -> Option<String> {
                 .into(),
         );
     };
+    if let Some(rule) = config.actions.forbidden("toolset", name) {
+        return Some(format!("it is forbidden: {} (actions.forbid)", rule.reason));
+    }
     match loaded.trust {
-        Trust::Layer if !config.runnables.allow.iter().any(|a| a == name) => {
-            Some("your config layer does not allow it (runnables.allow)".into())
+        Trust::Layer if !config.actions.allowed("toolset", name) => {
+            Some("your settings do not allow it (actions.allow)".into())
         }
         Trust::Waits => Some(format!(
             "{} sets {} and waits for your first answer (legionctl asks once)",

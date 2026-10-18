@@ -1244,6 +1244,47 @@ impl System1 {
         self.layers_changed(&emitter, "SetLayer", line).await
     }
 
+    /// Set `key` (dotted) in the computer's settings (`/etc/legionctl/managed.jsonc`) to the JSON `value`, or remove it
+    /// there (empty `value`); the file and the value it had there (JSON, null: none). The operator checked the key
+    /// and the value against the settings registry; this checks their form.
+    async fn set_setting(
+        &self,
+        key: String,
+        value: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<(String, String)> {
+        authorize(conn, &header, "org.legionctl.settings").await?;
+        let invalid = |why: String| zbus::fdo::Error::InvalidArgs(why);
+        let good = |part: &str| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        };
+        if !key.split('.').all(good) {
+            return Err(invalid(format!(
+                "{key}: a key is dotted parts of a-z, 0-9, '_' and '-'"
+            )));
+        }
+        if value.len() > 64 * 1024 {
+            return Err(invalid("a value is at most 64 KiB".into()));
+        }
+        let value = if value.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str(&value)
+                    .map_err(|e| invalid(format!("{key}: not JSON: {e}")))?,
+            )
+        };
+        let dir = self.root.path("/etc/legionctl");
+        let old =
+            legionctl_machine::settings_file::edit(&dir, &key, value).map_err(|e| failed(&e))?;
+        let file = dir.join(legionctl_machine::settings_file::MANAGED);
+        Ok((file.display().to_string(), old.to_string()))
+    }
+
     /// Turn a layer on or off (`on`, `off`), or give it its default again (`default`: a generated layer is off, the
     /// others on); `name` is its id (`shipped/20-ac`), its file name, or its name without the order (`tuned`).
     async fn set_layer_state(

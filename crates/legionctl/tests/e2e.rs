@@ -11,6 +11,8 @@ mod git;
 mod hooks;
 #[path = "common/keyring.rs"]
 mod keyring;
+#[path = "common/mcp.rs"]
+mod mcp;
 #[path = "common/plain.rs"]
 mod plain;
 #[path = "common/provider.rs"]
@@ -30,6 +32,7 @@ use common::process::{Kill, own};
 use common::scratch::Scratch;
 use git::git;
 use hooks::claude_hook;
+use mcp::Mcp;
 use serde_json::{Value, json};
 use tokens::add_session_token;
 
@@ -178,90 +181,6 @@ fn prompt_hook_injects_skill_reminders_and_user_actions_as_configured() {
         !start.contains("on-branch-main"),
         "bound to prompt only: {start}"
     );
-}
-
-struct Mcp {
-    child: Kill,
-    out: BufReader<std::process::ChildStdout>,
-    next: u64,
-}
-
-impl Mcp {
-    fn start(operator: &Operator, env: &[(&str, &str)]) -> Mcp {
-        Self::start_with(operator, env, &[])
-    }
-
-    /// `legionctl mcp <args>`.
-    fn start_with(operator: &Operator, env: &[(&str, &str)], args: &[&str]) -> Mcp {
-        Self::spawn(operator, env, args, &std::env::current_dir().unwrap())
-    }
-
-    /// `legionctl mcp` in `folder`, as a harness starts it in the folder its agent starts in.
-    fn start_in(operator: &Operator, env: &[(&str, &str)], folder: &Path) -> Mcp {
-        Self::spawn(operator, env, &[], folder)
-    }
-
-    fn spawn(operator: &Operator, env: &[(&str, &str)], args: &[&str], folder: &Path) -> Mcp {
-        let mut child = Kill::spawn(
-            Command::new(env!("CARGO_BIN_EXE_legionctl"))
-                .arg("mcp")
-                .args(args)
-                .current_dir(folder)
-                .env_clear()
-                .env("XDG_RUNTIME_DIR", &operator.runtime)
-                .envs(env.iter().copied())
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped()),
-        );
-        let out = BufReader::new(child.stdout.take().unwrap());
-        let mut mcp = Mcp {
-            child,
-            out,
-            next: 0,
-        };
-        mcp.call(
-            "initialize",
-            &json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}),
-        );
-        mcp.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
-        mcp
-    }
-
-    fn send(&mut self, msg: &Value) {
-        let stdin = self.child.stdin.as_mut().unwrap();
-        writeln!(stdin, "{msg}").unwrap();
-        stdin.flush().unwrap();
-    }
-
-    fn call(&mut self, method: &str, params: &Value) -> Value {
-        self.call_raw(method, params)["result"].clone()
-    }
-
-    /// A call of the tool `name` with `arguments`: its text, and whether it is an error.
-    fn tool(&mut self, name: &str, arguments: &Value) -> (String, bool) {
-        let result = self.call("tools/call", &json!({"name": name, "arguments": arguments}));
-        (
-            result["content"][0]["text"].as_str().unwrap().to_string(),
-            result["isError"] == true,
-        )
-    }
-
-    /// `legionctl_run` of `op` with `input`: its JSON output or error envelope, and whether it is an error.
-    fn run(&mut self, op: &str, input: &Value) -> (Value, bool) {
-        let (text, error) = self.tool("legionctl_run", &json!({"op": op, "input": input}));
-        (serde_json::from_str(&text).unwrap(), error)
-    }
-
-    /// The whole reply: its result or its error.
-    fn call_raw(&mut self, method: &str, params: &Value) -> Value {
-        self.next += 1;
-        self.send(&json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params}));
-        let mut line = String::new();
-        self.out.read_line(&mut line).unwrap();
-        let reply: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(reply["id"], self.next, "{reply}");
-        reply
-    }
 }
 
 /// The git gate of a session sandbox fails closed (todo-142 F-3): when git cannot tell whether the subcommand is an
@@ -683,7 +602,7 @@ fn an_unknown_input_field_is_refused_before_the_operation_runs() {
         .next()
         .unwrap();
 
-    let mut mcp = Mcp::start(&op, &env);
+    let mut mcp = Mcp::start(&op, None, &env, &[]);
     let (error, failed) = mcp.run(
         "dossier.edit",
         &json!({"path": "plan/plan.md", "mode": "replace", "start": anchor, "lines": ["| todo-1 | changed |"]}),
@@ -828,7 +747,7 @@ fn a_plugin_agent_works_through_its_cli_and_mcp_without_a_question() {
     the_leads_cli_flow(&op, &repo, &env);
 
     // Codex starts legionctl's MCP server with a cleared environment: it knows no session
-    let mut mcp = Mcp::start(&op, &[("HOME", home.to_str().unwrap())]);
+    let mut mcp = Mcp::start(&op, None, &[("HOME", home.to_str().unwrap())], &[]);
     let (fact, failed) = mcp.run(
         "facts.set",
         &json!({"entity": "app", "attribute": "width", "value": "0.3"}),
@@ -877,7 +796,7 @@ fn a_retried_call_gets_its_recorded_result_and_never_runs_twice() {
             .collect();
         (texts, result["isError"] == true)
     };
-    let mut mcp = Mcp::start(&op, &env);
+    let mut mcp = Mcp::start(&op, None, &env, &[]);
     let (first, failed) = run(&mut mcp, &set("0.3"), None);
     assert!(!failed, "{first:?}");
     let id = first[1]
@@ -888,7 +807,7 @@ fn a_retried_call_gets_its_recorded_result_and_never_runs_twice() {
     drop(op);
 
     let op = operator_in("calls2", &home);
-    let mut mcp = Mcp::start(&op, &env);
+    let mut mcp = Mcp::start(&op, None, &env, &[]);
     let (again, failed) = run(&mut mcp, &set("0.3"), Some(&id));
     assert!(!failed && again == first, "the recorded answer: {again:?}");
     let history: Value =
@@ -962,7 +881,12 @@ fn a_retried_call_gets_its_recorded_result_and_never_runs_twice() {
 /// `legionctl mcp --only <op>...`: the server of a bound agent (todo-163, the ui-composer) finds, describes and runs
 /// only its operations.
 fn bound_server_offers_only_its_operations(op: &Operator) {
-    let mut bound = Mcp::start_with(op, &[], &["--only", "views.list", "--only", "views.parts"]);
+    let mut bound = Mcp::start(
+        op,
+        None,
+        &[],
+        &["--only", "views.list", "--only", "views.parts"],
+    );
     let (groups, _) = bound.tool("legionctl_find", &json!({}));
     assert_eq!(
         groups,
@@ -989,7 +913,7 @@ fn bound_server_offers_only_its_operations(op: &Operator) {
 fn an_agent_finds_describes_and_runs_operations_through_three_mcp_tools() {
     let (op, home) = operator("mcp");
     // an agent session that ran no session start (no plugin): the read class only
-    let mut mcp = Mcp::start(&op, &[("LEGIONCTL_SESSION", "bare-1")]);
+    let mut mcp = Mcp::start(&op, None, &[("LEGIONCTL_SESSION", "bare-1")], &[]);
 
     let tools = mcp.call("tools/list", &json!({}));
     let names: Vec<&str> = tools["tools"]
@@ -1162,9 +1086,12 @@ fn applies_once_allowed(op: &Operator, home: &Path, repo: &Path) {
 fn config_layers_merge_in_order_and_etc_locks_win() {
     let (op, home) = operator("config");
     // the site locks a key and a reminder; the user tries to change both; a repository adds its own rules
+    let site = home.join("site-worktrees").display().to_string();
+    let locks =
+        json!({"config": {"locked": ["load", "reminders.ste100"]}, "workspace": {"root": site}});
     write(
         &home.join("root/etc/legionctl/10-site.jsonc"),
-        r#"{ "config": { "locked": ["load", "reminders.ste100"] }, "workspace": { "root": "/srv/worktrees" } }"#,
+        &locks.to_string(),
     );
     write(
         &home.join(".config/legionctl/mine.jsonc"),
@@ -1233,23 +1160,19 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
         .collect();
     assert_eq!(names, ["defaults", "system", "user", "repo"]);
     let problems = layers["problems"].to_string();
-    assert!(
-        problems.contains("mine.jsonc: load is set only by"),
-        "{problems}"
-    );
-    assert!(
-        problems.contains("mine.jsonc: config is set only by"),
-        "{problems}"
-    );
     let held = |key| format!("rules.jsonc: {key} is not used until you allow this file");
-    assert!(
-        problems.contains(&held("hooks")) && problems.contains(&held("reminders")),
-        "{problems}"
-    );
+    for problem in [
+        "mine.jsonc: load is set only by".to_string(),
+        "mine.jsonc: config is set only by".into(),
+        held("hooks.bindings"),
+        held("reminders"),
+    ] {
+        assert!(problems.contains(&problem), "{problem}: {problems}");
+    }
     applies_once_allowed(&op, &home, &repo);
     assert_eq!(
         json(&repo, &["config", "explain", "workspace.root"])["value"],
-        "/srv/worktrees"
+        site
     );
 
     // a change through legionctl goes to managed.jsonc, which merges after the user's own files
@@ -1270,7 +1193,7 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
 
     // a locked key cannot be changed through legionctl either
     let (ok, text) = cli(&repo, &["reminders", "off", "ste100"]);
-    assert!(!ok && text.contains("locked by /etc/legionctl"), "{text}");
+    assert!(!ok && text.contains("is locked: only this"), "{text}");
 }
 
 #[test]
@@ -3824,7 +3747,8 @@ fn probe_package(home: &Path) {
         &home.join(".config/legionctl/store.jsonc"),
         &json!({
             "packages": {"probe": {"kind": "git", "source": source, "version": "v1", "run": ["sh", "{dir}/server.sh"]}},
-            "mcp": {"servers": {"probe": {"package": "probe", "allow": ["legionctl_find"]}}}
+            "mcp": {"servers": {"probe": {"package": "probe"}}},
+            "actions": {"allow+": [{"pattern": "tool:probe/legionctl_find", "reason": "the probe's one tool"}]}
         })
         .to_string(),
     );
@@ -3958,13 +3882,16 @@ fn a_session_runs_a_brokered_servers_tool_through_legionctls_three_tools() {
     write(
         &home.join(".config/legionctl/mcp.jsonc"),
         &json!({"mcp": {"servers": {
-            "remote": {"url": url, "allow": ["docs"], "keyring_headers": {"x-api-key": "remote-key"}},
+            "remote": {"url": url, "keyring_headers": {"x-api-key": "remote-key"}},
             // a command server that notes the environment it gets
-            "self": {"command": ["sh", "-c", format!("env > \"$HOME/seen.env\"; exec {} mcp", env!("CARGO_BIN_EXE_legionctl"))],
-                     "allow": ["legionctl_find"]},
+            "self": {"command": ["sh", "-c", format!("env > \"$HOME/seen.env\"; exec {} mcp", env!("CARGO_BIN_EXE_legionctl"))]},
             // a server that never answers
             "mute": {"command": ["sleep", "60"]}
-        }}})
+        }},
+        "actions": {"allow+": [
+            {"pattern": "tool:remote/docs", "reason": "read the docs"},
+            {"pattern": "tool:self/legionctl_find", "reason": "find only"}
+        ]}})
         .to_string(),
     );
     let (id, config) = session_mcp(&op, &home, &repo);
@@ -3989,7 +3916,7 @@ fn a_session_runs_a_brokered_servers_tool_through_legionctls_three_tools() {
         .chain([("HOME".into(), home.to_str().unwrap().into())])
         .collect();
     let vars: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let mut mcp = Mcp::start(&op, &vars);
+    let mut mcp = Mcp::start(&op, None, &vars, &[]);
     let (found, _) = mcp.tool("legionctl_find", &json!({"group": "remote"}));
     assert_eq!(
         found, "1 operations match.\nremote/docs · mcp · Look up docs",
@@ -4671,7 +4598,7 @@ fn a_stop_ends_the_operator_with_a_running_job_and_an_open_event_stream() {
 /// agent would, also a model call to the gateway at 127.0.0.1, as its base URL would say on the host.
 fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf {
     let probe = "echo x > note.txt && git add note.txt && git commit -qm probe && echo COMMIT_OK; \
-                 git push origin main 2>&1 | grep -q gates.git.deny && echo PUSH_REFUSED; \
+                 git push origin main 2>&1 | grep -q actions.forbid && echo PUSH_REFUSED; \
                  touch \"$HOME/outside\" && touch agentWorkspaces/talk/MEMORY/probe.md && echo WROTE; \
                  [ -f /.dockerenv ] && echo IN_CONTAINER; echo \"SESSION=$LEGIONCTL_SESSION\"; \
                  grep -q logged-in \"$HOME/.agent-state.json\" && echo STATE_READ; \
@@ -7212,8 +7139,8 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
     let repo = repository(&home);
     // a stand-in agent that tries what an agent would: commit, push, rewrite history, write home and dossier
     let probe = "echo x > note.txt && git add note.txt && git commit -qm probe && echo COMMIT_OK; \
-                 git push origin main 2>&1 | grep -q gates.git.deny && echo PUSH_REFUSED; \
-                 git reset --hard HEAD 2>&1 | grep -q gates.git.deny && echo RESET_REFUSED; \
+                 git push origin main 2>&1 | grep -q actions.forbid && echo PUSH_REFUSED; \
+                 git reset --hard HEAD 2>&1 | grep -q actions.forbid && echo RESET_REFUSED; \
                  touch \"$HOME/outside\" 2>/dev/null || echo HOME_READONLY; \
                  touch agentWorkspaces/port/MEMORY/probe.md && echo DOSSIER_WRITABLE; echo \"SESSION=$LEGIONCTL_SESSION\"; \
                  touch agentWorkspaces/port/.state/dossier.db 2>/dev/null || echo EVIDENCE_READONLY; \
@@ -8219,8 +8146,7 @@ fn the_processes_of_a_test_end_when_it_panics_and_when_its_binary_is_killed() {
 /// todo-122, as on 2026-10-15: the user's operator.db at v10 while an operator of another build runs (a stand-in that
 /// holds `operator.lock` with that build's fingerprint). An operator of this build does not start, and the file stays
 /// at v10 without a backup. After the other operator stopped, this one starts: it keeps the v10 file in
-/// `operator.db.v10.bak`, then takes the database to v17 with its rows (the MCP tool call log into the call record, which
-/// does not say their folder).
+/// `operator.db.v10.bak`, then takes the database to v17 with its rows (the MCP tool call log into the call record).
 #[test]
 fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_database() {
     let home = home("holder");
