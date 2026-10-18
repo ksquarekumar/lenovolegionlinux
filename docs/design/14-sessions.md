@@ -202,8 +202,11 @@ Trust fixes (2026-10-17, EV-review-14, plan#todo-198):
 A toolset is a capability set with a `toolverse` (classes, operations, `mcp_tools`). A skill declares the toolsets it
 needs in its frontmatter (`toolsets: [dossier-write]`). The scope of an agent is the read class and its grant: a
 session or a thread member gets the toolsets of its archetype's skills at its start (members also `thread-member`;
-a bound run its `--only` operations); a harness agent (Claude Code or Codex with the user token) starts with the read
-class, and each skill it loads (Claude Code's `Skill` call, through the post-tool hook) adds that skill's toolsets. At
+a bound run its `--only` operations); a harness agent (Claude Code or Codex with the user token: its MCP server, its
+hooks, its CLI in the Bash tool) gets the toolsets of all the plugin's skills at its session start (the harness has
+them from the plugin; both harnesses run the session-start hook), and each skill it loads later adds its toolsets; an
+agent that never ran a session start has the read class. Codex starts the plugin's MCP server and hooks with a cleared
+environment, so they know no session: as `mcp` and `hook` they hold the plugin's skills' toolsets too. At
 dispatch, an agent's call of a public operation outside its scope asks the user for the toolset that holds it (a set
 that names the operation or its group first, else one with its class); Allow keeps the toolset in the agent's grant,
 Deny refuses the call. The user, legionctl's internal operations and an unsandboxed agent's hooks have no scope.
@@ -223,7 +226,9 @@ name, a BLAKE2b-128 hash of the input, the caller's toolsets, start, end, outcom
 read, the answer. The id goes back in `x-legionctl-call` (the socket) and as the last line `call <id>` of a
 `legionctl_run` answer; a caller that retries with it (`call_id`) gets the recorded answer, and nothing runs twice; the
 id of another call (other operation or input) and a call with no end (it runs, or the operator stopped during it) are
-one sentence each. An operation's cache time is in the registry (`Read(300)` for `ops.list`; only reads): an agent's
+one sentence each. A brokered call that cannot be recorded (the operator does not answer) does not run while
+`RUN_UNRECORDED` in proxy.rs is false (DESIGN/22 rule 3 against the user's decision Q5 of 2026-10-14; open). An
+operation's cache time is in the registry (`Read(300)` for `ops.list`; only reads): an agent's
 same call with the same input and toolsets within that time answers from the record (outcome `cached`).
 `legionctl tools calls [--kind op|tool|model] [--session]` lists the record; the step to v16 moved the rows of the
 earlier MCP tool log (`internal.tools.record` events) into it. Not done: a setting of the DESIGN-20 registry that

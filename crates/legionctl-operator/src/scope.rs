@@ -50,6 +50,7 @@ pub(crate) async fn check(id: &str, name: &str, what: &str) -> Result<bool, ApiE
         return Ok(false);
     }
     let store = crate::engine::dossiers().map_err(|e| internal(&e))?;
+    plugin_scope(&Principal::Agent(id.to_string()), id)?;
     let scope = store.scope(id).map_err(|e| internal(&e))?;
     if holds(&scope.manifest.toolverse, name, class) {
         return Ok(false);
@@ -84,27 +85,26 @@ pub(crate) async fn check(id: &str, name: &str, what: &str) -> Result<bool, ApiE
     }
 }
 
-/// The harness agent of session `id` loaded `skill` (its post-tool hook says so): the toolsets the skill declares join
-/// the agent's scope (no question: the skill is the declaration). The hook is the user's own process, so its session id
-/// is the agent's; a sandboxed session keeps the grant of its start as its ceiling.
+/// The harness agent of session `id` has `skills`: the toolsets they declare join its scope (no question: the skills
+/// are the declaration). The hooks are the user's own process, so their session id is the agent's: at session start
+/// the plugin's skills (the harness has them all from the plugin), and each skill the agent loads later (Claude Code's
+/// `Skill` call). A legionctl session (sandboxed or a thread member) keeps the grant of its start as its ceiling.
 ///
 /// # Errors
 /// The grant cannot be read or written.
-pub(crate) fn declare(principal: &Principal, id: &str, skill: &str) -> Result<()> {
+pub(crate) fn declare(principal: &Principal, id: &str, skills: &[String]) -> Result<()> {
     if !matches!(principal, Principal::Agent(_)) || id.is_empty() {
         return Ok(());
     }
     let store = crate::engine::dossiers()?;
-    // a legionctl session (sandboxed, or a thread member) keeps the grant of its start
     if store.session(id).is_ok() {
         return Ok(());
     }
-    let names = legionctl_core::archetypes::skill_toolsets(skill);
-    if names.is_empty() {
-        return Ok(());
-    }
     let config = crate::engine::config(None)?.config;
-    for name in names {
+    for name in skills
+        .iter()
+        .flat_map(|s| legionctl_core::archetypes::skill_toolsets(s))
+    {
         let grantable = config
             .capabilities
             .iter()
@@ -117,6 +117,34 @@ pub(crate) fn declare(principal: &Principal, id: &str, skill: &str) -> Result<()
     Ok(())
 }
 
+/// A harness session starts (its session-start hook): it has the plugin's skills, so their toolsets are its scope.
+///
+/// # Errors
+/// The grant cannot be read or written.
+pub(crate) fn session_start(principal: &Principal, input: &legionctl_api::HookRunIn) -> Result<()> {
+    match &input.session {
+        Some(session) if matches!(input.event, legionctl_api::Event::SessionStart) => declare(
+            principal,
+            &session.0,
+            &legionctl_core::archetypes::plugin_skills(),
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// The agent ids of a client that knows no session (Codex starts its MCP servers and hooks with a cleared
+/// environment): the plugin's own server and hooks, which have the plugin's skills.
+const NO_SESSION: [&str; 2] = ["mcp", "hook"];
+
+/// An agent that knows no session holds the toolsets of the plugin's skills, as a harness session does from its start.
+fn plugin_scope(principal: &Principal, id: &str) -> Result<(), ApiError> {
+    if NO_SESSION.contains(&id) {
+        declare(principal, id, &legionctl_core::archetypes::plugin_skills())
+            .map_err(|e| internal(&e))?;
+    }
+    Ok(())
+}
+
 /// The `runnables.scope` answer for `principal`.
 ///
 /// # Errors
@@ -125,6 +153,7 @@ pub(crate) fn scope(principal: &Principal, input: &ScopeIn) -> Result<Scope> {
     let Some(id) = principal.agent() else {
         return Ok(Scope::default());
     };
+    plugin_scope(principal, id).map_err(anyhow::Error::new)?;
     let grant = crate::engine::dossiers()?.scope(id)?;
     let config = crate::engine::config(None)?.config;
     let names: Vec<String> = if input.tools.is_empty() {

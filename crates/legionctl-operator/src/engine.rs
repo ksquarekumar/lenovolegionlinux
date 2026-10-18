@@ -2995,6 +2995,7 @@ impl Engine for Operator {
             Ok(resolved) => resolved,
             Err(reply) => return Ok(reply),
         };
+        crate::scope::session_start(&ctx.principal, &input)?;
         let store = Dossiers::open(&resolved.config.dossier)?;
         let session = input.session.as_ref().filter(|s| !s.0.is_empty());
         if input.again {
@@ -3007,10 +3008,7 @@ impl Engine for Operator {
                 },
             });
         }
-        let mut active = match session {
-            Some(s) => store.active(&s.0)?,
-            None => None,
-        };
+        let mut active = session.map(|s| store.active(&s.0)).transpose()?.flatten();
         if let (Some(s), Some(_)) = (session, &active) {
             // each hook call shows the session is live, so its dossier is not taken over
             store.touch(&s.0)?;
@@ -5182,7 +5180,11 @@ impl Engine for Operator {
 
     fn agent_tool(&self, ctx: &Ctx, input: legionctl_api::AgentToolIn) -> Result<HookReply> {
         if let Some(skill) = &input.skill {
-            crate::scope::declare(&ctx.principal, &input.session.0, skill)?;
+            crate::scope::declare(
+                &ctx.principal,
+                &input.session.0,
+                std::slice::from_ref(skill),
+            )?;
         }
         crate::thread::tool(&input)
     }

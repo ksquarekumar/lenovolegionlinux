@@ -432,6 +432,20 @@ pub fn declared_toolsets(config: &crate::config::Config, name: &str) -> Vec<Stri
     out
 }
 
+/// The names of the plugin's skills (each folder of its `skills/` with a `SKILL.md`).
+#[must_use]
+pub fn plugin_skills() -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(crate::setup::plugin_skills())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().join("SKILL.md").is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    out.sort();
+    out
+}
+
 /// The `toolsets:` of the plugin's skill `skill` (`legionctl:` before the name is allowed); none: no such skill or no
 /// toolsets.
 #[must_use]

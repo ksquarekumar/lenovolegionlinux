@@ -18,6 +18,10 @@ use rmcp::service::{RequestContext, RunningService};
 use rmcp::transport::TokioChildProcess;
 use rmcp::{ErrorData, RoleClient, RoleServer, ServerHandler, ServiceExt};
 
+/// Whether a call runs when the operator does not answer, so it cannot be recorded (the user's decision Q5 of
+/// 2026-10-14 says yes; DESIGN/22 rule 3 says no: a row before the call runs). Pending the user's answer: false.
+const RUN_UNRECORDED: bool = false;
+
 /// The `_meta` key of a tool call with its call id (legionctl's MCP server sends it for a retry).
 pub const CALL_META: &str = "legionctl/call";
 
@@ -108,7 +112,7 @@ impl Proxy {
     }
 
     /// Start the call in the operator's call record (its toolset is checked there): its id, or the recorded result of
-    /// a call id that ended before. A call that cannot be recorded does not run.
+    /// a call id that ended before. A call that cannot be recorded does not run, unless [`RUN_UNRECORDED`].
     async fn begin(
         &self,
         (request, meta): (&CallToolRequestParams, &rmcp::model::RequestMetaObject),
@@ -122,17 +126,31 @@ impl Proxy {
             .get(CALL_META)
             .and_then(serde_json::Value::as_str)
             .map(String::from);
-        self.client
+        let begun = self
+            .client
             .call::<op::CallsBegin>(&CallBeginIn {
-                call,
+                call: call.clone(),
                 session: legionctl_api::SessionId(self.session.clone()),
                 server: self.server.clone(),
                 tool: request.name.to_string(),
                 args_hash: args_hash.to_string(),
                 refused,
             })
-            .await
-            .map_err(|e| ErrorData::invalid_request(format!("{e:#}"), None))
+            .await;
+        match begun {
+            // an operator that does not answer: the call runs unrecorded only while this is true (the user's Q5)
+            Err(e)
+                if RUN_UNRECORDED
+                    && legionctl_api::code_of(&e) == legionctl_api::Code::Unavailable =>
+            {
+                eprintln!("legionctl mcp-proxy: the call is not recorded: {e:#}");
+                Ok(CallStart {
+                    call: call.unwrap_or_default(),
+                    replay: None,
+                })
+            }
+            begun => begun.map_err(|e| ErrorData::invalid_request(format!("{e:#}"), None)),
+        }
     }
 
     /// End call `call`; its result is kept for a retry. A failed write goes to stderr: the call ran.

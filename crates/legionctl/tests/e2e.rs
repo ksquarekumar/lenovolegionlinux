@@ -691,6 +691,151 @@ fn an_unknown_input_field_is_refused_before_the_operation_runs() {
     );
 }
 
+/// The lead's usual work through its CLI: dossier read, write and edit, workspace open, checkpoint and merge, a mutant
+/// record, a thread and a message in it; each step must pass.
+fn the_leads_cli_flow(op: &Operator, repo: &Path, env: &[(&str, &str)]) {
+    let ok = |cwd: &Path, args: &[&str], stdin: &str| {
+        let o = op.run_bare(cwd, env, args, stdin);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    ok(repo, &["dossier", "use", "port"], "");
+    ok(
+        repo,
+        &["dossier", "write", "port/plan.md", "--overwrite"],
+        "# Plan\n| id | item |\n| --- | --- |\n| todo-1 | lexer |\n",
+    );
+    let read = ok(repo, &["dossier", "read", "port/plan.md"], "");
+    let anchor = read
+        .lines()
+        .find(|l| l.contains("todo-1"))
+        .unwrap()
+        .split('|')
+        .next()
+        .unwrap();
+    ok(
+        repo,
+        &[
+            "dossier",
+            "edit",
+            "port/plan.md",
+            "replace",
+            anchor,
+            "--content",
+            "| todo-1 | lexer done |",
+        ],
+        "",
+    );
+    let opened: Value =
+        serde_json::from_str(&ok(repo, &["workspace", "open", "--json"], "")).unwrap();
+    let ws = PathBuf::from(opened["path"].as_str().unwrap());
+    write(&ws.join("lexer.txt"), "tokens\n");
+    ok(&ws, &["workspace", "checkpoint", "the lexer"], "");
+    ok(
+        &ws,
+        &[
+            "code",
+            "tests",
+            "mutant",
+            "record",
+            "lexer.txt",
+            "1",
+            "no tokens",
+        ],
+        "",
+    );
+    ok(repo, &["thread", "start", "port the parser"], "");
+    ok(
+        repo,
+        &[
+            "thread",
+            "join",
+            "1",
+            "observer0",
+            "thread-observer",
+            "--member-session",
+            "obs",
+        ],
+        "",
+    );
+    ok(
+        repo,
+        &["thread", "send", "observer0", "note", "the lexer is in"],
+        "",
+    );
+    ok(repo, &["workspace", "merge"], "");
+}
+
+/// DESIGN/22 rule 2 (lead 2026-10-18): a harness agent with the plugin holds the toolsets of the plugin's skills from
+/// its session start, so the lead's usual work through its CLI (Claude Code's Bash tool: `CLAUDE_CODE_SESSION_ID`) and
+/// a Codex agent's MCP server (it knows no session) ask nothing. This operator has no desktop: a question would refuse
+/// its call, so each step that passes asked nothing, and the log has no question.
+#[test]
+fn a_plugin_agent_works_through_its_cli_and_mcp_without_a_question() {
+    let (op, home) = operator("plugcli");
+    let repo = repository(&home);
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("CLAUDE_CODE_SESSION_ID", "cc-1"),
+    ];
+    let flow = [
+        "dossier.edit",
+        "workspace.checkpoint",
+        "code.tests.mutant.record",
+        "thread.send",
+    ];
+    let scope = |args: &[&str]| -> Value {
+        let o = op.run_bare(
+            &repo,
+            &env,
+            &[&["runnables", "scope", "--json"], args].concat(),
+            "",
+        );
+        serde_json::from_slice(&o.stdout).unwrap()
+    };
+    assert_eq!(
+        scope(&flow)["missing"],
+        json!({"dossier.edit": "dossier-write", "workspace.checkpoint": "workspace-write",
+               "code.tests.mutant.record": "code-work", "thread.send": "thread-member"}),
+        "before its session start, the flow would ask four times"
+    );
+    let start = op.run_bare(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["hook", "session-start"],
+        &claude_hook("session-start", &json!({"session_id": "cc-1", "cwd": repo})),
+    );
+    assert!(
+        start.status.success(),
+        "{}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    assert_eq!(scope(&flow)["missing"], json!({}), "{}", scope(&[]));
+    the_leads_cli_flow(&op, &repo, &env);
+
+    // Codex starts legionctl's MCP server with a cleared environment: it knows no session
+    let mut mcp = Mcp::start(&op, &[("HOME", home.to_str().unwrap())]);
+    let (fact, failed) = mcp.run(
+        "facts.set",
+        &json!({"entity": "app", "attribute": "width", "value": "0.3"}),
+    );
+    assert!(!failed, "{fact}");
+
+    let events: Value =
+        serde_json::from_str(&op.ok(&["events", "--json", "--limit", "1000"])).unwrap();
+    let asked = events["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "approval.ask" || e["kind"] == "approval.answer")
+        .count();
+    assert_eq!(asked, 0, "no question: {events}");
+}
+
 /// DESIGN/22 rule 3: each run of an agent's operation has a call id and a row in the call record before it runs. The
 /// answer that did not reach the agent comes again for its call id, also after an operator restart, and the change does
 /// not run twice; the id of another call, and a call that has no end (the operator stopped during it), are one
@@ -833,7 +978,8 @@ fn bound_server_offers_only_its_operations(op: &Operator) {
 #[test]
 fn an_agent_finds_describes_and_runs_operations_through_three_mcp_tools() {
     let (op, home) = operator("mcp");
-    let mut mcp = Mcp::start(&op, &[]);
+    // an agent session that ran no session start (no plugin): the read class only
+    let mut mcp = Mcp::start(&op, &[("LEGIONCTL_SESSION", "bare-1")]);
 
     let tools = mcp.call("tools/list", &json!({}));
     let names: Vec<&str> = tools["tools"]
@@ -866,8 +1012,7 @@ fn an_agent_finds_describes_and_runs_operations_through_three_mcp_tools() {
         lines
             .next()
             .is_some_and(|row| row.starts_with("workspace.checkpoint · session · ")
-            // this MCP server runs for an agent that loaded no skill: the read class only (DESIGN/22 rule 2)
-            && row.ends_with(" · not granted: workspace-write, ask"))
+                && row.ends_with(" · not granted: workspace-write, ask"))
             && lines.next().is_none(),
         "the op with both words in its name comes first: {found}"
     );

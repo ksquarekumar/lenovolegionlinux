@@ -879,8 +879,11 @@ impl crate::dossier::Dossiers {
     /// # Errors
     /// The grant cannot be read or written.
     pub fn grant_toolset(&self, id: &str, set: &Loaded) -> Result<()> {
-        let grant = with_set(self.scope(id)?, set);
-        self.keep_grant(id, &grant)
+        let grant = self.scope(id)?;
+        if grant.sets.iter().any(|g| g.name == set.set.name) {
+            return Ok(());
+        }
+        self.keep_grant(id, &with_set(grant, set))
     }
 
     /// The grant of session `id`, or of member `<thread>/<member>` (its session).

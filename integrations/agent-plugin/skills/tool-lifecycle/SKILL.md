@@ -28,9 +28,9 @@ user-invocable: true
 9. Over MCP, three tools reach every operation: `legionctl_find` (by words or group), `legionctl_describe` (help,
    input schema, class) and `legionctl_run` (`op` is the command path with `.`: `kernel.cmdline.set`). In a session,
    they also reach the tools of the servers in `mcp.servers` as `<server>/<tool>`.
-9a. Your scope is the read class and the toolsets of the skills you loaded (each skill's `toolsets:`). A call outside
-   it asks the user for the toolset that holds it; `legionctl_find` marks such a row "not granted: <toolset>, ask".
-   Load the skill of your task first, and you get its toolsets without a question.
+9a. Your scope is the read class and the toolsets of the plugin's skills (each skill's `toolsets:`), from your session
+   start. A call outside it (your settings, the machine) asks the user for the toolset that holds it; `legionctl_find`
+   marks such a row "not granted: <toolset>, ask".
 9b. Each `legionctl_run` answer ends with `call <id>`. When an answer does not reach you (a dropped stream, a
    restart), run it again with `call_id: <id>`: you get the recorded answer, and the change does not run twice.
 10. `--json` prints the operation's JSON output. `--dry-run`, where a command has it, shows the plan and changes nothing.
