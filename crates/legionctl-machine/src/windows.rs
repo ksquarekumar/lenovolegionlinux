@@ -76,10 +76,10 @@ pub fn dirty_ntfs() -> Result<Vec<String>> {
     let out = Command::new("journalctl")
         .args(["-k", "-b", "-q", "--no-pager", "-o", "cat"])
         .output()
-        .context("running journalctl")?;
+        .context("reading the kernel log")?;
     anyhow::ensure!(
         out.status.success(),
-        "journalctl -k failed: {}",
+        "the kernel log cannot be read: {}",
         String::from_utf8_lossy(&out.stderr).trim()
     );
     let mut volumes: Vec<String> = String::from_utf8_lossy(&out.stdout)
