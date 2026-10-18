@@ -857,6 +857,9 @@ pub fn save(view: &View, text: &str, repo: Option<&Path>) -> Result<(PathBuf, u3
     let past = history(&dir, &view.name);
     std::fs::create_dir_all(&past)?;
     let file = dir.join(format!("{}.jsonc", view.name));
+    // two saves at once (review/16 B10): the version is taken and written under one lock of the view's history
+    let lock = std::fs::File::create(past.join(".lock"))?;
+    lock.lock()?;
     let mut numbers: Vec<u32> = std::fs::read_dir(&past)?
         .flatten()
         .filter_map(|e| e.path().file_stem()?.to_str()?.parse().ok())
@@ -873,6 +876,7 @@ pub fn save(view: &View, text: &str, repo: Option<&Path>) -> Result<(PathBuf, u3
         std::fs::write(&partial, text)?;
         std::fs::rename(&partial, &target)?;
     }
+    drop(lock);
     Ok((file, version))
 }
 
@@ -1653,5 +1657,48 @@ impl Rendered {
         );
         self.series = series;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Saves of one view at the same time (EV-review-16 B10: the version came from an unlocked folder scan and the
+    /// files had fixed temporary names): each save is its own version, and none is lost or mixed with another.
+    #[test]
+    fn saves_of_one_view_at_the_same_time_each_get_their_own_version() {
+        let repo = crate::scratch::Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-views-race-{}", std::process::id())),
+        );
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let text = |i: usize| {
+            format!(
+                r#"{{"name": "race", "title": "Race {i}", "widget": "table",
+                    "source": {{"op": "thread.list", "path": "$"}}, "columns": ["title"]}}"#
+            )
+        };
+        std::thread::scope(|s| {
+            for i in 0..48 {
+                let (repo, text) = (&repo, text(i));
+                s.spawn(move || {
+                    let view = View::parse(&text).unwrap();
+                    save(&view, &text, Some(repo)).unwrap();
+                });
+            }
+        });
+        let past = history(&repo.join(".legionctl/views"), "race");
+        let mut titles: Vec<String> = (1..=48)
+            .map(|n| {
+                let saved = std::fs::read_to_string(past.join(format!("{n}.jsonc")))
+                    .unwrap_or_else(|e| panic!("version {n}: {e}"));
+                View::parse(&saved).unwrap().title.unwrap_or_default()
+            })
+            .collect();
+        titles.sort();
+        let mut expected: Vec<String> = (0..48).map(|i| format!("Race {i}")).collect();
+        expected.sort();
+        assert_eq!(titles, expected, "each save is one version");
+        assert!(!past.join("49.jsonc").exists());
     }
 }
