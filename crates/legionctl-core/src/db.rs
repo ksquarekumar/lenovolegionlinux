@@ -4,8 +4,8 @@
 //!   `PRAGMA user_version`. Installs, upgrades and plain starts all go through the same path. Before a step, `open`
 //!   copies the file to `<db>.v<old>.bak`, and it refuses the step while an operator of another build holds the
 //!   folder's `operator.lock` (todo-122: a worktree build stepped the user's database under the installed operator).
-//! - Concurrency: WAL lets readers run while one writer commits; a busy timeout makes concurrent hooks wait
-//!   instead of failing.
+//! - Concurrency: WAL lets readers run while one writer commits; commits do not sync (synchronous NORMAL), so the write
+//!   lock is short; a busy timeout makes concurrent writers wait instead of failing.
 //! - Event log: every state change appends a row to `events` (who, what, payload). The daemon (Phase 1b) turns this
 //!   into the shared log that consumers follow; see docs/design/13-daemon.md.
 
@@ -30,7 +30,7 @@ pub struct Schema {
 /// then the rows that span dossiers and the threads (design 23, E1 decision 1; they were in `workspace.db`), then the
 /// pools (design 23, P6b: members that run, effects), then the rlcd decisions (todo-138), then the facts (DESIGN-10),
 /// then each session's granted connections (DESIGN-13).
-pub(crate) const OPERATOR: &Schema = &Schema {
+pub const OPERATOR: &Schema = &Schema {
     version: 15,
     steps: &[
         (
@@ -314,6 +314,9 @@ impl Db {
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
+        // with FULL each commit synced the WAL under the write lock, and on a busy disk writers back to back starved
+        // the others past the timeout (todo-189); the checkpoint syncs, so a power loss drops the last commits at most
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < schema.version {
@@ -387,6 +390,25 @@ impl Db {
             params![now(), actor, kind, payload.to_string()],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Append `events` (kind, payload) of `actor` to the event log in one transaction.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn record_all(&self, actor: &str, events: &[(String, serde_json::Value)]) -> Result<()> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        for (kind, payload) in events {
+            tx.execute(
+                "INSERT INTO events (ts, actor, kind, payload) VALUES (?1, ?2, ?3, ?4)",
+                params![now(), actor, kind, payload.to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// The id of the newest event; 0 when there is none.

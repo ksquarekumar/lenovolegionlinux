@@ -443,16 +443,32 @@ impl Dossiers {
         if !dir.is_dir() {
             out.extend(self.create(name)?);
         }
-        // IMMEDIATE: two sessions binding at once see each other's row
-        let tx = Transaction::new_unchecked(self.db.conn(), TransactionBehavior::Immediate)?;
-        let holder: Option<(String, String, i64)> = tx
-            .query_row(
-                "SELECT session, tool, updated FROM bindings WHERE dossier = ?1 AND released IS NULL",
-                [name],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
+        let holder_of = |conn: &rusqlite::Connection| -> Result<Option<(String, String, i64)>> {
+            Ok(conn
+                .query_row(
+                    "SELECT session, tool, updated FROM bindings WHERE dossier = ?1 AND released IS NULL",
+                    [name],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?)
+        };
         let now = now();
+        // whether the holder lives (systemctl, docker inspect) is asked outside the write lock (todo-189); the lock
+        // then goes on only while the holder is still the one asked about
+        let (tx, holder, stale) = loop {
+            let seen = holder_of(self.db.conn())?;
+            let stale = match &seen {
+                Some((holder, _, updated)) if holder != session => {
+                    !self.live(holder, *updated, now)?
+                }
+                _ => false,
+            };
+            // IMMEDIATE: two sessions binding at once see each other's row
+            let tx = Transaction::new_unchecked(self.db.conn(), TransactionBehavior::Immediate)?;
+            if holder_of(&tx)? == seen {
+                break (tx, seen, stale);
+            }
+        };
         match holder {
             Some((holder, _, _)) if holder == session => {
                 tx.execute(
@@ -464,7 +480,6 @@ impl Dossiers {
                 return Ok(out);
             }
             Some((holder, holder_tool, updated)) => {
-                let stale = !self.live(&holder, updated, now)?;
                 if !(stale || steal) {
                     return Err(crate::error::coded(
                         crate::error::Code::Conflict,

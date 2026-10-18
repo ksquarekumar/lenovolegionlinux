@@ -372,7 +372,7 @@ impl DispatchError {
         let (code, message) = match self {
             DispatchError::Unknown(name) => (Code::NotFound, format!("unknown operation {name}")),
             DispatchError::Input(e) => (Code::InvalidInput, format!("invalid input: {e}")),
-            DispatchError::Failed(e) => (code_of(e), format!("{e:#}")),
+            DispatchError::Failed(e) => (code_of(e), legionctl_core::error::message_of(e)),
         };
         ApiError {
             code,

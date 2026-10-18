@@ -214,12 +214,13 @@ async fn time_limit(seconds: Option<u64>) {
     }
 }
 
-/// Keep the run's new ACP session id in its job.
+/// Keep the run's new ACP session id in its job. The error is one text: an ACP error keeps only the top line.
 fn keep_acp(live: &Mutex<Live>, job: i64, input: &serde_json::Value) -> Result<()> {
-    lock(live)
-        .db
-        .job_input(job, input)
-        .context("keeping the ACP session id")
+    lock(live).db.job_input(job, input).map_err(|e| {
+        anyhow::anyhow!(legionctl_core::error::message_of(
+            &e.context("keeping the ACP session id")
+        ))
+    })
 }
 
 impl Live {

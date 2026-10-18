@@ -8030,3 +8030,131 @@ fn a_workspace_in_the_home_folder_is_not_a_finding_of_the_dossiers_home() {
     let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
     assert!(!doctor.contains("agentWorkspaces is a"), "{doctor}");
 }
+
+/// todo-189, r361: a writer of the event log back to back (as the recorder was: `session.open`, a new connection per
+/// event) while agents' tool calls and headless runs come in. Each call's hook answers and its audit lands, and each
+/// run keeps its ACP session id and ends: no write waits out the busy timeout (each commit held the write lock across
+/// its own fsync, and the waiters starved: "keeping the ACP session id", "audit of internal.agent.tool not recorded:
+/// database is locked").
+#[test]
+fn tool_calls_and_runs_land_in_the_event_log_while_another_writer_floods_it() {
+    use legionctl_core::db::{Db, EventFilter, OPERATOR};
+    let (op, home) = operator("db-lock");
+    let db = home.join(".local/state/legionctl/operator.db");
+    let repo = repository(&home);
+    let script = adapter::node_script(&home);
+    adapter::executable(&home.join(".local/bin/fake-acp"), &script);
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {"fake": adapter::COMMAND}, "scope": false, "writable": []}})
+            .to_string(),
+    );
+    let run = |a: usize| {
+        let dossier = format!("flood{a}");
+        let out = op.run(
+            &repo,
+            &[("HOME", home.to_str().unwrap())],
+            &["session", "run", "fake", "hi", "--dossier", &dossier],
+            "",
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let calls = |agent: usize| {
+        for i in 0..25 {
+            let fields = json!({"session_id": "flood", "cwd": home, "tool_name": "Bash",
+                                "tool_input": {"command": format!("echo {agent}-{i}"), "description": "run"}});
+            let out = op.run(
+                &home,
+                &[],
+                &["hook", "post-tool"],
+                &claude_hook("post-tool", &fields),
+            );
+            assert!(
+                out.status.success() && out.stderr.is_empty(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    };
+    calls(0);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|s| {
+        let flood = s.spawn(|| {
+            let mut n = 0;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                Db::open(&db, OPERATOR)
+                    .and_then(|db| {
+                        db.record(
+                            "legionctl-system",
+                            "session.open",
+                            &json!({"session": "x", "path": n}),
+                        )
+                    })
+                    .unwrap();
+                n += 1;
+            }
+            n
+        });
+        let agents: Vec<_> = (1..9).map(|a| s.spawn(move || calls(a))).collect();
+        let runs: Vec<_> = (1..4).map(|a| s.spawn(move || run(a))).collect();
+        for a in agents.into_iter().chain(runs) {
+            a.join().unwrap();
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(flood.join().unwrap() > 100, "the flood wrote back to back");
+    });
+    let filter = EventFilter {
+        kinds: &["internal.agent.tool"],
+        ..Default::default()
+    };
+    let audits = Db::open(&db, OPERATOR)
+        .unwrap()
+        .events_page(&filter, 0, 1000)
+        .unwrap()
+        .0;
+    assert_eq!(
+        audits.len(),
+        225,
+        "every tool call's audit is in the event log"
+    );
+    let jobs = Db::open(&db, OPERATOR)
+        .unwrap()
+        .jobs_page(0, 100)
+        .unwrap()
+        .0;
+    assert!(
+        jobs.len() == 3
+            && jobs
+                .iter()
+                .all(|j| j.state == "done" && j.input["acp"].is_string()),
+        "each run kept its ACP session id and ended: {jobs:?}"
+    );
+}
+
+/// A write that waits out the busy timeout (another process holds the write lock) says so in one plain sentence, not
+/// as SQLite's "database is locked: Error code 5".
+#[test]
+fn a_write_that_waits_out_the_lock_says_so_in_one_sentence() {
+    let (op, home) = operator("db-busy");
+    op.ok(&["events", "--limit", "1"]);
+    let db = home.join(".local/state/legionctl/operator.db");
+    let holder = rusqlite::Connection::open(&db).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let out = op.run(
+        &home,
+        &[("LEGIONCTL_SESSION", "flood")],
+        &["dossier", "use", "flood"],
+        "",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success()
+            && stderr.contains("other writes kept the legionctl database busy for 5 s; try again")
+            && !stderr.contains("Error code 5"),
+        "{stderr}"
+    );
+}

@@ -1181,16 +1181,20 @@ impl Dossiers {
              reply FROM watch_rules WHERE thread = ?2",
             params![new, thread],
         )?;
+        tx.commit()?;
         let branch = format!("legionctl/thread-{new}");
         let mut out = vec![format!(
             "thread {new} is a branch of thread {thread} at log row {at}: this session is main0"
         )];
+        // git runs outside the write lock (todo-189)
         if let (Some(commit), Some(dir)) = (&commit, &workdir) {
-            crate::git::text(Path::new(dir), &["branch", &branch, commit])?;
+            crate::git::text(Path::new(dir), &["branch", &branch, commit])
+                .with_context(|| format!("thread {new} is made, its branch {branch} is not"))?;
             out.push(format!(
                 "branch {branch} starts at the checkpoint {commit}; open it with `legionctl workspace open --base {branch} --topic thread-{new}`"
             ));
         }
+        let tx = self.begin()?;
         log(
             &tx,
             new,

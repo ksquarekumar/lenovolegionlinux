@@ -93,3 +93,25 @@ pub fn code_of(error: &anyhow::Error) -> Code {
         .find_map(|e| e.downcast_ref::<ApiError>())
         .map_or(Code::Failed, |e| e.code)
 }
+
+/// The text of `error` for a person: its whole chain, or for a write that waited out the busy timeout one plain
+/// sentence after what it did.
+#[must_use]
+pub fn message_of(error: &anyhow::Error) -> String {
+    let busy = error.chain().any(|e| {
+        e.downcast_ref::<rusqlite::Error>()
+            .and_then(rusqlite::Error::sqlite_error_code)
+            == Some(rusqlite::ErrorCode::DatabaseBusy)
+    });
+    if busy {
+        // the database's own text says the same in its terms; what was done comes first
+        let what = if error.chain().count() > 1 {
+            format!("{error}: ")
+        } else {
+            String::new()
+        };
+        format!("{what}other writes kept the legionctl database busy for 5 s; try again")
+    } else {
+        format!("{error:#}")
+    }
+}

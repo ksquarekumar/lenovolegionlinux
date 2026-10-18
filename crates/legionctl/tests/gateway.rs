@@ -876,3 +876,55 @@ fn prompt_cache_tokens_count_in_the_cost() {
     // 10 x $1000/M + 1000 read x $100/M + 100 written x $1250/M; then 10 + 1000 read, both at $1000/M
     assert_eq!(rows, [(1110, 0.235), (1010, 1.01)]);
 }
+
+/// todo-189, r361: gateway calls while another writer floods the event log back to back (as the recorder did, a new
+/// connection and commit per event): each call's usage row lands. Before, each commit synced under the write lock and
+/// the usage writes starved past the busy timeout ("gateway usage not recorded: database is locked").
+#[test]
+fn each_gateway_call_is_counted_while_another_writer_floods_the_event_log() {
+    use legionctl_core::db::{Db, OPERATOR};
+    let s = setup("gw-flood");
+    let db = s.home.join(".local/state/legionctl/operator.db");
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let flood = scope.spawn(|| {
+            let mut n = 0;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                Db::open(&db, OPERATOR)
+                    .and_then(|db| {
+                        db.record("legionctl-system", "session.open", &json!({"path": n}))
+                    })
+                    .unwrap();
+                n += 1;
+            }
+            n
+        });
+        let callers: Vec<_> = (0..8)
+            .map(|c| {
+                let port = s.port;
+                scope.spawn(move || {
+                    for i in 0..15 {
+                        let (status, _, body) = post(
+                            port,
+                            "/v1/messages",
+                            &CALLER,
+                            &ask("claude-z", &format!("{c}-{i}")),
+                        );
+                        assert_eq!(status, 200, "{body}");
+                    }
+                })
+            })
+            .collect();
+        for c in callers {
+            c.join().unwrap();
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(flood.join().unwrap() > 100, "the flood wrote back to back");
+    });
+    let rows: i64 = Db::open(&db, OPERATOR)
+        .unwrap()
+        .conn()
+        .query_row("SELECT count(*) FROM gateway_usage", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 120, "each call has its usage row");
+}
