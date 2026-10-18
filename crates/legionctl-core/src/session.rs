@@ -1196,6 +1196,30 @@ pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<ser
     Ok(serde_json::json!({ "mcpServers": servers }))
 }
 
+/// `mcp` with the session's operator variables in the environment of each legionctl server (its own and the proxied
+/// ones): Codex starts MCP servers with a cleared environment, so they would reach no operator, or not as the session.
+fn session_env(
+    mut mcp: serde_json::Value,
+    id: &str,
+    token: &str,
+    runtime: &Path,
+) -> serde_json::Value {
+    for server in mcp["mcpServers"]
+        .as_object_mut()
+        .into_iter()
+        .flat_map(|s| s.values_mut())
+        .filter(|s| s["command"] == "legionctl")
+    {
+        if !server["env"].is_object() {
+            server["env"] = serde_json::json!({});
+        }
+        server["env"]["LEGIONCTL_SESSION"] = id.into();
+        server["env"]["LEGIONCTL_TOKEN"] = token.into();
+        server["env"]["XDG_RUNTIME_DIR"] = runtime.to_string_lossy().into_owned().into();
+    }
+    mcp
+}
+
 /// The agents' variables for the model gateway: model calls to its APIs, every other HTTPS call through its tunnel to
 /// the session's granted connections (DESIGN-12; Codex on a `ChatGPT` login reaches chatgpt.com only this way). And the
 /// line that says what network the session has.
@@ -1729,7 +1753,7 @@ impl Dossiers {
             std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
         );
         let manifest = &grant.manifest;
-        let mcp_json = bound_mcp(mcp_json, who.tools);
+        let mcp_json = session_env(bound_mcp(mcp_json, who.tools), &id, token, &runtime);
         let [real_git, settings, mcp] =
             session_files(&runtime, &id, (config, manifest), &mcp_json)?;
         let workdir = agent_dir(ws);

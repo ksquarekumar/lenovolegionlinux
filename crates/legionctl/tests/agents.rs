@@ -1719,7 +1719,7 @@ fn assert_codex_reads_the_plugin(installed: &Path) {
     };
     assert_eq!(
         read("mcpServers")["mcpServers"]["legionctl"],
-        json!({"command": "legionctl", "args": ["mcp"], "env_vars": ["XDG_RUNTIME_DIR"]})
+        json!({"command": "legionctl", "args": ["mcp"], "env_vars": ["XDG_RUNTIME_DIR", "LEGIONCTL_SESSION", "LEGIONCTL_TOKEN"]})
     );
     assert_eq!(
         read("hooks")["hooks"]["SessionStart"][0]["hooks"][0]["command"],

@@ -3,7 +3,7 @@
     "legionctl": {
       "command": "legionctl",
       "args": ["mcp"],
-      "env_vars": ["XDG_RUNTIME_DIR"]
+      "env_vars": ["XDG_RUNTIME_DIR", "LEGIONCTL_SESSION", "LEGIONCTL_TOKEN"]
     }
   }
 }

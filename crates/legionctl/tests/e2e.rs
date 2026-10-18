@@ -8291,3 +8291,47 @@ fn the_legionctl_hooks_answer_codexs_own_payloads() {
         assert!(ok, "{event}: {err}");
     }
 }
+
+/// A Codex run uses legionctl's tools (todo-205, live 2026-10-18: Codex answered "Unavailable" to a load call): Codex
+/// starts MCP servers with a cleared environment, so legionctl's server gets the session's operator variables in its
+/// own `env` at session/new. The stand-in starts the server as Codex does (only PATH and that `env`) and calls its
+/// load tool, which answers.
+#[test]
+fn a_codex_run_reaches_legionctls_tools_with_the_cleared_environment_codex_gives_mcp_servers() {
+    let (op, home) = operator("codex-mcp");
+    let repo = repository(&home);
+    adapter::executable(
+        &home.join(".local/bin/fake-acp"),
+        &adapter::node_script(&home),
+    );
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {"codex": adapter::COMMAND}, "scope": false, "writable": []}})
+            .to_string(),
+    );
+    let out = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &[
+            "session",
+            "run",
+            "codex",
+            "MCPLOAD",
+            "--dossier",
+            "codex-mcp",
+            "--json",
+        ],
+        "",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let run: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let text = run["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("mcp load: ") && !text.contains("mcp error"),
+        "{text}"
+    );
+}

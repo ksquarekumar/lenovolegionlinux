@@ -6,7 +6,8 @@ On a prompt it announces a tool call, asks one permission, commits a file and tr
 servers from session/new, the permission outcome, and whether the commit and the push went through. The answer comes
 line by line, 0.1 s apart; a prompt that starts with WAIT holds after the first line until a file `release` is in the
 working folder, or the file $FAKE_ACP_RELEASE when that is set (at most 30 s), and one that starts with SLOW waits 30 s first (a long run, for the test that stops the
-operator in the middle of one), and one that starts with SILENT ends its turn with no words. It can load its sessions (kept in `.fake-acp-sessions` in the working folder, so a
+operator in the middle of one), one that starts with SILENT ends its turn with no words, and one that starts with
+MCPLOAD starts legionctl's MCP server as Codex does (a cleared environment) and answers with its load tool's text. It can load its sessions (kept in `.fake-acp-sessions` in the working folder, so a
 new adapter process finds them): session/load replays the earlier prompts and a REPLAYED line before it answers.
 After session/new and session/load it offers two commands (available_commands_update): /plan <what to plan> and
 /status. In a thread member's session (LEGIONCTL_MEMBER=<thread>/<member>), a prompt runs the script
@@ -106,6 +107,37 @@ def run(argv):
     return done.returncode == 0, done.stdout + done.stderr
 
 
+def mcp_load():
+    """Start legionctl's MCP server of session/new as Codex starts MCP servers: with a cleared environment, only PATH
+    and the server's own `env`; call its load tool (`legionctl_run` with op load where the server has it). The line is
+    the call's text, or its error."""
+    server = next(s for s in mcp_servers if s.get("name") == "legionctl")
+    env = {"PATH": os.environ.get("PATH", ""), **{e["name"]: e["value"] for e in server.get("env", [])}}
+    child = subprocess.Popen([server["command"], *server.get("args", [])], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, env=env)
+
+    def call(ident, method, params):
+        child.stdin.write(json.dumps({"jsonrpc": "2.0", "id": ident, "method": method, "params": params}) + "\n")
+        child.stdin.flush()
+        for line in child.stdout:
+            answer = json.loads(line)
+            if answer.get("id") == ident:
+                return answer
+        return {"error": "the MCP server ended"}
+
+    call(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "fake", "version": "0"}})
+    child.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+    names = [t["name"] for t in call(2, "tools/list", {}).get("result", {}).get("tools", [])]
+    if "legionctl_run" in names:
+        answer = call(3, "tools/call", {"name": "legionctl_run", "arguments": {"op": "load", "input": {}}})
+    else:
+        answer = call(3, "tools/call", {"name": "load", "arguments": {}})
+    child.kill()
+    result = answer.get("result", {})
+    text = " ".join(c.get("text", "") for c in result.get("content", []))
+    return ("mcp error: " if result.get("isError") or "error" in answer else "mcp load: ") + (text or json.dumps(answer))[:300] + "\n"
+
+
 def prompt(params):
     session = params["sessionId"]
     text = " ".join(block.get("text", "") for block in params.get("prompt", []))
@@ -114,6 +146,9 @@ def prompt(params):
     if os.environ.get("LEGIONCTL_MEMBER") and os.path.isfile(script):
         return member(session, text, script)
     if text.startswith("SILENT"):
+        return {"stopReason": "end_turn"}
+    if text.startswith("MCPLOAD"):
+        update(session, "agent_message_chunk", content={"type": "text", "text": mcp_load()})
         return {"stopReason": "end_turn"}
     if text.startswith("SLOW"):
         time.sleep(30)
