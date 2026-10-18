@@ -1487,8 +1487,9 @@ fn logins_through(
 
 /// What a commit in worktree `workdir` on `branch` writes in the repository's git folder: the objects, the refs and
 /// reflogs folder of its own branch, the stash and the worktree's own folder. The config, hooks and info, the other
-/// branches, tags and remotes, and the files that point git to its folders (the worktree's `.git`, `commondir`,
-/// `gitdir`) stay read-only, so that nothing the agent writes runs when the host's git reads it (S-4).
+/// branches (also those in the folder of its own branch), tags, remotes, replacements and notes, and the files that
+/// point git to its folders (the worktree's `.git`, `commondir`, `gitdir`) stay read-only, so that nothing the agent
+/// writes runs when the host's git reads it (S-4) and a session cannot move another session's branch (C7).
 fn git_mounts(mounts: &mut Vec<Mount>, workdir: &Path, branch: &str) -> Result<()> {
     let common = git_common_dir(workdir)?;
     let own = PathBuf::from(crate::git::text(
@@ -1507,6 +1508,10 @@ fn git_mounts(mounts: &mut Vec<Mount>, workdir: &Path, branch: &str) -> Result<(
             format!("the session's branch {branch} has no folder (legionctl/<dossier>)")
         })?;
     let refs = common.join("refs");
+    // these namespaces exist, so they are read-only below (a new one in the writable refs folder would be the agent's)
+    for space in ["heads", "tags", "remotes", "replace", "notes"] {
+        std::fs::create_dir_all(refs.join(space))?;
+    }
     // the folder itself, read-only: a container or VM sees nothing of the host but its mounts
     mounts.push(Mount::ReadOnly(common.clone(), common.clone()));
     mounts.push(Mount::Writable(common.join("objects")));
@@ -1519,7 +1524,19 @@ fn git_mounts(mounts: &mut Vec<Mount>, workdir: &Path, branch: &str) -> Result<(
     }
     let branches = refs.join("heads").join(folder);
     std::fs::create_dir_all(&branches)?;
-    mounts.push(Mount::Writable(branches));
+    mounts.push(Mount::Writable(branches.clone()));
+    // git writes the branch through <branch>.lock in its folder; each other entry there stays read-only
+    let mine = Path::new(branch)
+        .file_name()
+        .context("the session's branch has no name")?;
+    loose_siblings(&common, folder, mine)?;
+    for entry in std::fs::read_dir(&branches)? {
+        let path = entry?.path();
+        let name = path.file_name().unwrap_or_default();
+        if name != mine && *name != *format!("{}.lock", mine.to_string_lossy()) {
+            mounts.push(Mount::ReadOnly(path.clone(), path));
+        }
+    }
     // the reflogs (a commit and the stash write them; nothing runs from them), as a folder: a VM shares no file
     let logs = common.join("logs");
     std::fs::create_dir_all(&logs)?;
@@ -1533,6 +1550,43 @@ fn git_mounts(mounts: &mut Vec<Mount>, workdir: &Path, branch: &str) -> Result<(
     }
     let link = workdir.join(".git");
     mounts.push(Mount::ReadOnly(link.clone(), link));
+    Ok(())
+}
+
+/// Write a loose ref for each packed branch in `refs/heads/<folder>` other than `own` that has none (the same value, by
+/// git's lock file), so that it can be mounted read-only: else a loose file the agent writes would take its place.
+fn loose_siblings(common: &Path, folder: &Path, own: &std::ffi::OsStr) -> Result<()> {
+    let prefix = format!("refs/heads/{}/", folder.display());
+    let packed = match std::fs::read_to_string(common.join("packed-refs")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        read => read.context("reading packed-refs")?,
+    };
+    for (oid, name) in packed
+        .lines()
+        .filter(|l| !l.starts_with(['#', '^']))
+        .filter_map(|l| l.split_once(' '))
+    {
+        let Some(rest) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let loose = common.join(name);
+        if rest.as_bytes() == own.as_encoded_bytes() || loose.symlink_metadata().is_ok() {
+            continue;
+        }
+        std::fs::create_dir_all(loose.parent().context("a ref has no folder")?)?;
+        let lock = loose.with_file_name(format!(
+            "{}.lock",
+            loose.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        // git's own protocol: a lock that is there is a git that writes this ref now
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{oid}\n").as_bytes()))
+            .with_context(|| format!("writing {}", lock.display()))?;
+        std::fs::rename(&lock, &loose).with_context(|| format!("writing {}", loose.display()))?;
+    }
     Ok(())
 }
 

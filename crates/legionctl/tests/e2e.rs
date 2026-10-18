@@ -6110,6 +6110,75 @@ fn a_sandboxed_agent_finds_no_way_out_and_still_commits_calls_the_model_and_the_
     );
 }
 
+/// A session writes only its own branch (EV-review-16 C7): in its sandbox it commits and keeps a stash (`git stash
+/// push` itself runs `git reset --hard`, which the gate refuses), but the other
+/// branches under legionctl/ (a loose one and a packed one, which a loose file of the agent would hide) and a
+/// replacement ref (which would change what the host's git shows) stay as they were, also when the agent writes the
+/// ref files itself with the real git or with its shell.
+#[test]
+fn a_session_writes_only_its_own_branch() {
+    let (op, home) = operator("ownref");
+    let repo = repository(&home);
+    for branch in ["legionctl/packed", "legionctl/loose"] {
+        git(&home, &repo, &["branch", branch]);
+    }
+    git(&home, &repo, &["pack-refs", "--all"]);
+    git(
+        &home,
+        &repo,
+        &["update-ref", "refs/heads/legionctl/loose", "HEAD"],
+    );
+    let start = git(&home, &repo, &["rev-parse", "HEAD"]);
+    let probe = r#"common=$(git rev-parse --path-format=absolute --git-common-dir)
+        echo x > note.txt && git add note.txt && git commit -qm own && echo COMMIT_OK
+        echo y > note.txt && git stash store -m probe "$(git stash create)" && echo STASH_OK
+        head=$(git rev-parse HEAD)
+        for b in loose packed; do
+            echo "$head" > "$common/refs/heads/legionctl/$b" 2>/dev/null && echo "WROTE_$b"
+            "$LEGIONCTL_REAL_GIT" update-ref "refs/heads/legionctl/$b" "$head" 2>/dev/null && echo "MOVED_$b"
+            "$LEGIONCTL_REAL_GIT" update-ref -d "refs/heads/legionctl/$b" 2>/dev/null && echo "DELETED_$b"
+        done
+        mkdir -p "$common/refs/replace" && echo "$head" > "$common/refs/replace/$head" 2>/dev/null && echo REPLACED
+        true"#;
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({"session": {"agents": {"probe": ["sh", "-c", probe]}, "scope": false, "writable": []}})
+            .to_string(),
+    );
+    let started = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["session", "start", "probe", "--dossier", "port", "--json"],
+        "",
+    );
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
+    let out = run_launch(&op, &home, &launch);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        text.lines().collect::<Vec<_>>(),
+        ["COMMIT_OK", "STASH_OK"],
+        "{text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for branch in ["legionctl/loose", "legionctl/packed"] {
+        assert_eq!(git(&home, &repo, &["rev-parse", branch]), start, "{branch}");
+    }
+    assert_eq!(
+        git(
+            &home,
+            &repo,
+            &["log", "-1", "--format=%s", "legionctl/port"]
+        ),
+        "own"
+    );
+    assert_eq!(git(&home, &repo, &["replace", "--list"]), "");
+}
+
 #[test]
 fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_hold() {
     let (op, home) = operator("session");

@@ -145,10 +145,14 @@ Hardened (2026-10-16, EV-review-08, user decision "approve all, do it first"):
   changes the link and not a running session; a session on a clauth account (`--account`) gets that profile's login
   file there instead (12-operator); a VM gets them through a hard link in a share of their own. In a VM the read-only git links are read-only bind
   mounts in the guest, and the reflogs are one writable folder (a VM shares only folders).
-- S-4: of the repository's git folder only the objects, `refs/` (but not the folders of other branches, tags and
-  remotes), the refs and reflogs folder of the session's branch, the stash reflog and the worktree's own folder are
-  writable; config, hooks, info, `commondir`, `gitdir` and the worktree's `.git` stay read-only. `git stash` works;
-  `git gc` cannot pack refs.
+- S-4: of the repository's git folder only the objects, `refs/` (but not the folders of other branches, tags,
+  remotes, replacements and notes, which exist before the mount), the session's own branch in the refs folder of its
+  branch, the reflogs, the stash and the worktree's own folder are writable; config, hooks, info, `commondir`, `gitdir`
+  and the worktree's `.git` stay read-only. C7 (EV-review-16): git writes a branch through `<branch>.lock` in its
+  folder, so that folder (`refs/heads/legionctl`) is writable, and each other entry there is mounted read-only over it
+  (a packed one first gets its loose file of the same value, so that a loose file of the agent cannot hide it). Limit:
+  the agent can add a new branch name there. `git stash store` works; `git stash push` runs `git reset --hard`, which
+  the gate refuses; `git gc` cannot pack refs.
 - S-6, S-8: `session.hidden` also has the system bus, `~/.ssh`, `~/.gnupg`, credentials and token files,
   `~/.local/state/legionctl` and clauth's store (`~/.clauth`); each `.env*` file at the top of the repository and the
   workspace is hidden.
