@@ -82,8 +82,13 @@ jobs:
             done
             docker save -o ~/rust-image.tar "${images[@]}"
           fi
+      # the tests run in a cgroup that the runner user owns, as a user's processes do under systemd (Delegate=yes): the
+      # gateway tunnel test puts its sandbox in a session scope below it (run 39142479816 failed with EACCES)
       - name: Lint, format check, profile validation, tests
-        run: make ci
+        run: |
+          sudo mkdir /sys/fs/cgroup/ci && sudo chown -R "$(id -u):$(id -g)" /sys/fs/cgroup/ci
+          echo $$ | sudo tee /sys/fs/cgroup/ci/cgroup.procs >/dev/null
+          make ci
       # the kernel style of legionctl-wmi with checkpatch of v7.2; the module builds in the VM step (DKMS, Debian's
       # 7.x kernel): the runner's kernel is older than the WMI API the module uses
       - name: Kernel module style
