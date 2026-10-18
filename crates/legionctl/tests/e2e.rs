@@ -4431,6 +4431,9 @@ fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf
                  touch \"$HOME/outside\" && touch agentWorkspaces/talk/MEMORY/probe.md && echo WROTE; \
                  [ -f /.dockerenv ] && echo IN_CONTAINER; echo \"SESSION=$LEGIONCTL_SESSION\"; \
                  grep -q logged-in \"$HOME/.agent-state.json\" && echo STATE_READ; \
+                 c=$(git rev-parse --git-common-dir); s=\"$c/refs/heads/legionctl\"; \
+                 [ -e \"$s/sib-0/x\" ] && { (echo 0 > \"$s/sib-0/x\") 2>/dev/null || echo SIBLING_READ_ONLY; }; \
+                 [ -d \"$s/sib-1\" ] && { (touch \"$s/sib-1/y\") 2>/dev/null || echo NEST_READ_ONLY; }; \
                  grep -q old \"$HOME/.claude/.credentials.json\" && \
                  echo '{\"refresh\": \"new\"}' > \"$HOME/.claude/.credentials.json\" && echo LOGIN_THROUGH; \
                  python3 ask-gateway.py";
@@ -4729,6 +4732,16 @@ fn vm_repository(
 fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
     let (op, home, repo, _provider) = vm_repository("vm", "vm2");
     let run = |args: &[&str]| op.run(&repo, &[("HOME", home.to_str().unwrap())], args, "");
+    // 40 other branches in folders of their own in the folder of the sessions' branches, half of them packed: each
+    // is read-only in the session (C7), and the VM still has room for its devices (r390: one share per folder ran out
+    // of PCI slots)
+    for i in 0..40 {
+        git(&home, &repo, &["branch", &format!("legionctl/sib-{i}/x")]);
+        if i == 19 {
+            git(&home, &repo, &["pack-refs", "--all"]);
+        }
+    }
+    let sibling = git(&home, &repo, &["rev-parse", "legionctl/sib-0/x"]);
 
     let words = |line: &'static str| line.split(' ').collect::<Vec<_>>();
     // no disk: the first run makes it (here one that asks for the GPU, which this disk does not have)
@@ -4784,6 +4797,8 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         "SESSION=",
         "STATE_READ",
         "GATEWAY_200",
+        "SIBLING_READ_ONLY",
+        "NEST_READ_ONLY",
     ] {
         assert!(
             text.contains(expected),
@@ -4791,6 +4806,11 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
             String::from_utf8_lossy(&started.stderr)
         );
     }
+    assert_eq!(
+        git(&home, &repo, &["rev-parse", "legionctl/sib-0/x"]),
+        sibling,
+        "the other branches are as they were"
+    );
     assert!(!home.join("outside").exists(), "the VM's home is its own");
     refresh_reached_clauth(&home, &text);
     assert_eq!(
@@ -4852,6 +4872,29 @@ fn a_failing_guest_fails_the_run_with_its_own_line(
         "Error: the agent stopped before it answered: the VM did not start the agent: mount /work: no such share \
          (stand-in)"
     );
+    // a VM that QEMU cannot start: the run fails with QEMU's own line (r390: the console was empty)
+    write(
+        &home.join(".config/legionctl/zz-vm-cpus.jsonc"),
+        &json!({"session": {"vm": {"cpus": 99_999}}}).to_string(),
+    );
+    let failed = run(&[
+        "session",
+        "run",
+        "fake",
+        "fix",
+        "--dossier",
+        "port",
+        "--in",
+        "vm",
+    ]);
+    let said = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        said.trim().starts_with(
+            "Error: the agent stopped before it answered: the VM failed: qemu-system-x86_64: "
+        ),
+        "{said}"
+    );
+    std::fs::remove_file(home.join(".config/legionctl/zz-vm-cpus.jsonc")).unwrap();
 }
 
 /// Jobs (DESIGN/02): a headless run is a job; when the operator stops in the middle of it, the next operator goes on

@@ -449,15 +449,38 @@ fn adapter_error(e: agent_client_protocol::Error, stderr: &std::path::Path) -> a
     }
     // the adapter wrote it before it ended, so before its output closed
     let text = std::fs::read_to_string(stderr).unwrap_or_default();
-    let why = text
-        .lines()
-        .rev()
-        .map(|l| l.trim().trim_start_matches("Error: "))
-        .find(|l| !l.is_empty());
-    match why {
+    match last_error(&text) {
         Some(why) => anyhow::anyhow!("the agent stopped before it answered: {why}"),
         None => anyhow::anyhow!("the agent stopped before it answered, with no error message"),
     }
+}
+
+/// The adapter's error in its stderr `text`: the last `Error:` line of a Rust program with its causes (anyhow's
+/// "Caused by:" lines), else the last line.
+fn last_error(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    if let Some(at) = lines.iter().rposition(|l| l.starts_with("Error: ")) {
+        let mut why = vec![lines[at].trim_start_matches("Error: ")];
+        if lines.get(at + 2) == Some(&"Caused by:") {
+            why.extend(
+                lines[at + 3..]
+                    .iter()
+                    .take_while(|l| !l.is_empty())
+                    .map(|l| {
+                        // anyhow numbers the causes when there are several: "0: ..."
+                        l.split_once(": ")
+                            .filter(|(n, _)| n.chars().all(|c| c.is_ascii_digit()))
+                            .map_or(*l, |(_, cause)| cause)
+                    }),
+            );
+        }
+        return Some(why.join(": "));
+    }
+    lines
+        .into_iter()
+        .rev()
+        .find(|l| !l.is_empty())
+        .map(String::from)
 }
 
 /// A bound run's `_meta` for `session/new` and `session/load` (claude-code-acp's keys; Codex's adapter has its own

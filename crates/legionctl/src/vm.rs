@@ -115,32 +115,51 @@ pub fn run(spec_path: &Path, argv: Vec<String>) -> Result<()> {
     let spec_share = (SPEC_TAG.to_string(), guest_dir, true);
     let shares: Vec<_> = spec.shares.iter().chain([&spec_share]).collect();
     let daemons = share(&mut qemu, folder, &spec.virtiofsd, &shares)?;
-    let status = if spec.guest.interactive {
-        qemu.status().context("running qemu-system-x86_64")?
-    } else {
-        // QEMU closes the guest's channel at the end of its stdin, and the agent's writes then block: feed it
-        // through a pipe that stays open until the VM ends
-        let mut vm = qemu
-            .stdin(Stdio::piped())
-            .spawn()
-            .context("running qemu-system-x86_64")?;
-        let input = vm.stdin.take().context("QEMU's stdin")?;
-        let mut feed = std::fs::File::from(std::os::fd::AsFd::as_fd(&input).try_clone_to_owned()?);
+    // QEMU's stderr (and a headless agent's, through its port) goes on to this stderr; its last line is the error
+    let mut vm = qemu
+        .stdin(if spec.guest.interactive {
+            Stdio::inherit()
+        } else {
+            Stdio::piped()
+        })
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("running qemu-system-x86_64")?;
+    let errors = vm.stderr.take().context("QEMU's stderr")?;
+    let last = std::thread::spawn(move || last_line(errors));
+    // QEMU closes the guest's channel at the end of its stdin, and a headless agent's writes then block: feed it
+    // through a pipe that stays open until the VM ends
+    let input = vm.stdin.take();
+    if let Some(input) = &input {
+        let mut feed = std::fs::File::from(std::os::fd::AsFd::as_fd(input).try_clone_to_owned()?);
         std::thread::spawn(move || std::io::copy(&mut std::io::stdin(), &mut feed));
-        let status = vm.wait()?;
-        drop(input);
-        status
-    };
+    }
+    let status = vm.wait()?;
+    drop(input);
     drop(daemons);
     drop(gpu);
     std::fs::remove_file(&client)?;
     guest_failed(&console)?;
-    anyhow::ensure!(
-        status.success(),
-        "the VM failed ({status}); its console is in {}",
-        console.display()
-    );
+    // QEMU's own last line, else its exit status
+    let why = Some(last.join().unwrap_or_default()).filter(|l| !l.is_empty());
+    let why = why.unwrap_or_else(|| status.to_string());
+    anyhow::ensure!(status.success(), "the VM failed: {why}");
     Ok(())
+}
+
+/// Each line of `from` on this process's stderr; the last one that is not empty.
+fn last_line(from: impl std::io::Read) -> String {
+    let (mut from, mut last, mut line) = (std::io::BufReader::new(from), String::new(), Vec::new());
+    // bytes, not text: a line that is not UTF-8 must not stop the relay (QEMU would block on a full pipe)
+    while std::io::BufRead::read_until(&mut from, b'\n', &mut line).is_ok_and(|n| n > 0) {
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), &line);
+        let text = String::from_utf8_lossy(&line);
+        if !text.trim().is_empty() {
+            last = text.trim().to_string();
+        }
+        line.clear();
+    }
+    last
 }
 
 /// The agent's channel on QEMU's stdio: a console for an interactive agent; for a headless one a port, and a port
@@ -161,8 +180,11 @@ fn agent_channel(interactive: bool) -> Vec<String> {
 
 /// The guest's own error (its line in the VM's `console`), as the run's.
 fn guest_failed(console: &Path) -> Result<()> {
-    // the console has the boot's terminal codes too
-    let log = std::fs::read(console).with_context(|| format!("reading {}", console.display()))?;
+    // the console has the boot's terminal codes too; none: QEMU did not start the VM (its own line says why)
+    let log = match std::fs::read(console) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        read => read.with_context(|| format!("reading {}", console.display()))?,
+    };
     match legionctl_core::session::guest_error(&String::from_utf8_lossy(&log)) {
         Some(why) => anyhow::bail!("the VM did not start the agent: {why}"),
         None => Ok(()),
@@ -404,9 +426,10 @@ fn pass(from: &mut impl std::io::Read, to: &mut impl std::io::Write) -> std::io:
     }
 }
 
-fn mount(args: &[&str], path: &Path) -> Result<()> {
-    // a folder mount point is made; a file one (a bind) is there already
-    if !path.exists() {
+/// `mount <args> <path>`; with `make`, a missing folder `path` is made first. A bind's mount point is never made: in a
+/// writable share that would write on the host.
+fn mount(args: &[&str], path: &Path, make: bool) -> Result<()> {
+    if make && !path.exists() {
         std::fs::create_dir_all(path)?;
     }
     let out = Command::new("mount").args(args).arg(path).output()?;
@@ -431,17 +454,17 @@ fn mounts(spec: &GuestSpec) -> Result<()> {
                 read_only,
             } => {
                 let options = if *read_only { "ro" } else { "rw" };
-                mount(&["-t", "virtiofs", "-o", options, tag], path)?;
+                mount(&["-t", "virtiofs", "-o", options, tag], path, true)?;
             }
-            GuestMount::Empty(path) => mount(&["-t", "tmpfs", "-o", &owner, "tmpfs"], path)?,
+            GuestMount::Empty(path) => mount(&["-t", "tmpfs", "-o", &owner, "tmpfs"], path, true)?,
             GuestMount::Bind {
                 from,
                 to,
                 read_only,
             } => {
-                mount(&["--bind", &from.to_string_lossy()], to)?;
+                mount(&["--bind", &from.to_string_lossy()], to, false)?;
                 if *read_only {
-                    mount(&["-o", "remount,bind,ro"], to)?;
+                    mount(&["-o", "remount,bind,ro"], to, false)?;
                 }
             }
             GuestMount::File(path, text) => {

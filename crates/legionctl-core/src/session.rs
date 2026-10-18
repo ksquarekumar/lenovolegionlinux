@@ -900,8 +900,15 @@ fn vm_sandbox(
             }
             Mount::Writable(p) => guest_mounts.push(share(p.clone(), p, false)),
             Mount::Bind(from, to) => guest_mounts.push(share(from, to, false)),
-            Mount::ReadOnly(from, to) if from.is_dir() => guest_mounts.push(share(from, to, true)),
-            // a file at its own path (a git link in the workspace) stays the file, read-only; another is a copy
+            // a folder at its own path in a shared folder (a sibling branch, C7) is a bind there: a VM has room for
+            // few devices, one a share
+            Mount::ReadOnly(from, to)
+                if from.is_dir() && (from != to || !shared(&guest_mounts, &to)) =>
+            {
+                guest_mounts.push(share(from, to, true));
+            }
+            // a file or folder at its own path (a git link in the workspace) stays itself, read-only; another file is
+            // a copy
             Mount::ReadOnly(from, to) => guest_mounts.push(if from == to {
                 GuestMount::Bind {
                     from,
@@ -924,19 +931,7 @@ fn vm_sandbox(
         let text = std::fs::read_to_string(&gitconfig)?;
         guest_mounts.push(GuestMount::File(gitconfig, text));
     }
-    let mut guest_env = env.to_vec();
-    guest_env.extend([
-        // the disk's git gate (workspace pack --as vm) keeps the real git here
-        (
-            "LEGIONCTL_REAL_GIT".into(),
-            "/usr/local/libexec/legionctl/git".into(),
-        ),
-        ("HOME".into(), home.to_string_lossy().into_owned()),
-        (
-            "XDG_RUNTIME_DIR".into(),
-            runtime.to_string_lossy().into_owned(),
-        ),
-    ]);
+    let guest_env = guest_env(env, &home, runtime);
     let vm = &session.vm;
     let spec = VmSpec {
         disk: disk.to_path_buf(),
@@ -966,6 +961,31 @@ fn vm_sandbox(
         path.to_string_lossy().into_owned(),
         "--".into(),
     ])
+}
+
+/// The guest agent's environment: the session's `env`, the disk's real git, the home and the runtime folder.
+fn guest_env(env: &[(String, String)], home: &Path, runtime: &Path) -> Vec<(String, String)> {
+    let mut guest = env.to_vec();
+    guest.extend([
+        // the disk's git gate (workspace pack --as vm) keeps the real git here
+        (
+            "LEGIONCTL_REAL_GIT".into(),
+            "/usr/local/libexec/legionctl/git".into(),
+        ),
+        ("HOME".into(), home.to_string_lossy().into_owned()),
+        (
+            "XDG_RUNTIME_DIR".into(),
+            runtime.to_string_lossy().into_owned(),
+        ),
+    ]);
+    guest
+}
+
+/// `path` is in a folder that an earlier guest mount shares.
+fn shared(mounts: &[GuestMount], path: &Path) -> bool {
+    mounts
+        .iter()
+        .any(|m| matches!(m, GuestMount::Share { path: at, .. } if path.starts_with(at)))
 }
 
 /// A folder of its own for the VM's share of login file `p`, and the hard link of `p` in it: the guest binds the link

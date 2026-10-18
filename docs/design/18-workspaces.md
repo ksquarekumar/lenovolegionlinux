@@ -374,7 +374,7 @@ instead of the systemd scope.
   workspace pack" step). A headless agent in the guest gets pipes, as on the host (bun reads a virtio port as a file
   and fails with ESPIPE, r380), relayed to the ACP port; its stderr goes to a port of its own that is `legionctl vm`'s
   stderr. Every adapter's stderr goes to `adapter.err` in the session's runtime folder, and a run that ends before an
-  answer fails with its last line (the guest's `legionctl guest:` line, the container's or the agent's). A session runs `legionctl vm <spec>` in its scope (so pause,
+  answer fails with its last line (the guest's `legionctl guest:` line, QEMU's own line when it does not start the VM, the container's or the agent's; a Rust program's `Error:` line with its causes). A VM has room for few devices and each share is one: a read-only folder at its own path inside a shared folder (a sibling branch of S-4/C7) is a read-only bind in the guest, so the share count stays fixed (r390: 40 sibling branches ran out of PCI slots); the guest never makes a bind's mount point (in a writable share that would write on the host). A session runs `legionctl vm <spec>` in its scope (so pause,
   unpause and stop act on the scope, as for a host session): a virtiofs daemon per shared folder, then QEMU on a
   throwaway layer over the disk (`snapshot=on`), the agent on the virtio console (the runner's stdio: JSON-RPC for a
   headless run, a terminal for an interactive one). In the guest, `legionctl guest` mounts the shares at their own
