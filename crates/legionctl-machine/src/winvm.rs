@@ -31,7 +31,7 @@ pub struct Ask {
 }
 
 /// A device node's owner and mode before a start changed them.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Owner {
     pub node: String,
     pub uid: u32,
@@ -39,14 +39,14 @@ pub struct Owner {
 }
 
 /// What a start changed on the host, kept in the ledger so the end (or a daemon that started again) undoes it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     /// Automount units stopped (systemd names).
     pub automounts: Vec<String>,
     /// PCI devices bound to vfio-pci.
     pub devices: Vec<String>,
-    /// USB device nodes given to the user.
-    pub usb_nodes: Vec<String>,
+    /// USB device nodes given to the user, as they were before.
+    pub usb_nodes: Vec<Owner>,
     /// The disk's block device made readable by the user (an overlay start), as it was before.
     #[serde(default)]
     pub disk_node: Option<Owner>,
@@ -108,11 +108,11 @@ pub fn windows_disk(root: &SysRoot) -> Result<Option<String>> {
         .map(Some)
 }
 
+const NO_VOLUME: &str = "no Windows volume: no NTFS entry of the mount table or /etc/fstab holds Windows\\System32\\config\\SYSTEM";
+
 /// The Windows disk, or an error that says why there is none.
 fn require_disk(root: &SysRoot) -> Result<String> {
-    windows_disk(root)?.context(
-        "no Windows volume: no NTFS entry of the mount table or /etc/fstab holds Windows\\System32\\config\\SYSTEM",
-    )
+    windows_disk(root)?.context(NO_VOLUME)
 }
 
 /// The systemd unit name of a mount point (`/mnt/windows-system` -> `mnt-windows\x2dsystem`), as `systemd-escape --path`.
@@ -231,14 +231,31 @@ pub fn disk_plan(root: &SysRoot, attach: bool) -> Result<Vec<Step>> {
     )])
 }
 
-/// Whether Windows is hibernated on its volume (mounted at `target`): `hiberfil.sys` starts with `hibr` (a resume
-/// image); after a full shut down or a resume it starts with zeros or `wake`.
-fn hibernated(root: &SysRoot, target: &Path) -> bool {
+/// Why `hiberfil.sys` on the Windows volume (mounted at `target`) does not show a full shut down; None when it does.
+/// After a full shut down or a resume its header is zeros or `wake`; `hibr` is a resume image; no file: hibernation
+/// is off.
+fn hibernation(root: &SysRoot, target: &Path) -> Option<String> {
     use std::io::Read;
+    let file = target.join("hiberfil.sys");
     let mut head = [0u8; 4];
-    std::fs::File::open(root.path(target).join("hiberfil.sys"))
-        .and_then(|mut f| f.read_exact(&mut head))
-        .is_ok_and(|()| head.eq_ignore_ascii_case(b"hibr"))
+    let read = std::fs::File::open(root.path(&file)).and_then(|mut f| f.read_exact(&mut head));
+    let fix = "start Windows on the machine and shut it down fully";
+    match read {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(format!(
+            "{} cannot be read ({e}), so Windows can be hibernated: {fix}",
+            file.display()
+        )),
+        Ok(()) if head == [0; 4] || head.eq_ignore_ascii_case(b"wake") => None,
+        Ok(()) if head.eq_ignore_ascii_case(b"hibr") => {
+            Some(format!("Windows is hibernated ({}): {fix}", file.display()))
+        }
+        Ok(()) => Some(format!(
+            "{} starts with an unknown header ({}), so Windows can be hibernated: {fix}",
+            file.display(),
+            head.escape_ascii()
+        )),
+    }
 }
 
 fn systemctl(verb: &str, units: &[String]) -> Result<()> {
@@ -286,6 +303,23 @@ fn usb_nodes(root: &SysRoot, ids: &[String]) -> Result<Vec<String>> {
 fn chown(root: &SysRoot, node: &str, uid: u32) -> Result<()> {
     rustix::fs::chown(root.path(node), Some(rustix::fs::Uid::from_raw(uid)), None)
         .with_context(|| format!("giving {node} to uid {uid}"))
+}
+
+/// The owner and mode of `node` now.
+fn owner(root: &SysRoot, node: &str) -> Result<Owner> {
+    let meta = std::fs::metadata(root.path(node))
+        .with_context(|| format!("reading the owner of {node}"))?;
+    Ok(Owner {
+        node: node.to_string(),
+        uid: std::os::unix::fs::MetadataExt::uid(&meta),
+        mode: std::os::unix::fs::MetadataExt::mode(&meta) & 0o7777,
+    })
+}
+
+/// `owner`'s node back to its owner and mode.
+fn restore(root: &SysRoot, owner: &Owner) -> Result<()> {
+    chown(root, &owner.node, owner.uid)?;
+    chmod(root, &owner.node, owner.mode)
 }
 
 fn chmod(root: &SysRoot, node: &str, mode: u32) -> Result<()> {
@@ -389,39 +423,45 @@ fn opt(value: &str) -> String {
     value.replace(',', ",,")
 }
 
-/// Why Windows cannot start in a VM now, before anything changes: a one-time boot into it, Fast Startup, a
-/// hibernated Windows.
+/// Why Windows cannot start in a VM now, before anything changes. A start needs proof that Windows shut down fully:
+/// no one-time boot into it, Fast Startup off, no dirty volume on its disk, no hibernation image; a state that cannot
+/// be read refuses too.
 fn refusals(root: &SysRoot) -> Result<Vec<String>> {
+    let disk = require_disk(root)?;
     let state = windows::state(root)?;
     let mut why = Vec::new();
     if state.boot_next.is_some() && state.boot_next == state.boot_entry {
         why.push("the next start of the machine goes into Windows (BootNext): cancel it with efibootmgr --delete-bootnext".into());
     }
-    if state.fast_startup == Some(true) {
-        why.push("Fast Startup is on: Windows hibernates at shut down; turn it off in Windows (powercfg /h off)".into());
+    let (_, target) = windows::volume(root)?.context(NO_VOLUME)?;
+    let hive = windows::system_hive(root)?.context(NO_VOLUME)?;
+    match windows::registry(&hive) {
+        Ok((_, false)) => {}
+        Ok((_, true)) => why.push("Fast Startup is on: Windows hibernates at shut down; turn it off in Windows (powercfg /h off)".into()),
+        Err(e) => why.push(format!(
+            "the Windows registry cannot be read ({e:#}), so Fast Startup can be on: start Windows on the machine and shut it down fully"
+        )),
     }
-    if let Some((_, target)) = windows::volume(root)?
-        && hibernated(root, &target)
-    {
-        why.push(format!("Windows is hibernated ({}/hiberfil.sys): start it on the machine and shut it down fully", target.display()));
+    for volume in &state.dirty_ntfs {
+        if controller(root, volume)?.as_deref() == Some(disk.as_str()) {
+            why.push(windows::dirty_hazard(volume));
+        }
     }
+    why.extend(hibernation(root, &target));
     Ok(why)
 }
 
-/// Make the host ready for the Windows VM of `uid` and return the lines and the record. On a refusal or a failure
-/// half way, what was done is undone.
-///
-/// # Errors
-/// A refusal (with its reasons) or a failed step.
-pub fn begin(root: &SysRoot, uid: u32, ask: &Ask) -> Result<(Vec<String>, Record)> {
-    let why = refusals(root)?;
-    if !why.is_empty() {
-        bail!("the Windows VM cannot start:\n- {}", why.join("\n- "));
-    }
-    let disk = require_disk(root)?;
+/// Make the host ready for the Windows VM of `uid`: the lines, or a refusal (with its reasons) or a failed step; and
+/// the record of what was changed, also on a failure half way (the caller undoes it with [`end`]).
+pub fn begin(root: &SysRoot, uid: u32, ask: &Ask) -> (Result<Vec<String>>, Record) {
     let mut record = Record::default();
     let mut lines = Vec::new();
     let done = (|| -> Result<()> {
+        let why = refusals(root)?;
+        if !why.is_empty() {
+            bail!("the Windows VM cannot start:\n- {}", why.join("\n- "));
+        }
+        let disk = require_disk(root)?;
         for target in fstab_targets(root, &disk)? {
             let unit = unit_name(&target);
             record.automounts.push(format!("{unit}.automount"));
@@ -440,13 +480,7 @@ pub fn begin(root: &SysRoot, uid: u32, ask: &Ask) -> Result<(Vec<String>, Record
                 bail!("the host uses the Windows disk:\n- {}", users.join("\n- "));
             }
             let node = disk_node(root)?;
-            let meta = std::fs::metadata(root.path(&node))
-                .with_context(|| format!("reading the owner of {node}"))?;
-            record.disk_node = Some(Owner {
-                node: node.clone(),
-                uid: std::os::unix::fs::MetadataExt::uid(&meta),
-                mode: std::os::unix::fs::MetadataExt::mode(&meta) & 0o7777,
-            });
+            record.disk_node = Some(owner(root, &node)?);
             // the owner reads, the group (disk) keeps its access: QEMU opens the disk only as the overlay's backing
             chown(root, &node, uid)?;
             chmod(root, &node, 0o460)?;
@@ -459,49 +493,59 @@ pub fn begin(root: &SysRoot, uid: u32, ask: &Ask) -> Result<(Vec<String>, Record
             record.devices.extend(group);
         }
         for node in usb_nodes(root, &ask.usb)? {
+            record.usb_nodes.push(owner(root, &node)?);
             chown(root, &node, uid)?;
             lines.push(format!("{node}: uid {uid}"));
-            record.usb_nodes.push(node);
         }
         if !ask.read {
             lines.push(vfio::allow_memlock(root, ask.pid, uid, ask.memlock)?);
         }
         Ok(())
     })();
-    if let Err(e) = done {
-        let undone = end(root, &record);
-        bail!("{e:#}\nundone:\n- {}", undone.join("\n- "));
-    }
-    Ok((lines, record))
+    (done.map(|()| lines), record)
 }
 
-/// Undo what `begin` recorded: devices back to their drivers, USB nodes back to root, automounts started again; each line says what happened (a failed step does not stop the others).
+/// Undo what `begin` recorded: devices back to their drivers, the disk's and the USB nodes' owner and mode back,
+/// automounts started again. Each line says what happened (a failed step does not stop the others); the record that
+/// is left holds the steps that failed, for the next end.
 #[must_use]
-pub fn end(root: &SysRoot, record: &Record) -> Vec<String> {
+pub fn end(root: &SysRoot, record: &Record) -> (Vec<String>, Record) {
     let mut lines = Vec::new();
+    let mut left = Record::default();
     let mut note = |what: String, result: Result<()>| {
+        let ok = result.is_ok();
         lines.push(match result {
             Ok(()) => what,
             Err(e) => format!("warning: {what}: {e:#}"),
         });
+        ok
     };
     for device in &record.devices {
         let back = vfio::unbind(root, std::slice::from_ref(device)).map(|_| ());
-        note(format!("{device}: given back"), back);
+        if !note(format!("{device}: given back"), back) {
+            left.devices.push(device.clone());
+        }
     }
-    if let Some(owner) = &record.disk_node {
-        let back =
-            chown(root, &owner.node, owner.uid).and_then(|()| chmod(root, &owner.node, owner.mode));
-        note(format!("{}: owner and mode back", owner.node), back);
+    if let Some(owner) = &record.disk_node
+        && !note(
+            format!("{}: owner and mode back", owner.node),
+            restore(root, owner),
+        )
+    {
+        left.disk_node = Some(owner.clone());
     }
-    for node in &record.usb_nodes {
-        note(format!("{node}: back to root"), chown(root, node, 0));
+    for owner in &record.usb_nodes {
+        if !note(format!("{}: owner back", owner.node), restore(root, owner)) {
+            left.usb_nodes.push(owner.clone());
+        }
     }
     if !record.automounts.is_empty() {
         let started = systemctl("start", &record.automounts);
-        note(format!("started {}", record.automounts.join(" ")), started);
+        if !note(format!("started {}", record.automounts.join(" ")), started) {
+            left.automounts.clone_from(&record.automounts);
+        }
     }
-    lines
+    (lines, left)
 }
 
 /// The `MSDM` table (the Windows license of this machine), for the VM's ACPI tables; root-only on the host.

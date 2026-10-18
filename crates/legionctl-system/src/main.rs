@@ -704,6 +704,21 @@ fn greeter_act(root: &SysRoot, user: &str, action: &str) -> Result<Vec<String>> 
     }
 }
 
+/// Undo what a Windows VM start recorded. The steps that fail stay in the ledger, so the next end tries them again;
+/// the record goes only when each step is undone.
+fn windows_undo(root: &SysRoot, ledger: &Ledger, record: &winvm::Record) -> Result<Vec<String>> {
+    let (lines, left) = winvm::end(root, record);
+    if left == winvm::Record::default() {
+        ledger.set(Key::WindowsVm, None)?;
+        return Ok(lines);
+    }
+    ledger.set(Key::WindowsVm, Some(&serde_json::to_string(&left)?))?;
+    bail!(
+        "{}\nsome changes of the Windows VM are not undone: run legionctl windows vm stop again",
+        lines.join("\n")
+    )
+}
+
 /// The Windows disk's partitions to Linux (`attach`: their automounts start) or away (their automounts and mounts
 /// stop); refused while the Windows VM has the disk.
 fn windows_disk(root: &SysRoot, attach: bool) -> Result<Vec<String>> {
@@ -976,16 +991,23 @@ impl System1 {
             ));
         }
         let msdm = winvm::msdm(&self.root).map_err(|e| failed(&e))?;
-        let (lines, record) = winvm::begin(&self.root, uid, ask).map_err(|e| failed(&e))?;
-        let kept =
-            serde_json::to_string(&record).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        if let Err(e) = ledger.set(Key::WindowsVm, Some(&kept)) {
-            let undone = winvm::end(&self.root, &record);
-            return Err(zbus::fdo::Error::Failed(format!(
-                "{e:#}; undone: {}",
-                undone.join("; ")
-            )));
-        }
+        let (begun, record) = winvm::begin(&self.root, uid, ask);
+        let kept = begun.and_then(|lines| {
+            ledger.set(Key::WindowsVm, Some(&serde_json::to_string(&record)?))?;
+            Ok(lines)
+        });
+        let lines = match kept {
+            Ok(lines) => lines,
+            Err(e) if record == winvm::Record::default() => return Err(failed(&e)),
+            Err(e) => {
+                let undone = windows_undo(&self.root, &ledger, &record)
+                    .unwrap_or_else(|u| vec![format!("{u:#}")]);
+                return Err(zbus::fdo::Error::Failed(format!(
+                    "{e:#}\nundone:\n- {}",
+                    undone.join("\n- ")
+                )));
+            }
+        };
         self.tell(emitter, "WindowsVmBegin", &lines).await?;
         Ok((lines, record.devices, msdm))
     }
@@ -1440,8 +1462,7 @@ impl System1 {
         };
         let record: winvm::Record =
             serde_json::from_str(&kept).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        let lines = winvm::end(&self.root, &record);
-        ledger.set(Key::WindowsVm, None).map_err(|e| failed(&e))?;
+        let lines = windows_undo(&self.root, &ledger, &record).map_err(|e| failed(&e))?;
         self.tell(&emitter, "WindowsVmEnd", &lines).await?;
         Ok(lines)
     }

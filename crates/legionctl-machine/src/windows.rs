@@ -3,7 +3,7 @@
 //! then reboot). The firmware's boot entries come from `efibootmgr`; the registry comes from the SYSTEM hive on a
 //! mounted NTFS volume (decision D3: the user's read-only ntfs3 mount, no raw reader, no root).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -69,21 +69,29 @@ pub fn dirty_hazard(volume: &str) -> String {
 }
 
 /// NTFS volumes the kernel reported as dirty since boot.
-#[must_use]
-pub fn dirty_ntfs() -> Vec<String> {
-    let Ok(out) = Command::new("journalctl")
-        .args(["-k", "-b", "-q", "--no-pager", "-g", "ntfs3.*dirty"])
+///
+/// # Errors
+/// The kernel log cannot be read (`journalctl` is missing or fails).
+pub fn dirty_ntfs() -> Result<Vec<String>> {
+    let out = Command::new("journalctl")
+        .args(["-k", "-b", "-q", "--no-pager", "-o", "cat"])
         .output()
-    else {
-        return vec![];
-    };
+        .context("running journalctl")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "journalctl -k failed: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
     let mut volumes: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter_map(|l| Some(l.split_once("ntfs3(")?.1.split_once(')')?.0.to_string()))
+        .filter_map(|l| {
+            let (volume, rest) = l.split_once("ntfs3(")?.1.split_once(')')?;
+            rest.contains("dirty").then(|| volume.to_string())
+        })
         .collect();
     volumes.sort();
     volumes.dedup();
-    volumes
+    Ok(volumes)
 }
 
 /// The Windows volume: an NTFS volume of the mount table or of `/etc/fstab` (an automount mounts it on access) that
@@ -122,8 +130,12 @@ pub fn system_hive(root: &SysRoot) -> Result<Option<PathBuf>> {
     Ok(volume(root)?.map(|(_, target)| root.path(target).join(SYSTEM_HIVE)))
 }
 
-/// `RealTimeIsUniversal` and `HiberbootEnabled` of the control set Windows starts with.
-fn registry(hive: &Hive) -> Result<(bool, bool)> {
+/// `RealTimeIsUniversal` and `HiberbootEnabled` of the control set Windows starts with, from the SYSTEM hive `path`.
+///
+/// # Errors
+/// The hive cannot be read or parsed.
+pub fn registry(path: &Path) -> Result<(bool, bool)> {
+    let hive = Hive::open(path)?;
     let set = hive.current_control_set()?;
     let rtc = hive.dword(
         &format!("{set}\\Control\\TimeZoneInformation"),
@@ -140,7 +152,7 @@ fn registry(hive: &Hive) -> Result<(bool, bool)> {
 /// The current state.
 ///
 /// # Errors
-/// `efibootmgr` is missing or fails (no EFI variables).
+/// `efibootmgr` is missing or fails (no EFI variables), or the kernel log cannot be read.
 pub fn state(root: &SysRoot) -> Result<WindowsState> {
     let out = Command::new("efibootmgr")
         .output()
@@ -151,7 +163,7 @@ pub fn state(root: &SysRoot) -> Result<WindowsState> {
         String::from_utf8_lossy(&out.stderr).trim()
     );
     let (entry, boot_next) = parse_efibootmgr(&String::from_utf8_lossy(&out.stdout));
-    let dirty_ntfs = dirty_ntfs();
+    let dirty_ntfs = dirty_ntfs()?;
     let mut hazards: Vec<String> = dirty_ntfs.iter().map(|v| dirty_hazard(v)).collect();
     if entry.is_none() {
         hazards.push("no firmware boot entry starts Windows Boot Manager".into());
@@ -166,7 +178,7 @@ pub fn state(root: &SysRoot) -> Result<WindowsState> {
     let hive = system_hive(root)?;
     let (mut rtc_utc, mut fast_startup) = (None, None);
     if let Some(path) = &hive {
-        match Hive::open(path).and_then(|h| registry(&h)) {
+        match registry(path) {
             Ok((rtc, fast)) => {
                 if !rtc {
                     hazards.push("Windows keeps the hardware clock in local time, so the clock jumps at each boot: in Windows, set the registry value RealTimeIsUniversal (TimeZoneInformation) to 1".into());

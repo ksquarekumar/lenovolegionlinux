@@ -74,13 +74,18 @@ those CPUs; Linux keeps the other 20), 24 GiB (VFIO locks all of it: start is re
 naming the largest processes; legionctl never stops WinBoat), the Logi Bolt receiver `046d:c548` through USB
 passthrough (the laptop keyboard stays with Linux), QEMU user network (e1000e, no driver needed), OVMF (no SMM: this
 kernel's KVM resets an SMM guest), `swtpm` as TPM 2.0, the host's SMBIOS type 1/2 and the `MSDM` table (activation).
-The daemon (D-Bus `WindowsVmBegin`/`WindowsVmEnd`, polkit `org.legionctl.windows.vm`) refuses: a BootNext into
-Windows; Fast Startup on or `hiberfil.sys` that says hibernated; a Windows partition in use after its automount is
+The daemon (D-Bus `WindowsVmBegin`/`WindowsVmEnd`, polkit `org.legionctl.windows.vm`) starts only on proof that
+Windows shut down fully, so it refuses: a BootNext into Windows; Fast Startup on, or a registry that cannot be read;
+a volume of the Windows disk that the kernel reported dirty since boot (or a kernel log that cannot be read);
+`hiberfil.sys` that says hibernated, cannot be read, or has a header other than zeros or `wake` (no file: hibernation
+is off); a Windows partition in use after its automount is
 stopped; the GPU while Mutter or a process holds it (Mutter ignores the 4080 only after `gpu primary intel
 --release-nvidia` and a new login); then it stops `nvidia-persistenced`/`nvidia-powerd`, binds both groups, gives the
 caller `/dev/vfio/*` and the receiver's USB node, raises the runner's memory lock, and copies `MSDM` for the caller.
 What it changed is in the ledger, so `WindowsVmEnd` (also after an error, or by a restarted daemon) undoes it: groups
-back to their drivers, services and automounts started again. Live: the first boot is the user's (drivers for the
+back to their drivers, device nodes back to their owner and mode, services and automounts started again. A step that
+fails stays in the ledger and the end fails; the next end (`windows vm stop`, or `windows vm start` first) tries it
+again, and the record goes only when each step is undone. Live: the first boot is the user's (drivers for the
 virtual hardware install once; the NVIDIA driver may need the GPU's VBIOS as `romfile` on a laptop GPU, error 43).
 
 Built (2026-10-14, part 2): the user unit `legionctl-windows-vm.service` (packaged): `windows vm start` starts it

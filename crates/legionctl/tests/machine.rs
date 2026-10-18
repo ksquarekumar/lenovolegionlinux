@@ -94,6 +94,15 @@ impl Machine {
             "systemctl",
             "case $1 in is-active) echo inactive; exit 3;; is-enabled) echo disabled; exit 1;; esac",
         );
+        // the kernel log since boot: what a test writes into kernel.log
+        Self::script(
+            &bin,
+            "journalctl",
+            &format!(
+                "[ -e {log} ] && exec /usr/bin/cat {log}; exit 0",
+                log = dir.join("kernel.log").display()
+            ),
+        );
         // a transient unit runs here: units.log gets its program; other options than the daemon's fail it
         Self::script(
             &bin,
@@ -3960,10 +3969,13 @@ mod operator_and_daemon {
             "systemctl",
             // no unit runs in the test: is-active answers inactive (3), as systemd does
             // the VM's unit is active while the test makes the file unit-active
+            // a start of units fails while the test makes the file start-fails
             &format!(
-                "echo \"$*\" >> {}; case \"$*\" in *is-active*) [ -e {} ] && exit 0; exit 3;; esac",
+                "echo \"$*\" >> {}; case \"$*\" in *is-active*) [ -e {} ] && exit 0; exit 3;; \
+                 start\\ *) [ -e {} ] && echo 'Unit not found.' >&2 && exit 5;; esac; exit 0",
                 log.display(),
-                m.dir.join("unit-active").display()
+                m.dir.join("unit-active").display(),
+                m.dir.join("start-fails").display()
             ),
         );
         Machine::script(
@@ -4041,10 +4053,79 @@ mod operator_and_daemon {
             .unwrap_or_default()
     }
 
+    /// A Windows VM start needs proof that Windows shut down fully (B1): a hibernated Windows, a hibernation file that
+    /// cannot be read or has an unknown header, a registry that cannot be read (Fast Startup unknown) and a dirty
+    /// volume of the Windows disk are each refused before anything changes, with what to do.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_windows_vm_start_needs_proof_that_windows_shut_down_fully() {
+        let m = Machine::new("winsafe");
+        let _kernel = windows_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "winsafe");
+        let systemctl = || std::fs::read_to_string(m.dir.join("systemctl.log")).unwrap_or_default();
+        // each state that does not prove a full shut down: refused before anything changes
+        let hiberfil = m.dir.join("root/mnt/windows-system/hiberfil.sys");
+        let hive = m
+            .dir
+            .join("root/mnt/windows-system/Windows/System32/config/SYSTEM");
+        let kernel_log = m.dir.join("kernel.log");
+        let refused = |why: &str| {
+            assert!(!windows_runner(&m, &op).status.success());
+            let state = windows_state(&m);
+            assert!(state.contains(why), "{why} missing: {state}");
+            assert!(
+                state.contains("start Windows on the machine and shut it down fully")
+                    || state.contains("Start Windows and shut it down with Fast Startup off"),
+                "says what to do: {state}"
+            );
+            assert!(
+                !systemctl().contains("automount"),
+                "nothing changed: {}",
+                systemctl()
+            );
+        };
+        std::fs::write(&hiberfil, b"hibr and a resume image").unwrap();
+        refused("Windows is hibernated");
+        std::fs::write(&hiberfil, b"RSTRa resume in progress").unwrap();
+        refused("starts with an unknown header (RSTR)");
+        std::fs::write(&hiberfil, [0u8; 64]).unwrap();
+        std::fs::set_permissions(
+            &hiberfil,
+            std::os::unix::fs::PermissionsExt::from_mode(0o000),
+        )
+        .unwrap();
+        refused("hiberfil.sys cannot be read");
+        std::fs::set_permissions(
+            &hiberfil,
+            std::os::unix::fs::PermissionsExt::from_mode(0o644),
+        )
+        .unwrap();
+        std::fs::write(&hive, b"regf but cut short").unwrap();
+        refused("the Windows registry cannot be read");
+        std::fs::write(&hive, HiveFile::system(1, 0)).unwrap();
+        std::fs::write(
+            &kernel_log,
+            "ntfs3(nvme0n1p4): It is recommened to check volume for errors\n\
+             ntfs3(nvme0n1p4): volume is dirty and \"force\" flag is not set!\n",
+        )
+        .unwrap();
+        refused("NTFS volume nvme0n1p4 is marked dirty");
+        std::fs::remove_file(&kernel_log).unwrap();
+
+        // proof again: the start goes on to the next guard
+        assert!(!windows_runner(&m, &op).status.success());
+        assert!(
+            windows_state(&m).contains("/dev/nvme0n1p3 is mounted at /mnt/windows-system"),
+            "{}",
+            windows_state(&m)
+        );
+    }
+
     /// The Windows VM's guards and their undo (note 05): a mounted Windows partition is refused before anything is
     /// bound, and the stopped automounts start again; then a start that fails half way (here: the memory lock, which
     /// only root may raise this far) gives the disk back to its driver, starts the automounts again and leaves no
-    /// record, and the runner's state says why; QEMU never runs.
+    /// record, and the runner's state says why; QEMU never runs. An undo step that fails keeps its record: the next
+    /// stop tries only that step again, and the record goes when it works.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_windows_vm_start_is_refused_or_undone_without_leaving_the_host_changed() {
         let m = Machine::new("winvm");
@@ -4055,22 +4136,6 @@ mod operator_and_daemon {
             std::fs::read_link(m.dir.join("root/sys/bus/pci/devices/0000:06:00.0/driver")).unwrap()
         };
         let systemctl = || std::fs::read_to_string(m.dir.join("systemctl.log")).unwrap_or_default();
-
-        // a hibernated Windows: refused before anything changes
-        let hiberfil = m.dir.join("root/mnt/windows-system/hiberfil.sys");
-        std::fs::write(&hiberfil, b"hibr and a resume image").unwrap();
-        assert!(!windows_runner(&m, &op).status.success());
-        assert!(
-            windows_state(&m).contains("Windows is hibernated"),
-            "{}",
-            windows_state(&m)
-        );
-        assert!(
-            !systemctl().contains("automount"),
-            "nothing changed: {}",
-            systemctl()
-        );
-        std::fs::write(&hiberfil, [0u8; 64]).unwrap();
 
         let out = windows_runner(&m, &op);
         assert!(!out.status.success());
@@ -4118,6 +4183,36 @@ mod operator_and_daemon {
             op.ok(&["windows", "vm", "stop"])
                 .contains("no Windows VM ran"),
             "no record is left"
+        );
+
+        // an undo step that fails: its record stays, and the next stop tries it again
+        std::fs::write(m.dir.join("start-fails"), "").unwrap();
+        assert!(!windows_runner(&m, &op).status.success());
+        let state = windows_state(&m);
+        assert!(
+            state.contains("0000:06:00.0: given back")
+                && state.contains("warning: started mnt-windows\\x2dsystem.automount")
+                && state.contains("run legionctl windows vm stop again"),
+            "{state}"
+        );
+        let again = op.cli(&["windows", "vm", "stop"]);
+        let text = String::from_utf8_lossy(&again.stderr);
+        assert!(
+            !again.status.success()
+                && text.contains("not undone")
+                && !text.contains("0000:06:00.0"),
+            "only the step that failed runs again: {text}"
+        );
+        std::fs::remove_file(m.dir.join("start-fails")).unwrap();
+        assert!(
+            op.ok(&["windows", "vm", "stop"]).contains(
+                "started mnt-windows\\x2dsystem.automount mnt-windows\\x2ddata.automount"
+            )
+        );
+        assert!(
+            op.ok(&["windows", "vm", "stop"])
+                .contains("no Windows VM ran"),
+            "the record goes when each step is undone"
         );
     }
 

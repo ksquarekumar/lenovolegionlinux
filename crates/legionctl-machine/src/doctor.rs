@@ -107,9 +107,12 @@ pub fn doctor(machine: &Machine) -> Vec<Warning> {
     check(&mut w, "Legion WMI", wmi_warnings(root, profile));
     check(&mut w, "boot image", crate::boot::unbuilt(root));
     check(&mut w, "boot entry", crate::boot::not_default(root));
-    for volume in crate::windows::dirty_ntfs() {
-        w.push(crate::windows::dirty_hazard(&volume).into());
-    }
+    check(
+        &mut w,
+        "Windows volumes",
+        crate::windows::dirty_ntfs()
+            .map(|v| v.iter().map(|v| crate::windows::dirty_hazard(v)).collect()),
+    );
     check(&mut w, "GPU", gpu_warnings(machine));
     check(&mut w, "desktop", desktop_warnings());
     check(&mut w, "login screen", crate::greeter::findings(root));
