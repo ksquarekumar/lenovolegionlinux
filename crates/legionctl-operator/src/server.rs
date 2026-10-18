@@ -203,8 +203,18 @@ pub(crate) fn known_fields(op: &OpInfo, input: &Value) -> Result<(), ApiError> {
     Err(ApiError {
         code: Code::InvalidInput,
         message: format!(
-            "{} has no field {unknown:?}; its fields: {fields:?}",
-            op.name
+            "{} has no field {}. Its fields are: {}.",
+            op.name,
+            unknown
+                .iter()
+                .map(|f| f.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            fields
+                .iter()
+                .map(|f| f.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         op: String::new(),
     })

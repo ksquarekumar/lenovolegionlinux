@@ -691,7 +691,7 @@ fn an_unknown_input_field_is_refused_before_the_operation_runs() {
     assert!(failed, "{error}");
     assert_eq!(
         error["error"]["message"],
-        "dossier.edit has no field [\"lines\"]; its fields: [\"content\", \"end\", \"mode\", \"path\", \"session\", \"start\"]",
+        "dossier.edit has no field lines. Its fields are: content, end, mode, path, session, start.",
         "the refusal names the field and the real ones"
     );
     let after = op.run(&repo, &env, &["dossier", "read", "plan/plan.md"], "");
