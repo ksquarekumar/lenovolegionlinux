@@ -41,6 +41,12 @@ enum Answer {
 /// post-tool call names it).
 fn client(event: &str, input: &Value) -> Result<Client> {
     let client = Client::new("hook")?;
+    // Codex's payload has a turn id; Claude Code's has none
+    client.set_harness(if input.get("turn_id").is_some() {
+        "codex"
+    } else {
+        "claude"
+    });
     let cwd = input["cwd"].as_str().map(std::path::Path::new);
     if !matches!(event, "session-start" | "prompt" | "stop") {
         if let Some(cwd) = cwd.filter(|c| c.is_absolute()) {

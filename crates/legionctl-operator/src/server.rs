@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 
 use legionctl_api::{
     ACTOR_HEADER, AGENT_HEADER, API_HEADER, Acted, ApiError, Class, Code, Ctx, DispatchError,
-    FOLDER_HEADER, OPS, Op, OpInfo, Principal, api_fingerprint, op, user_token,
+    FOLDER_HEADER, HARNESS_HEADER, OPS, Op, OpInfo, Principal, api_fingerprint, op, user_token,
 };
 use legionctl_core::db::Db;
 use serde_json::{Value, json};
@@ -101,24 +101,71 @@ fn principal(headers: &HeaderMap) -> Result<Principal, ApiError> {
 }
 
 /// The folder a call works in (its context, DESIGN-20 rule 7): the one its client sends; a sandboxed session works
-/// in its own workspace (in the folder of it that the call comes from).
+/// in its own workspace (in the folder of it that the call comes from). An agent's MCP server works in the folder its
+/// agent works in now, which the agent's hooks give (Claude Code starts it in the folder the agent started in): its
+/// session's, or for a server with no session (Codex's) the one Codex session that works in the server's folder.
 fn folder(principal: &Principal, headers: &HeaderMap) -> Option<std::path::PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let sent = headers
         .get(FOLDER_HEADER)
         .map(|v| std::path::PathBuf::from(std::ffi::OsStr::from_bytes(v.as_bytes())))
         .filter(|p| p.is_absolute());
-    let Principal::Session(id) = principal else {
-        return sent;
+    let actor = headers.get(ACTOR_HEADER).and_then(|v| v.to_str().ok());
+    match principal {
+        Principal::Session(id) => {
+            let own = crate::engine::dossiers()
+                .and_then(|d| d.session(id))
+                .ok()?
+                .workdir;
+            Some(match sent {
+                Some(p) if p.starts_with(&own) => p,
+                _ => own,
+            })
+        }
+        Principal::Agent(id) if actor == Some("mcp") => {
+            let now = match id.as_str() {
+                "mcp" => sent.as_deref().and_then(|within| {
+                    let mut found = Db::open_default()
+                        .and_then(|db| db.agent_folders_in("codex", &within.to_string_lossy()))
+                        .ok()?;
+                    (found.len() == 1).then(|| found.remove(0))
+                }),
+                session => Db::open_default()
+                    .and_then(|db| db.agent_folder(session))
+                    .ok()
+                    .flatten(),
+            };
+            now.map(std::path::PathBuf::from).or(sent)
+        }
+        Principal::Agent(_) | Principal::User => sent,
+    }
+}
+
+/// A hook call says where its agent session (the input's `session`: the payload's, which Codex's hooks know only
+/// there) works now: that session's MCP server works there too; a session's end forgets it.
+fn agent_seen(
+    (op, input): (&str, &Value),
+    principal: &Principal,
+    headers: &HeaderMap,
+    folder: Option<&std::path::Path>,
+) {
+    let hook = headers.get(ACTOR_HEADER).and_then(|v| v.to_str().ok()) == Some("hook");
+    let session = input["session"].as_str().filter(|s| !s.is_empty());
+    let (Principal::Agent(_), true, Some(session)) = (principal, hook, session) else {
+        return;
     };
-    let own = crate::engine::dossiers()
-        .and_then(|d| d.session(id))
-        .ok()?
-        .workdir;
-    Some(match sent {
-        Some(p) if p.starts_with(&own) => p,
-        _ => own,
-    })
+    let harness = headers
+        .get(HARNESS_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("claude");
+    let done = Db::open_default().and_then(|db| match (op, folder) {
+        ("dossier.release", _) => db.agent_folder_end(session),
+        (_, Some(folder)) => db.agent_folder_set(session, &folder.to_string_lossy(), harness),
+        (_, None) => Ok(()),
+    });
+    if let Err(e) = done {
+        eprintln!("operator: the folder of agent session {session} is not kept: {e:#}");
+    }
 }
 
 /// Only the fields the operation's input has: a misspelled field would otherwise be dropped, and the operation would
@@ -435,6 +482,7 @@ async fn run(
     };
     let op = OPS.iter().find(|op| op.name == name);
     let folder = folder(&principal, headers);
+    agent_seen((&name, &input), &principal, headers, folder.as_deref());
     let mut recording: Option<calls::OpCall> = None;
     if let Some(op) = op {
         if let Err(mut e) = known_fields(op, &input) {

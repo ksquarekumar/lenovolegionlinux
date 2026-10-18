@@ -101,6 +101,9 @@ pub fn session_from_env() -> Option<String> {
 /// HTTP header with the folder a call works in (an absolute path, [`Ctx::folder`]): the CLI's working folder, the
 /// app's project, the hook's `cwd`.
 pub const FOLDER_HEADER: &str = "x-legionctl-folder";
+/// HTTP header with which the hooks name their agent's harness (`claude` or `codex`): the operator keeps the folder
+/// each agent session works in, for that session's MCP server ([`Ctx::folder`]).
+pub const HARNESS_HEADER: &str = "x-legionctl-harness";
 /// HTTP header with which a client that runs for an agent (its MCP server, its hooks, the CLI in its shell) names
 /// that agent's session; the user token then acts as [`Principal::Agent`].
 pub const AGENT_HEADER: &str = "x-legionctl-agent";

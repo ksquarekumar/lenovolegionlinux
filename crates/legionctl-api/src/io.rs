@@ -1768,6 +1768,9 @@ pub struct ToolCallRow {
     pub kind: String,
     /// When it started (ms).
     pub at: i64,
+    /// The folder it worked in; empty when the record does not say.
+    #[serde(default)]
+    pub folder: String,
     #[serde(flatten)]
     pub call: ToolCall,
 }

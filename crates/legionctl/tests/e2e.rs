@@ -193,10 +193,20 @@ impl Mcp {
 
     /// `legionctl mcp <args>`.
     fn start_with(operator: &Operator, env: &[(&str, &str)], args: &[&str]) -> Mcp {
+        Self::spawn(operator, env, args, &std::env::current_dir().unwrap())
+    }
+
+    /// `legionctl mcp` in `folder`, as a harness starts it in the folder its agent starts in.
+    fn start_in(operator: &Operator, env: &[(&str, &str)], folder: &Path) -> Mcp {
+        Self::spawn(operator, env, &[], folder)
+    }
+
+    fn spawn(operator: &Operator, env: &[(&str, &str)], args: &[&str], folder: &Path) -> Mcp {
         let mut child = Kill::spawn(
             Command::new(env!("CARGO_BIN_EXE_legionctl"))
                 .arg("mcp")
                 .args(args)
+                .current_dir(folder)
                 .env_clear()
                 .env("XDG_RUNTIME_DIR", &operator.runtime)
                 .envs(env.iter().copied())
@@ -1943,6 +1953,156 @@ fn no_operation_takes_its_own_project_folder() {
         "fields that name a folder the call's own folder gives (use Ctx::folder, or list it with its reason):\n{}",
         wrong.join("\n")
     );
+}
+
+/// The folder of a call's agent (DESIGN-20 rule 7, lead decision 2026-10-19: the MCP server follows the agent's cwd
+/// through the hooks; no folder field on `legionctl_run`). A harness starts its MCP server in the folder its agent
+/// started in; the agent then works in another one. Claude Code's MCP server works in the folder its session's
+/// newest hook names, and in its own again after the session ends. Codex's server has no session: it works in the
+/// folder of the one Codex session whose hooks name a folder inside its own; with two such sessions, in its own. The
+/// call record says which folder each call worked in.
+#[test]
+fn an_agents_mcp_server_works_in_the_folder_its_agent_works_in_now() {
+    let (op, home) = operator("mcp-folder");
+    let project = home.join("project");
+    let (moved, other) = (project.join("worktree"), project.join("other"));
+    for dir in [&moved, &other] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let h = home.to_str().unwrap();
+    let hook = |event: &str, payload: String| {
+        let out = op.run(&home, &[("HOME", h)], &["hook", event], &payload);
+        assert!(out.status.success(), "{out:?}");
+    };
+    let codex_prompt = |session: &str, cwd: &Path| {
+        let mut payload: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tests/fixtures/codex-hooks/prompt.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        payload["session_id"] = json!(session);
+        payload["cwd"] = json!(cwd);
+        hook("prompt", payload.to_string());
+    };
+    // the folder of agents.list's answer: its project settings file
+    let folder_of = |mcp: &mut Mcp| -> PathBuf {
+        let (listed, failed) = mcp.run("agents.list", &json!({}));
+        assert!(!failed, "{listed}");
+        let file = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["scope"] == "project")
+            .filter_map(|f| f["path"].as_str())
+            .find(|p| p.ends_with("/.claude/settings.json"))
+            .unwrap_or_else(|| panic!("{listed}"))
+            .to_string();
+        Path::new(&file)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf()
+    };
+
+    let mut claude = Mcp::start_in(
+        &op,
+        &[("HOME", h), ("CLAUDE_CODE_SESSION_ID", "c1")],
+        &project,
+    );
+    assert_eq!(
+        folder_of(&mut claude),
+        project,
+        "before a hook: its own folder"
+    );
+    hook(
+        "prompt",
+        claude_hook(
+            "prompt",
+            &json!({"session_id": "c1", "cwd": moved, "prompt": "go on"}),
+        ),
+    );
+    assert_eq!(
+        folder_of(&mut claude),
+        moved,
+        "the folder of its agent's newest hook"
+    );
+    let calls: Value =
+        serde_json::from_str(&op.ok(&["tools", "calls", "--kind", "op", "--json"])).unwrap();
+    let folders: Vec<&str> = calls["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["tool"] == "agents.list" && c["session"] == "c1")
+        .map(|c| c["folder"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        folders,
+        [project.to_str().unwrap(), moved.to_str().unwrap()]
+    );
+    hook(
+        "session-end",
+        claude_hook("session-end", &json!({"session_id": "c1", "cwd": moved})),
+    );
+    assert_eq!(folder_of(&mut claude), project, "after its session ended");
+
+    // Codex starts its MCP server with a cleared environment: no session
+    let mut codex = Mcp::start_in(&op, &[("HOME", h)], &project);
+    codex_prompt("x1", &moved);
+    assert_eq!(
+        folder_of(&mut codex),
+        moved,
+        "the one Codex session in its folder"
+    );
+    codex_prompt("x2", &other);
+    assert_eq!(
+        folder_of(&mut codex),
+        project,
+        "two Codex sessions: its own folder"
+    );
+}
+
+/// A sandboxed session works in its own workspace (DESIGN-20 rule 7): a call from a folder outside it works in the
+/// workspace, and one from a folder inside it works there.
+#[test]
+fn a_sandboxed_sessions_call_from_outside_its_workspace_works_in_its_workspace() {
+    let (op, home) = operator("own-folder");
+    let workspace = home.join("worktrees/repo/box");
+    let inner = workspace.join("src");
+    std::fs::create_dir_all(&inner).unwrap();
+    // the operator makes its database at its first call
+    op.ok(&["events"]);
+    add_session_token(&home, "token-box", "s-box");
+    let set = Command::new("python3")
+        .args([
+            "-c",
+            "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
+             c.execute('UPDATE sessions SET workdir = ? WHERE id = ?', (sys.argv[2], sys.argv[3])); c.commit()",
+        ])
+        .arg(home.join(".local/state/legionctl/operator.db"))
+        .args([workspace.to_str().unwrap(), "s-box"])
+        .status()
+        .unwrap();
+    assert!(set.success());
+    let h = home.to_str().unwrap();
+    let settings = |cwd: &Path| -> String {
+        let out = op.run(
+            cwd,
+            &[("HOME", h), ("LEGIONCTL_TOKEN", "token-box")],
+            &["agents", "list", "--json"],
+            "",
+        );
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let project_file = |dir: &Path| format!("\"{}\"", dir.join(".claude/settings.json").display());
+    let outside = settings(&home);
+    assert!(outside.contains(&project_file(&workspace)), "{outside}");
+    let within = settings(&inner);
+    assert!(within.contains(&project_file(&inner)), "{within}");
 }
 
 /// The wire format is reviewed: `docs/api/schema.json` holds every operation's class, visibility, input and output
@@ -7888,7 +8048,8 @@ fn the_processes_of_a_test_end_when_it_panics_and_when_its_binary_is_killed() {
 /// todo-122, as on 2026-10-15: the user's operator.db at v10 while an operator of another build runs (a stand-in that
 /// holds `operator.lock` with that build's fingerprint). An operator of this build does not start, and the file stays
 /// at v10 without a backup. After the other operator stopped, this one starts: it keeps the v10 file in
-/// `operator.db.v10.bak`, then takes the database to v16 with its rows (the MCP tool call log into the call record).
+/// `operator.db.v10.bak`, then takes the database to v17 with its rows (the MCP tool call log into the call record, which
+/// does not say their folder).
 #[test]
 fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_database() {
     let home = home("holder");
@@ -7965,7 +8126,7 @@ fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_data
     let op = operator_in("holder", &home);
     let events = op.ok(&["events", "--json"]);
     assert!(events.contains("kept.v10"), "{events}");
-    assert_eq!(version(&db), 16);
+    assert_eq!(version(&db), 17);
     assert_eq!(version(&bak), 10, "the backup is the v10 file");
     the_old_tool_log_is_in_the_call_record(&op);
     let kept: String = rusqlite::Connection::open(&bak)
@@ -7990,7 +8151,8 @@ fn the_old_tool_log_is_in_the_call_record(op: &Operator) {
             &call["tool"],
             &call["outcome"],
             &call["ms"],
-            &call["bytes"]
+            &call["bytes"],
+            &call["folder"]
         ],
         [
             &json!("event-2"),
@@ -7999,7 +8161,8 @@ fn the_old_tool_log_is_in_the_call_record(op: &Operator) {
             &json!("load"),
             &json!("ok"),
             &json!(12),
-            &json!(34)
+            &json!(34),
+            &json!("")
         ],
         "{calls}"
     );

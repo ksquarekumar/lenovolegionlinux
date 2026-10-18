@@ -8006,6 +8006,11 @@
                 "type": "integer",
                 "format": "int64"
               },
+              "folder": {
+                "description": "The folder it worked in; empty when the record does not say.",
+                "type": "string",
+                "default": ""
+              },
               "session": {
                 "description": "The agent session (`LEGIONCTL_SESSION`); a sandbox's own, whatever it sends.",
                 "type": "string",

@@ -124,7 +124,11 @@ pub(crate) fn begin_op(
     };
     let db = Db::open_default().map_err(|e| internal(&e))?;
     match db.call_begin(&call).map_err(|e| internal(&e))? {
-        Begun::New => {}
+        Begun::New => {
+            let folder = folder.map(|f| f.to_string_lossy().into_owned());
+            db.call_folder(&id, folder.as_deref().unwrap_or_default())
+                .map_err(|e| internal(&e))?;
+        }
         Begun::Ended { output, .. } => return Ok(Some(Start::Answer(id, replay(output)))),
         Begun::Open { started } => {
             return Err(coded(
@@ -281,6 +285,7 @@ pub(crate) fn row(r: legionctl_core::calls::Row) -> Result<ToolCallRow> {
         call_id: r.call,
         kind: r.kind,
         at: r.started,
+        folder: r.folder,
         call: ToolCall {
             session: legionctl_api::SessionId(r.session),
             server: r.server,

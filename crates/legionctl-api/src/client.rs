@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    ACTOR_HEADER, AGENT_HEADER, API_HEADER, ApiError, CALL_HEADER, Code, FOLDER_HEADER, Op, SOCKET,
-    TOKEN_ENV, api_fingerprint, coded, user_token,
+    ACTOR_HEADER, AGENT_HEADER, API_HEADER, ApiError, CALL_HEADER, Code, FOLDER_HEADER,
+    HARNESS_HEADER, Op, SOCKET, TOKEN_ENV, api_fingerprint, coded, user_token,
 };
 use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full};
@@ -22,6 +22,8 @@ pub struct Client {
     /// The folder every call works in (the call's context): this process's working folder until
     /// [`Client::set_folder`] sets another (the app's project, the hook's `cwd`).
     folder: std::sync::Mutex<Option<PathBuf>>,
+    /// The agent's harness, which the hooks name ([`Client::set_harness`]).
+    harness: std::sync::Mutex<Option<&'static str>>,
 }
 
 impl Client {
@@ -40,7 +42,16 @@ impl Client {
             socket: runtime.join(SOCKET),
             runtime: runtime.to_path_buf(),
             folder: std::sync::Mutex::new(None),
+            harness: std::sync::Mutex::new(None),
         }
+    }
+
+    /// The calls come from the hooks of an agent of `harness` (`claude` or `codex`).
+    pub fn set_harness(&self, harness: &'static str) {
+        *self
+            .harness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(harness);
     }
 
     /// Every call from now on works in `folder`.
@@ -178,6 +189,16 @@ impl Client {
         headers.insert("authorization", format!("Bearer {token}").parse()?);
         if let Some(agent) = agent {
             headers.insert(AGENT_HEADER, agent.parse()?);
+        }
+        if let Some(harness) = *self
+            .harness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            headers.insert(
+                HARNESS_HEADER,
+                hyper::header::HeaderValue::from_static(harness),
+            );
         }
         let folder = std::path::absolute(self.folder()?)?;
         headers.insert(

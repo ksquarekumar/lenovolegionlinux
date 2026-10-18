@@ -46,6 +46,21 @@ macro_rules! tables {
 }
 pub(crate) use tables;
 
+/// v16 -> v17: the folder each recorded call worked in, and the folder each agent session works in now (its newest
+/// hook call's `cwd`), which that session's MCP server works in too.
+macro_rules! folders {
+    () => {
+        "ALTER TABLE calls ADD COLUMN folder TEXT NOT NULL DEFAULT '';
+     CREATE TABLE agent_folders (
+        session TEXT PRIMARY KEY,
+        folder  TEXT NOT NULL,
+        harness TEXT NOT NULL,
+        seen    INTEGER NOT NULL
+     );"
+    };
+}
+pub(crate) use folders;
+
 /// A call as it starts.
 pub struct Call<'a> {
     /// Its id: the caller's (a retry) or a new one.
@@ -91,6 +106,8 @@ pub struct Row {
     pub ended: Option<i64>,
     pub outcome: Option<String>,
     pub bytes: i64,
+    /// The folder the call worked in; empty when the record does not say.
+    pub folder: String,
 }
 
 #[must_use]
@@ -217,6 +234,74 @@ impl Db {
             .optional()?)
     }
 
+    /// The folder that call `call` works in.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn call_folder(&self, call: &str, folder: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE calls SET folder = ?2 WHERE call = ?1",
+            params![call, folder],
+        )?;
+        Ok(())
+    }
+
+    /// Agent `session` of `harness` (claude or codex) works in `folder` now (its hook call says so).
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn agent_folder_set(&self, session: &str, folder: &str, harness: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO agent_folders (session, folder, harness, seen) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (session) DO UPDATE SET folder = excluded.folder, harness = excluded.harness,
+             seen = excluded.seen",
+            params![session, folder, harness, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Agent `session` ended: it works in no folder.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn agent_folder_end(&self, session: &str) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM agent_folders WHERE session = ?1", [session])?;
+        Ok(())
+    }
+
+    /// The folder agent `session` works in now.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn agent_folder(&self, session: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT folder FROM agent_folders WHERE session = ?1",
+                [session],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// The folders that the live sessions of `harness` work in now, each inside `within` (or `within` itself).
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn agent_folders_in(&self, harness: &str, within: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT folder FROM agent_folders WHERE harness = ?1 ORDER BY session")?;
+        let all: Vec<String> = stmt
+            .query_map([harness], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(all
+            .into_iter()
+            .filter(|f| std::path::Path::new(f).starts_with(within))
+            .collect())
+    }
+
     /// End call `call` with its outcome, its size and, when a retry or the cache needs it, its output.
     ///
     /// # Errors
@@ -253,7 +338,7 @@ impl Db {
         limit: u32,
     ) -> Result<(Vec<Row>, Option<i64>)> {
         let mut stmt = self.conn().prepare(
-            "SELECT id, call, session, kind, server, name, input_hash, started, ended, outcome, bytes FROM calls
+            "SELECT id, call, session, kind, server, name, input_hash, started, ended, outcome, bytes, folder FROM calls
              WHERE id > ?1 AND (?2 IS NULL OR session = ?2) AND (?3 IS NULL OR kind = ?3) ORDER BY id LIMIT ?4",
         )?;
         let rows: Vec<Row> = stmt
@@ -270,6 +355,7 @@ impl Db {
                     ended: r.get(8)?,
                     outcome: r.get(9)?,
                     bytes: r.get(10)?,
+                    folder: r.get(11)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
