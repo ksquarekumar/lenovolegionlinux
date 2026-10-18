@@ -143,8 +143,13 @@ folder workspace (no branch): a layer at `<workspace.root>/<folder>/<dossier>/{u
 gets the `agentWorkspaces` link (P9), so the agent sees it through the overlay. The session sandbox mounts the folder at its own path with `--overlay-src <folder> --overlay upper
 work <folder>` (bwrap >= 0.8, no root), so the source does not change. `workspace status` lists the changes from
 the upper layer (`A`/`M` files, `D` whiteouts, `R` folders marked `user.overlay.opaque`); `checkpoint` copies them
-to `checkpoints/<time>/` with `DELETED` and `MESSAGE`; `merge` applies them to the folder and empties the layer;
-`close` drops the layer (it refuses unmerged changes without force); `--topic` is refused. An agent outside a
+to `checkpoints/<time>/` with `DELETED` and `MESSAGE`; `merge` applies them to the folder and empties the layer.
+Merge (EV-review-16 B4): the birth time of an upper entry is the time of the session's copy (the kernel makes it at
+copy up), so a source entry whose ctime is later, or a folder on its path that is not a folder now (a symbolic link
+would take the write out of the folder), is a conflict: merge does not write it, keeps it in the layer and names it;
+each change that is applied leaves the layer (a merge that stops half way can run again); a new entry goes in next
+to its place and takes it in one rename (an exchange when an entry is there). Limit: a change that the session made
+from what it read before the user's change (with no write in between) is not seen. `close` drops the layer (it refuses unmerged changes without force); `--topic` is refused. An agent outside a
 session works on the folder directly; the layer exists only inside sessions. The e2e test covers an edit, a new
 file, a deletion and a replaced folder.
 

@@ -4729,6 +4729,99 @@ fn a_plain_folder_workspace_keeps_the_source_until_merge() {
     ended_scope_frees_the_dossier(&op, &home, &notes, launch["id"].as_str().unwrap());
 }
 
+/// A plain folder's merge never loses what the user changed after the session's copy and never writes outside the
+/// folder: the session edits `edit` and `deep/file`, adds `new` and deletes `gone`; then the user edits `edit` and
+/// moves `deep` to a symbolic link to a folder outside. The merge writes `new` and `gone`, keeps the user's `edit` and
+/// the outside file, names both in one sentence, and keeps only them in the layer; the source is never half written.
+#[test]
+fn a_plain_folder_merge_keeps_what_the_user_changed_since_and_writes_only_inside_the_folder() {
+    let (op, home) = operator("folder-conflict");
+    let (notes, outside) = (home.join("notes"), home.join("outside"));
+    for (file, text) in [("gone", "g\n"), ("edit", "e\n"), ("deep/file", "d\n")] {
+        write(&notes.join(file), text);
+    }
+    write(&outside.join("file"), "outside\n");
+    let work = "rm gone; echo session >> edit; echo session >> deep/file; echo n > new";
+    write(
+        &home.join(".config/legionctl/folder.jsonc"),
+        &json!({
+            "session": {"agents": {"probe": ["sh", "-c", work]}, "scope": false, "writable": []},
+            "workspace": {"root": home.join("layers")}
+        })
+        .to_string(),
+    );
+    let started = op.run(
+        &notes,
+        &[("HOME", home.to_str().unwrap())],
+        &["session", "start", "probe", "--dossier", "notes", "--json"],
+        "",
+    );
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
+    let out = run_launch(&op, &home, &launch);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // the user's work after the session's
+    write(&notes.join("edit"), "the user's\n");
+    std::fs::remove_dir_all(notes.join("deep")).unwrap();
+    std::os::unix::fs::symlink(&outside, notes.join("deep")).unwrap();
+
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", launch["id"].as_str().unwrap()),
+    ];
+    let merge = op.run(&notes, &env, &["workspace", "merge"], "");
+    let said = String::from_utf8_lossy(&merge.stderr);
+    assert!(!merge.status.success(), "{said}");
+    assert!(
+        said.contains("merged D gone, A new")
+            && said.contains("changed in")
+            && said.contains(
+                "after the session changed them, so the merge did not write them: deep/file, edit."
+            )
+            && said.contains("workspace close --force"),
+        "{said}"
+    );
+    let read = |path: &Path| std::fs::read_to_string(path).ok();
+    assert_eq!(
+        (read(&notes.join("gone")), read(&notes.join("new"))),
+        (None, Some("n\n".into()))
+    );
+    assert_eq!(read(&notes.join("edit")).as_deref(), Some("the user's\n"));
+    assert_eq!(
+        read(&outside.join("file")).as_deref(),
+        Some("outside\n"),
+        "no write through the link"
+    );
+    let left: Vec<_> = std::fs::read_dir(&notes)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("legionctl-merge"))
+        .collect();
+    assert!(left.is_empty(), "no half-written entry: {left:?}");
+    let status = op.run(&notes, &env, &["workspace", "status", "--json"], "");
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(
+        status["files"],
+        json!(["M deep/file", "M edit"]),
+        "only the kept changes"
+    );
+    let closed = op.run(&notes, &env, &["workspace", "close", "--force"], "");
+    assert!(
+        closed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&closed.stderr)
+    );
+    assert_eq!(read(&notes.join("edit")).as_deref(), Some("the user's\n"));
+}
+
 /// `src/lib.rs` in `repo` with `parse` and `keep`, both committed in 2001; `parse` changed again in a commit of now.
 fn lib_with_dated_symbols(home: &Path, repo: &Path) {
     let lib = |one: &str| format!("fn parse() {{\n    {one}\n}}\n\nfn keep() {{\n    2\n}}\n");

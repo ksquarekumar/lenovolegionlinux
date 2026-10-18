@@ -3,11 +3,15 @@
 //! the changes, checkpoint keeps a copy of them, merge applies them to the source, close drops them.
 //!
 //! The upper layer as the kernel writes it: a changed or new file is a file, a deleted entry is a 0:0 character
-//! device (a whiteout), and a folder that replaced the source's folder carries `user.overlay.opaque`.
+//! device (a whiteout), and a folder that replaced the source's folder carries `user.overlay.opaque`. The kernel makes
+//! an upper entry when the session first changes it (copy up), so the entry's birth time is the time of the session's
+//! copy: a source entry changed after that (its ctime is later) is a conflict, and merge does not write it.
 
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 
 /// One change in the upper layer, relative to the source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +21,14 @@ pub enum Change {
     Deleted(PathBuf),
     /// A folder that replaces the source's folder of that name (its content is in the upper layer).
     Replaced(PathBuf),
+}
+
+impl Change {
+    fn path(&self) -> &Path {
+        match self {
+            Change::Added(p) | Change::Modified(p) | Change::Deleted(p) | Change::Replaced(p) => p,
+        }
+    }
 }
 
 impl std::fmt::Display for Change {
@@ -41,7 +53,7 @@ pub fn work(path: &Path) -> PathBuf {
 }
 
 fn whiteout(meta: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use std::os::unix::fs::FileTypeExt;
     meta.file_type().is_char_device() && meta.rdev() == 0
 }
 
@@ -100,7 +112,6 @@ fn copy(from: &Path, to: &Path) -> Result<()> {
             }
         }
     } else if meta.file_type().is_symlink() {
-        let _ = std::fs::remove_file(to);
         std::os::unix::fs::symlink(std::fs::read_link(from)?, to)?;
     } else {
         std::fs::copy(from, to).with_context(|| format!("copying {}", from.display()))?;
@@ -180,30 +191,112 @@ pub fn checkpoint(path: &Path, source: &Path, message: &str) -> Result<String> {
     ))
 }
 
-/// Apply the changes to the source, then empty the layer.
+/// The latest ctime of `path` and, for a folder, of everything in it (symbolic links are not followed).
+fn changed_at(path: &Path) -> Result<SystemTime> {
+    let meta = std::fs::symlink_metadata(path)?;
+    let mut latest = SystemTime::UNIX_EPOCH
+        + Duration::new(
+            u64::try_from(meta.ctime())?,
+            u32::try_from(meta.ctime_nsec())?,
+        );
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            latest = latest.max(changed_at(&entry?.path())?);
+        }
+    }
+    Ok(latest)
+}
+
+/// Whether the source changed `change` after the session's copy, or a folder on its path in the source is not a
+/// folder now (a symbolic link there would take the write out of the source).
+fn conflict(upper: &Path, source: &Path, change: &Change) -> Result<bool> {
+    let rel = change.path();
+    let mut at = source.to_path_buf();
+    for part in rel.parent().into_iter().flat_map(Path::components) {
+        at.push(part);
+        if std::fs::symlink_metadata(&at).is_ok_and(|m| !m.is_dir()) {
+            return Ok(true);
+        }
+    }
+    let to = source.join(rel);
+    if matches!(change, Change::Added(_)) || to.symlink_metadata().is_err() {
+        return Ok(false);
+    }
+    let copied = std::fs::symlink_metadata(upper.join(rel))?
+        .created()
+        .context("the workspace's file system does not keep the birth time of a file")?;
+    Ok(changed_at(&to)? > copied)
+}
+
+/// Write the upper entry of `change` into the source: a new entry goes in next to its place and then takes it in one
+/// rename (an exchange when an entry is there), so the source has the old entry or the new one, never a part.
+fn apply(upper: &Path, source: &Path, change: &Change) -> Result<()> {
+    let rel = change.path();
+    let to = source.join(rel);
+    if let Change::Deleted(_) = change {
+        return remove(&to);
+    }
+    let parent = to.parent().context("no parent")?;
+    std::fs::create_dir_all(parent)?;
+    let name = to.file_name().context("no file name")?.to_string_lossy();
+    let new = parent.join(format!(".{name}.legionctl-merge"));
+    // a merge that stopped half way left it
+    remove(&new)?;
+    copy(&upper.join(rel), &new)?;
+    if to.symlink_metadata().is_ok() {
+        rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            &new,
+            rustix::fs::CWD,
+            &to,
+            rustix::fs::RenameFlags::EXCHANGE,
+        )
+        .with_context(|| format!("replacing {}", to.display()))?;
+        // the old entry, after the exchange
+        remove(&new)
+    } else {
+        std::fs::rename(&new, &to).with_context(|| format!("writing {}", to.display()))
+    }
+}
+
+/// Apply the changes to the source; each change that is applied leaves the layer. A change of an entry that the source
+/// changed after the session's copy stays in the layer, and the merge says which.
 ///
 /// # Errors
-/// A change cannot be applied (the layer stays, so nothing is lost).
+/// Nothing to merge, a conflict, or a change cannot be applied (it and the changes after it stay in the layer, so
+/// nothing is lost).
 pub fn merge(path: &Path, source: &Path) -> Result<Vec<String>> {
     let changes = changes(path, source)?;
     ensure!(!changes.is_empty(), "nothing to merge");
+    let upper = upper(path);
+    let (mut merged, mut kept) = (Vec::new(), Vec::new());
     for change in &changes {
-        match change {
-            Change::Added(rel) | Change::Modified(rel) => {
-                let to = source.join(rel);
-                std::fs::create_dir_all(to.parent().context("no parent")?)?;
-                copy(&upper(path).join(rel), &to)?;
-            }
-            Change::Replaced(rel) => {
-                remove(&source.join(rel))?;
-                copy(&upper(path).join(rel), &source.join(rel))?;
-            }
-            Change::Deleted(rel) => remove(&source.join(rel))?,
+        if conflict(&upper, source, change)? {
+            kept.push(change.path().display().to_string());
+            continue;
         }
+        apply(&upper, source, change)?;
+        remove(&upper.join(change.path()))?;
+        merged.push(change.to_string());
     }
-    clear(&upper(path))?;
-    clear(&work(path))?;
-    Ok(changes.iter().map(ToString::to_string).collect())
+    if kept.is_empty() {
+        clear(&upper)?;
+        clear(&work(path))?;
+        return Ok(merged);
+    }
+    bail!(
+        "{}these changed in {} after the session changed them, so the merge did not write them: {}. The session's \
+         versions are in {}: compare them with your files and copy what you want to keep, then run `legionctl \
+         workspace close --force` to drop them",
+        if merged.is_empty() {
+            String::new()
+        } else {
+            format!("merged {}; ", merged.join(", "))
+        },
+        source.display(),
+        kept.join(", "),
+        upper.display()
+    )
 }
 
 /// Drop the layer and its checkpoints; `dry_run` makes the check only.
