@@ -27,7 +27,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
     desktop_display()?;
-    let repo = std::env::current_dir()?;
+    let project = std::env::current_dir()?;
     let client = Client::new("app")?;
     // operator calls run here; the GPUI executor awaits them
     let runtime = tokio::runtime::Runtime::new()?;
@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
                         theme::adopt(cx);
                     })
                     .detach();
-                cx.new(|cx| LegionApp::new(client, handle, open, repo, window, cx))
+                cx.new(|cx| LegionApp::new(client, handle, open, project, window, cx))
             })
             .expect("opening the window");
         });

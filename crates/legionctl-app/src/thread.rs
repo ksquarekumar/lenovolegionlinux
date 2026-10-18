@@ -81,7 +81,7 @@ pub struct Screen {
     pub live: BTreeMap<i64, (String, String)>,
     /// The app's project (DESIGN-20 rule 7): the folder of every call (its config layer, views, code and facts) and
     /// the folder of new chats; the start folder until the user chooses one (the fact `app` `project`).
-    pub repo: PathBuf,
+    pub project: PathBuf,
     /// The data of each view tab (by its key), and when it was read.
     pub view_data: BTreeMap<String, ViewData>,
     pub rendered_at: BTreeMap<String, std::time::Instant>,
@@ -114,7 +114,7 @@ pub struct Screen {
 
 impl Screen {
     #[must_use]
-    pub fn new(repo: PathBuf) -> Screen {
+    pub fn new(project: PathBuf) -> Screen {
         Screen {
             space: Space::Machine,
             navigator: crate::shell::NAVIGATOR,
@@ -141,7 +141,7 @@ impl Screen {
             draft_agent: None,
             chat_place: None,
             live: BTreeMap::new(),
-            repo,
+            project,
             view_data: BTreeMap::new(),
             rendered_at: BTreeMap::new(),
             views: Vec::new(),
@@ -422,7 +422,7 @@ impl LegionApp {
                             app.screen.dossier = dossier;
                             // the project chosen before, while it is still a folder
                             if let Some(p) = project.map(PathBuf::from).filter(|p| p.is_dir())
-                                && p != app.screen.repo
+                                && p != app.screen.project
                             {
                                 app.use_project(&p);
                             }
@@ -656,7 +656,7 @@ impl LegionApp {
             &line,
             &self.screen.commands,
             &["view", "agent", "chat", "feedback"],
-            &self.screen.repo,
+            &self.screen.project,
         ) {
             Action::Prompt(prompt) => self.prompt(&prompt, line, cx),
             // a change from the chat bar or Ctrl+K takes the same plan or confirm as its button (U-13); no form: the
@@ -1585,7 +1585,7 @@ impl LegionApp {
 
     /// `path` is the folder of every call from now on (the client sends it with each), and new chats work in it.
     pub(crate) fn use_project(&mut self, path: &Path) {
-        path.clone_into(&mut self.screen.repo);
+        path.clone_into(&mut self.screen.project);
         self.client.set_folder(path);
         self.screen.chat_place.get_or_insert_default();
     }
@@ -1626,7 +1626,7 @@ impl LegionApp {
         // a view tab asks because its folder is no repository: its form starts empty
         let mut input = match then {
             crate::Then::TabRepo => json!({}),
-            _ => json!({"folder": self.screen.repo}),
+            _ => json!({"folder": self.screen.project}),
         };
         if let Some(id) = thread {
             input["thread"] = json!(id);
@@ -1663,7 +1663,7 @@ impl LegionApp {
             cx.notify();
             return;
         }
-        let path = self.screen.repo.join(&folder);
+        let path = self.screen.project.join(&folder);
         if !path.is_dir() {
             form.error = Some(format!("{} is not a folder", path.display()));
             cx.notify();
@@ -1983,7 +1983,7 @@ impl LegionApp {
     /// A new chat: its dossier and its environment step (where it works, the sandbox), changeable before the first
     /// message.
     fn chat_place_card(&self, dossier: &str, t: &Tokens, cx: &mut Context<Self>) -> Div {
-        let folder = self.screen.repo.display();
+        let folder = self.screen.project.display();
         let place = match &self.screen.chat_place {
             Some(base) if base.is_empty() => format!("Works in {folder}"),
             Some(base) => format!("Works in {folder} from {base}"),

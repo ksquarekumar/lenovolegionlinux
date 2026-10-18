@@ -614,7 +614,7 @@ fn choose_the_repository(
     });
     // the folder is the app's project, for every tab and chat, and it is kept for the next start
     app.read_with(cx, |a, _| {
-        assert_eq!(a.screen.repo, repo, "the app's project");
+        assert_eq!(a.screen.project, repo, "the app's project");
     });
     let kept = || {
         op.ok(&["facts", "at", "--entity", "app", "--json"])
@@ -3478,7 +3478,7 @@ fn a_chat_chooses_where_it_works_first(
         window.click("form-submit", cx);
     });
     app.read_with(cx, |a, _| {
-        assert_eq!(a.screen.repo, repo, "the app's project");
+        assert_eq!(a.screen.project, repo, "the app's project");
         assert_eq!(a.screen.chat_place.as_deref(), Some("main"));
         assert!(
             a.state.pending.is_none(),

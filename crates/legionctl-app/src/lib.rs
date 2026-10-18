@@ -177,12 +177,12 @@ impl Drop for Follower {
 
 impl LegionApp {
     /// The app on `client`; `open` is a tab to show at the start (the command line's), besides the tabs that the
-    /// layout facts keep; `repo` is the folder whose repository layer of views and config applies.
+    /// layout facts keep; `project` is the folder of its calls until the user chooses a project.
     pub fn new(
         client: Client,
         runtime: tokio::runtime::Handle,
         open: Option<Tab>,
-        repo: std::path::PathBuf,
+        project: std::path::PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> LegionApp {
@@ -201,12 +201,12 @@ impl LegionApp {
         let chat = input::chat_field(window, cx);
         let chat_events = cx.subscribe_in(&chat, window, LegionApp::chat_event);
         // every call works in the app's folder (its project once the user chooses one)
-        client.set_folder(&repo);
+        client.set_folder(&project);
         let mut app = LegionApp {
             client,
             runtime,
             state: State::default(),
-            screen: thread::Screen::new(repo),
+            screen: thread::Screen::new(project),
             chat_focus: gpui_kit::Focusable::focus_handle(chat.read(cx), cx),
             chat,
             chat_synced: (String::new(), String::new()),
@@ -536,7 +536,7 @@ impl LegionApp {
         let Some(info) = OPS.iter().find(|o| o.name == button.op) else {
             return;
         };
-        legionctl_api::cli::fill_user_fields(info, &mut button.input, &self.screen.repo);
+        legionctl_api::cli::fill_user_fields(info, &mut button.input, &self.screen.project);
         let route = legionctl_api::form::route(info);
         let dry_run = route == legionctl_api::form::Route::Plan;
         let class = info.class;

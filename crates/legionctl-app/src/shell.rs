@@ -816,8 +816,8 @@ impl LegionApp {
             }
             (Some(d), None) if self.tab() == Some(&Tab::Chat) => {
                 let folder = match self.screen.chat_place {
-                    Some(_) => self.screen.repo.file_name().map_or_else(
-                        || self.screen.repo.display().to_string(),
+                    Some(_) => self.screen.project.file_name().map_or_else(
+                        || self.screen.project.display().to_string(),
                         |n| n.to_string_lossy().into_owned(),
                     ),
                     None => "new folder".to_string(),
