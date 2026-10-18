@@ -81,7 +81,7 @@ app-shots: ## screenshots of legionctl-app's pages (now gpu health bench resourc
 	scripts/app-shots.sh $(SHOTS) $(CARGO_TARGET_DIR)/release/legionctl-app
 
 .PHONY: static
-static: ## build the static legionctl (musl) that `workspace pack` puts into agent images, in rust:alpine (docker)
+static: ## build the static legionctl (musl) that container and VM sessions run, in rust:alpine (docker)
 	mkdir -p "$$HOME/.cargo/registry"
 	docker run --rm --user "$$(id -u):$$(id -g)" -e CARGO_HOME=/cargo -v "$$HOME/.cargo/registry:/cargo/registry" \
 	  -v "$(CURDIR):/src" -w /src -e CARGO_TARGET_DIR=/src/target/static $(RUST_IMAGE) \

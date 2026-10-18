@@ -160,8 +160,8 @@
     "policy": { "idle_freeze_minutes": 0, "offload_headless": false },
     // Sessions in a container (`--in container`) run the repository's agent image, made by `legionctl workspace
     // pack`: the repository's own image (else `base`) plus git, Node.js, these npm packages (the agents, their ACP
-    // adapters and bun, which runs the adapters as on the host) and `client`, a static legionctl (the package
-    // installs it) as MCP server, hook client and git gate.
+    // adapters and bun, which runs the adapters as on the host). `client` is a static legionctl (the package installs
+    // it) that each container and VM session runs from the host as MCP server, hook client and git gate.
     "container": {
       "base": "public.ecr.aws/docker/library/debian:trixie-slim",
       "npm": ["@anthropic-ai/claude-code", "@zed-industries/claude-code-acp", "@openai/codex", "@agentclientprotocol/codex-acp",
@@ -169,7 +169,7 @@
       "client": "/usr/lib/legionctl/legionctl-static"
     },
     // Sessions in a VM (`--in vm`) run on the repository's disk, made by `legionctl workspace pack --as vm`: a layer
-    // over this cloud image with git, Node.js, the npm packages above and the static client. Each session gets a
+    // over this cloud image with git, Node.js and the npm packages above. Each session gets a
     // throwaway layer over the disk; its folders are shared with virtiofs.
     "vm": {
       "base": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",

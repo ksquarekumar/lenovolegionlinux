@@ -417,7 +417,8 @@ pub struct ContainerConfig {
     pub base: String,
     /// npm packages of the agents and their ACP adapters, installed in the agent layer.
     pub npm: Vec<String>,
-    /// A static `legionctl` (musl) for the image: the MCP server, the hook client and the git gate there.
+    /// A static `legionctl` (musl) that container and VM sessions run (mounted, never copied into the image or the
+    /// disk): the MCP server, the hook client and the git gate there.
     pub client: String,
 }
 

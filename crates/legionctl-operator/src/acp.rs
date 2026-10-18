@@ -298,8 +298,8 @@ impl Live {
     }
 }
 
-fn lock(live: &Mutex<Live>) -> MutexGuard<'_, Live> {
-    live.lock()
+fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
+    held.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -346,7 +346,7 @@ async fn drive(
             .mcp_servers(servers)
             .meta(meta)
     };
-    let agent = adapter(launch)?;
+    let (agent, failed) = adapter(launch)?;
     let over = Arc::new(tokio::sync::Notify::new());
     let live = Arc::new(Mutex::new(Live {
         db: Db::open_default()?,
@@ -426,7 +426,7 @@ async fn drive(
         _ = stop => anyhow::bail!("offloaded: memory is under pressure"),
         () = over.notified() => Some("tokens"),
         () = seconds => Some("seconds"),
-        done = client => { done.map_err(adapter_error)?; None }
+        done = client => { done.map_err(failed)?; None }
     };
     let live = lock(&live);
     live.answered(reached.is_some())?;
@@ -435,18 +435,34 @@ async fn drive(
     Ok((live.output(id, job, started)?, reached))
 }
 
-/// `e` of a run's connection; an adapter that ended before it answered gives its exit and its stderr, not the
-/// JSON-RPC envelope.
-fn adapter_error(e: agent_client_protocol::Error) -> anyhow::Error {
-    let ended = e
-        .data
-        .as_ref()
-        .and_then(|d| d["data"].as_str())
-        .filter(|why| why.starts_with("Process exited"))
-        .map(|why| why.trim_end().to_string());
-    match ended {
-        Some(why) => anyhow::anyhow!("the agent's ACP adapter ended before it answered: {why}"),
-        None => e.into(),
+/// `e` of a run's connection. An adapter that ended before it answered gives one sentence with its own error, not the
+/// JSON-RPC envelope: a VM guest's line in its `console`, else the adapter's `stderr` (its last line: the sandbox's,
+/// the container's or the agent's).
+fn adapter_error(
+    e: agent_client_protocol::Error,
+    stderr: &str,
+    console: Option<&std::path::Path>,
+) -> anyhow::Error {
+    let ended = agent_client_protocol::is_incoming_transport_closed(&e)
+        || e.data
+            .as_ref()
+            .and_then(|d| d["data"].as_str())
+            .is_some_and(|why| why.starts_with("Process exited"));
+    if !ended {
+        return e.into();
+    }
+    let log = console.and_then(|c| std::fs::read_to_string(c).ok());
+    let guest = log
+        .as_deref()
+        .and_then(session::guest_error)
+        .map(|why| format!("the VM did not start the agent: {why}"));
+    let why = guest.or_else(|| {
+        let last = stderr.trim().trim_start_matches("Error: ");
+        (!last.is_empty()).then(|| last.to_string())
+    });
+    match why {
+        Some(why) => anyhow::anyhow!("the agent stopped before it answered: {why}"),
+        None => anyhow::anyhow!("the agent stopped before it answered, with no error message"),
     }
 }
 
@@ -486,8 +502,20 @@ fn servers(launch: &Launch) -> Result<Vec<McpServer>> {
         .collect()
 }
 
-/// The adapter's process: the session's scope and sandbox, the git gate and the agent's ACP command.
-fn adapter(launch: Launch) -> Result<AcpAgent> {
+/// The adapter's process: the session's scope and sandbox, the git gate and the agent's ACP command; and the run's
+/// error from an error of its connection ([`adapter_error`]).
+fn adapter(
+    launch: Launch,
+) -> Result<(
+    AcpAgent,
+    impl FnOnce(agent_client_protocol::Error) -> anyhow::Error,
+)> {
+    let console = (launch.inside == Inside::Vm)
+        .then(|| {
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .map(|r| session::vm_console(std::path::Path::new(&r), &launch.id))
+        })
+        .flatten();
     // legionctl is the git gate on the host and a VM's runner; a container's image has its own gate
     let mut sandbox = launch.sandbox;
     let mut gate = Vec::new();
@@ -510,7 +538,18 @@ fn adapter(launch: Launch) -> Result<AcpAgent> {
         }
     }
     let argv = [launch.scope, sandbox, gate, launch.agent].concat();
-    Ok(AcpAgent::new(McpServer::Stdio(
+    let stderr = Arc::new(Mutex::new(String::new()));
+    let last = stderr.clone();
+    // shortcut: the library ends the stderr reader with the connection, so a line that comes after the closed
+    // transport is lost; a VM's guest line comes from its console instead
+    let agent = AcpAgent::new(McpServer::Stdio(
         McpServerStdio::new("agent", &argv[0]).args(argv[1..].to_vec()),
-    )))
+    ))
+    .with_debug(move |line, direction| {
+        if direction == agent_client_protocol::LineDirection::Stderr && !line.trim().is_empty() {
+            *lock(&last) = line.to_string();
+        }
+    });
+    let failed = move |e| adapter_error(e, &lock(&stderr), console.as_deref());
+    Ok((agent, failed))
 }

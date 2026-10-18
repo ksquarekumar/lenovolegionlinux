@@ -82,6 +82,9 @@ pub struct VmSpec {
     pub socket: PathBuf,
     /// The NVIDIA GPU's IOMMU group goes to the VM for the run (`vfio bind`).
     pub gpu: bool,
+    /// The host's static client (`session.container.client`): the guest runs it from the spec share, so the disk
+    /// never holds a client of another version.
+    pub client: PathBuf,
     pub guest: GuestSpec,
 }
 
@@ -749,10 +752,15 @@ fn bwrap_sandbox(
 /// it runs the session in a terminal.
 fn docker_sandbox(
     (id, image, gateway, gpu): (&str, &str, Option<u16>, bool),
-    (runtime, workdir): (&Path, &Path),
+    (runtime, workdir, container): (&Path, &Path, &crate::config::ContainerConfig),
     mut mounts: Vec<Mount>,
     env: &[(String, String)],
 ) -> Result<Vec<String>> {
+    // the host's client, not a copy in the image: the image never holds a client of another version
+    mounts.push(Mount::ReadOnly(
+        static_client(container)?,
+        "/usr/local/bin/legionctl".into(),
+    ));
     let me = std::fs::metadata("/proc/self")?;
     let (uid, gid) = (
         std::os::unix::fs::MetadataExt::uid(&me),
@@ -849,7 +857,7 @@ fn runs(inside: Inside, dir: &Path) -> Result<Runs> {
 fn vm_sandbox(
     id: &str,
     disk: &Path,
-    vm: &crate::config::VmConfig,
+    session: &crate::config::SessionConfig,
     (runtime, gateway, gpu): (&Path, Option<u16>, bool),
     (workdir, mounts, env): (&Path, Vec<Mount>, &[(String, String)]),
 ) -> Result<Vec<String>> {
@@ -915,10 +923,8 @@ fn vm_sandbox(
     }
     let gitconfig = home.join(".gitconfig");
     if gitconfig.is_file() {
-        guest_mounts.push(GuestMount::File(
-            gitconfig.clone(),
-            std::fs::read_to_string(&gitconfig)?,
-        ));
+        let text = std::fs::read_to_string(&gitconfig)?;
+        guest_mounts.push(GuestMount::File(gitconfig, text));
     }
     let mut guest_env = env.to_vec();
     guest_env.extend([
@@ -933,6 +939,7 @@ fn vm_sandbox(
             runtime.to_string_lossy().into_owned(),
         ),
     ]);
+    let vm = &session.vm;
     let spec = VmSpec {
         disk: disk.to_path_buf(),
         memory_mib: vm.memory_mib,
@@ -941,6 +948,7 @@ fn vm_sandbox(
         shares,
         socket: legionctl.join("api.sock"),
         gpu,
+        client: static_client(&session.container)?,
         guest: GuestSpec {
             mounts: guest_mounts,
             env: guest_env,
@@ -972,6 +980,49 @@ fn through(id: &str, n: usize, p: &Path) -> Result<(PathBuf, PathBuf)> {
     std::fs::create_dir_all(&folder)?;
     std::fs::hard_link(p, &link).with_context(|| format!("linking {} for the VM", p.display()))?;
     Ok((folder, link))
+}
+
+/// The host's static client (`session.container.client`), which container and VM sessions run.
+///
+/// # Errors
+/// It is not there.
+pub fn static_client(container: &crate::config::ContainerConfig) -> Result<PathBuf> {
+    let client = PathBuf::from(&container.client);
+    anyhow::ensure!(
+        client.is_file(),
+        "no static legionctl at {} (session.container.client): the package installs it; in a checkout, `make static`",
+        client.display()
+    );
+    Ok(client)
+}
+
+/// The boot of the guest that `workspace pack --as vm` writes into a disk: its unit starts the static client from the
+/// spec share. A disk whose mark ([`vm_boot_mark`]) holds another value, or none, is packed again before its next
+/// session. Change it when the disk's unit or layout changes.
+pub const VM_BOOT: &str = "spec-share-client";
+
+/// The mark beside a VM disk with the [`VM_BOOT`] of its pack.
+#[must_use]
+pub fn vm_boot_mark(disk: &Path) -> PathBuf {
+    disk.with_extension("boot")
+}
+
+/// Session `id`'s VM console (`legionctl vm` writes it), in the runtime folder `runtime`.
+#[must_use]
+pub fn vm_console(runtime: &Path, id: &str) -> PathBuf {
+    runtime
+        .join("legionctl/sessions")
+        .join(id)
+        .join("console.log")
+}
+
+/// The guest's own error in a VM's console `log`: the text of its last `legionctl guest:` line.
+#[must_use]
+pub fn guest_error(log: &str) -> Option<&str> {
+    log.lines()
+        .rev()
+        .find_map(|l| l.split_once("legionctl guest: "))
+        .map(|(_, why)| why.trim())
 }
 
 /// The mark beside a VM disk that `workspace pack --as vm --gpu` made: its guest has the NVIDIA driver.
@@ -1868,14 +1919,14 @@ impl Dossiers {
             }
             Runs::Container(image) => docker_sandbox(
                 (&id, image, gateway, gpu),
-                (&runtime, &workdir),
+                (&runtime, &workdir, &config.session.container),
                 mounts,
                 &env,
             )?,
             Runs::Vm(disk) => vm_sandbox(
                 &id,
                 disk,
-                &config.session.vm,
+                &config.session,
                 (&runtime, gateway, gpu),
                 (&workdir, mounts, &env),
             )?,

@@ -384,8 +384,8 @@ fn agent_layer(base: &str, npm: &[String]) -> String {
         text.push('\n');
     }
     text.push_str(
-        "COPY legionctl /usr/local/bin/legionctl\n\
-         RUN mkdir -p /usr/local/libexec/legionctl && mv \"$(command -v git)\" /usr/local/libexec/legionctl/git \\\n\
+        // the session mounts the host's static client at /usr/local/bin/legionctl
+        "RUN mkdir -p /usr/local/libexec/legionctl && mv \"$(command -v git)\" /usr/local/libexec/legionctl/git \\\n\
          && ln -s /usr/local/bin/legionctl /usr/bin/git\n\
          ENV LEGIONCTL_REAL_GIT=/usr/local/libexec/legionctl/git\n\
          ENTRYPOINT []\n",
@@ -437,12 +437,6 @@ fn pack(
         .with_file_name("pack")
         .join(legionctl_core::images::project_name(&repo));
     std::fs::create_dir_all(&context)?;
-    std::fs::copy(&container.client, context.join("legionctl")).with_context(|| {
-        format!(
-            "no static legionctl at {} (session.container.client): the package installs it; in a checkout, `make static`",
-            container.client
-        )
-    })?;
     std::fs::write(
         context.join("Dockerfile"),
         agent_layer(&base, &container.npm),
@@ -525,8 +519,8 @@ fn vm_base(url: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// cloud-init's user data for a repository's disk: git, Node.js and the agents, the static client as `legionctl`,
-/// the git gate and the guest service; then a mark on the serial console, and power off.
+/// cloud-init's user data for a repository's disk: git, Node.js and the agents, `legionctl` and the git gate as
+/// links to the static client of the spec share, and the guest service; then a mark on the serial console, and power off.
 fn vm_user_data(npm: &[String], gpu: bool) -> String {
     let node = if npm.is_empty() { "" } else { ", nodejs, npm" };
     // NVIDIA's own repository (Debian's nvidia-open 550 does not build on its current kernel, 2026-10-14); its DKMS
@@ -551,7 +545,7 @@ fn vm_user_data(npm: &[String], gpu: bool) -> String {
          package_update: true\n\
          packages: [git, ca-certificates{node}]\n\
          runcmd:\n  \
-         - [sh, -ec, '{nvidia}mount -o ro LABEL=cidata /mnt; install -m 755 /mnt/legionctl /usr/local/bin/legionctl; \
+         - [sh, -ec, '{nvidia}mount -o ro LABEL=cidata /mnt; ln -s /run/legionctl-spec/legionctl /usr/local/bin/legionctl; \
          install -m 644 /mnt/legionctl-guest.service /etc/systemd/system/; umount /mnt; \
          mkdir -p /usr/local/libexec/legionctl; mv \"$(command -v git)\" /usr/local/libexec/legionctl/git; \
          ln -s /usr/local/bin/legionctl /usr/bin/git; {agents}\
@@ -561,8 +555,12 @@ fn vm_user_data(npm: &[String], gpu: bool) -> String {
     )
 }
 
+/// The guest service: it mounts the session's spec share (`legionctl vm`) and starts the host's static client from it,
+/// which powers the VM off at its end; a share that does not mount powers it off with its own line.
 const GUEST_UNIT: &str = "[Unit]\nDescription=legionctl session (W5)\nAfter=network-online.target\n\
-Wants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/legionctl guest\n\
+Wants=network-online.target\n\n[Service]\nType=simple\nExecStart=/bin/sh -c 'mkdir -p /run/legionctl-spec && \
+mount -t virtiofs -o ro legionctl-spec /run/legionctl-spec && exec /run/legionctl-spec/legionctl guest; \
+echo legionctl guest: the session files did not reach the VM; systemctl poweroff'\n\
 StandardOutput=tty\nStandardError=tty\nTTYPath=/dev/ttyS0\n\n[Install]\nWantedBy=multi-user.target\n";
 
 /// Make the VM disk of the repository that holds `dir`: a layer over the base cloud image, set up once by
@@ -578,12 +576,6 @@ fn pack_vm(
     let seed = disk.with_extension("seed");
     let _ = std::fs::remove_dir_all(&seed);
     std::fs::create_dir_all(&seed)?;
-    std::fs::copy(&container.client, seed.join("legionctl")).with_context(|| {
-        format!(
-            "no static legionctl at {} (session.container.client): the package installs it; in a checkout, `make static`",
-            container.client
-        )
-    })?;
     std::fs::write(seed.join("legionctl-guest.service"), GUEST_UNIT)?;
     std::fs::write(seed.join("user-data"), vm_user_data(&container.npm, gpu))?;
     std::fs::write(
@@ -608,6 +600,10 @@ fn pack_vm(
     // the NVIDIA module is a large compile
     first_boot(&disk, &new, (&iso, if gpu { "4096" } else { "2048" }))?;
     std::fs::rename(&new, &disk)?;
+    std::fs::write(
+        legionctl_core::session::vm_boot_mark(&disk),
+        legionctl_core::session::VM_BOOT,
+    )?;
     let mark = legionctl_core::session::vm_gpu_mark(&disk);
     if gpu {
         std::fs::write(&mark, "")?;
@@ -760,6 +756,35 @@ fn pack_job(
         PackKind::Container => pack(repo, input["service"].as_str(), &session.container),
         PackKind::Vm => pack_vm(repo, &session.container, &session.vm, input["gpu"] == true),
     }
+}
+
+/// A session in a VM of the repository that holds `dir` runs on a disk of this pack: a disk that an older pack made
+/// (its boot mark is not [`legionctl_core::session::VM_BOOT`]) is packed again first, once, with `note` before it.
+fn current_vm_disk(
+    (dir, inside): (&Path, legionctl_core::session::Inside),
+    session: &legionctl_core::config::SessionConfig,
+    note: impl FnOnce(&str),
+) -> Result<()> {
+    // two sessions at once pack it once
+    static PACKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if inside != legionctl_core::session::Inside::Vm {
+        return Ok(());
+    }
+    let _one = PACKING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let disk = legionctl_core::session::vm_disk(dir);
+    let mark = legionctl_core::session::vm_boot_mark(&disk);
+    // no disk: the session says how to make one
+    if !disk.is_file()
+        || std::fs::read_to_string(&mark).is_ok_and(|m| m == legionctl_core::session::VM_BOOT)
+    {
+        return Ok(());
+    }
+    note("Updating the VM disk to this version of legionctl. This takes some minutes.\n");
+    let gpu = legionctl_core::session::vm_gpu_mark(&disk).exists();
+    pack_vm(dir, &session.container, &session.vm, gpu)?;
+    Ok(())
 }
 
 /// The CPU list of a core class: the P-cores, the E-cores or every online CPU.
@@ -1958,6 +1983,11 @@ impl Operator {
             serde_json::from_value::<Option<Vec<String>>>(input["tools"].clone())
                 .context("the job's tools are not a list of operations")?
                 .unwrap_or_default();
+        current_vm_disk(
+            (&record.workdir, record.inside),
+            &resolved.config.session,
+            |_| (),
+        )?;
         let launch = store.resume_session(id, &resolved.config, None, &token, (true, &tools))?;
         Db::open_default()?.issue_token(&launch.id, &token)?;
         let note = format!(
@@ -5176,7 +5206,12 @@ impl Engine for Operator {
             parent: None,
             tools: &[],
         };
-        let launch = store.start_session(&start, &resolved.config)?;
+        let mut updated = None;
+        current_vm_disk((dir, start.inside), &resolved.config.session, |line| {
+            updated = Some(line.trim().to_string());
+        })?;
+        let mut launch = store.start_session(&start, &resolved.config)?;
+        launch.lines.extend(updated);
         Db::open_default()?.issue_token(&launch.id, &token)?;
         Ok(launch.into_wire())
     }
@@ -5358,13 +5393,20 @@ impl Engine for Operator {
         let session = dossiers()?.session(&input.id)?;
         let resolved = resolve(&Dirs::from_env(), Some(&place_of(&session.workdir)))?;
         let token = legionctl_api::random_token()?;
-        let launch = dossiers()?.resume_session(
+        let mut updated = None;
+        current_vm_disk(
+            (&session.workdir, session.inside),
+            &resolved.config.session,
+            |line| updated = Some(line.trim().to_string()),
+        )?;
+        let mut launch = dossiers()?.resume_session(
             &input.id,
             &resolved.config,
             input.account.as_deref(),
             &token,
             (false, &[]),
         )?;
+        launch.lines.extend(updated);
         Db::open_default()?.issue_token(&launch.id, &token)?;
         Ok(launch.into_wire())
     }
@@ -5488,6 +5530,13 @@ impl Operator {
                 &mut announce,
             )?;
         }
+        current_vm_disk((dir, start.inside), &resolved.config.session, |text| {
+            let _ = db.record(
+                "acp",
+                "session.output",
+                &serde_json::json!({"tag": tag, "text": text, "note": true}),
+            );
+        })?;
         let launch = store.start_session(&start, &resolved.config)?;
         db.issue_token(&launch.id, &token)?;
         // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run; `history`: the

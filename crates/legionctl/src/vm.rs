@@ -1,8 +1,8 @@
 //! Sessions in a VM (W5 part 3, note 18). On the host, `legionctl vm` runs a session's VM inside the session's
 //! scope: a virtiofs daemon per shared folder, then QEMU on a throwaway layer over the repository's disk, with the
 //! agent on the virtio console (this process's stdio); each guest connection to the operator address goes through
-//! `legionctl relay` to the operator socket. In the VM, `legionctl guest` (the static client, started at boot)
-//! mounts the shares, gives the agent the operator socket at its usual path, runs the agent as the user on the
+//! `legionctl relay` to the operator socket. In the VM, `legionctl guest` (the host's static client from the spec
+//! share, which the disk's unit mounts and starts at boot) mounts the shares, gives the agent the operator socket at its usual path, runs the agent as the user on the
 //! console, and powers the VM off when the agent ends.
 
 use std::io::IsTerminal;
@@ -18,7 +18,7 @@ use tokio::io::AsyncWriteExt;
 /// connection.
 const OPERATOR: &str = "10.0.2.100:80";
 const GATEWAY: &str = "10.0.2.100:81";
-/// The share with `guest.json`, and where the guest mounts it.
+/// The share with `guest.json` and the static client, and where the disk's unit mounts it (`workspace pack --as vm`).
 const SPEC_TAG: &str = "legionctl-spec";
 const SPEC_DIR: &str = "/run/legionctl-spec";
 /// The agent's channel in the guest: a terminal for an interactive agent; for a headless one a port without a line
@@ -56,6 +56,10 @@ pub fn run(spec_path: &Path, argv: Vec<String>) -> Result<()> {
         guest_dir.join("guest.json"),
         serde_json::to_string(&spec.guest)?,
     )?;
+    // the guest runs the host's client: the disk never skews from the spec it reads
+    let client = guest_dir.join("legionctl");
+    std::fs::copy(&spec.client, &client)
+        .with_context(|| format!("copying {} for the VM", spec.client.display()))?;
     let console = folder.join("console.log");
     let me = std::env::current_exe()?;
     for path in [me.as_path(), spec.socket.as_path()] {
@@ -132,12 +136,24 @@ pub fn run(spec_path: &Path, argv: Vec<String>) -> Result<()> {
     };
     drop(daemons);
     drop(gpu);
+    std::fs::remove_file(&client)?;
+    guest_failed(&console)?;
     anyhow::ensure!(
         status.success(),
         "the VM failed ({status}); its console is in {}",
         console.display()
     );
     Ok(())
+}
+
+/// The guest's own error (its line in the VM's `console`), as the run's.
+fn guest_failed(console: &Path) -> Result<()> {
+    let log = std::fs::read_to_string(console)
+        .with_context(|| format!("reading {}", console.display()))?;
+    match legionctl_core::session::guest_error(&log) {
+        Some(why) => anyhow::bail!("the VM did not start the agent: {why}"),
+        None => Ok(()),
+    }
 }
 
 /// The NVIDIA GPU's IOMMU group: every device in it (the GPU and its audio function).
@@ -423,10 +439,6 @@ pub fn guest() -> Result<()> {
 }
 
 fn session() -> Result<()> {
-    mount(
-        &["-t", "virtiofs", "-o", "ro", SPEC_TAG],
-        Path::new(SPEC_DIR),
-    )?;
     let spec: GuestSpec = serde_json::from_str(&std::fs::read_to_string(
         Path::new(SPEC_DIR).join("guest.json"),
     )?)?;

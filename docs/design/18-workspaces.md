@@ -357,13 +357,20 @@ instead of the systemd scope.
 
 - Container: the repository's own image (I1 builds its Dockerfile; a repository without one starts from
   `session.container.base`), plus one agent layer: git, Node.js and npm from the image's package manager (apt, apk,
-  dnf or pacman), the agents and their ACP adapters from npm (`session.container.npm`), and a static `legionctl`
-  (`session.container.client`; the package builds it for musl in `rust:<version>-alpine`) as the MCP server, the
-  hook client and the git gate (`/usr/bin/git` is the client; the real git moves to
-  `/usr/local/libexec/legionctl/git`). Tag: `legionctl-pack/<project>:<dossier>`.
+  dnf or pacman), and the agents and their ACP adapters from npm (`session.container.npm`). The session mounts the
+  host's static `legionctl` (`session.container.client`; the package builds it for musl in `rust:<version>-alpine`)
+  read-only at `/usr/local/bin/legionctl` as the MCP server, the hook client and the git gate (`/usr/bin/git` links
+  to it; the real git moves to `/usr/local/libexec/legionctl/git`), so an image never runs a client of another
+  version. Tag: `legionctl-pack/<project>:<dossier>`.
 - VM: a qcow2 disk per repository (`~/.local/share/legionctl/vm/<repo>.qcow2`) over `session.vm.base` (a cloud
   image, downloaded once and checked against its folder's `SHA512SUMS`); one cloud-init boot installs the same agent
-  layer and the guest service, then disables cloud-init. A session runs `legionctl vm <spec>` in its scope (so pause,
+  layer and the guest service, then disables cloud-init. The disk holds no client: `legionctl vm` puts the host's
+  static client into the session's spec share, the guest service mounts that share and starts it (`legionctl` and
+  `/usr/bin/git` in the guest link to it), so the disk never skews from the guest spec (r368: a disk with an older
+  client could not read the spec, and the guest powered off). The pack writes a boot mark beside the disk
+  (`<repo>.boot`); before a session on a disk with another mark or none, the operator packs it again by itself, once,
+  and says so in the run's output. When the guest fails, the run fails with the guest's own `legionctl guest:` line
+  from the console log. A session runs `legionctl vm <spec>` in its scope (so pause,
   unpause and stop act on the scope, as for a host session): a virtiofs daemon per shared folder, then QEMU on a
   throwaway layer over the disk (`snapshot=on`), the agent on the virtio console (the runner's stdio: JSON-RPC for a
   headless run, a terminal for an interactive one). In the guest, `legionctl guest` mounts the shares at their own

@@ -4247,13 +4247,23 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         "{}",
         String::from_utf8_lossy(&gpu.stderr)
     );
-    let out = run(&words("session run fake fix --dossier port --in vm --json"));
+    // a disk that an older client packed (no boot mark: its unit ran the disk's own client, which could not read a
+    // newer guest spec, r368) is packed again by the operator before the run, and the run works on it
+    let disk = home.join(".local/share/legionctl/vm/repo.qcow2");
+    let mark = disk.with_extension("boot");
+    std::fs::remove_file(&mark).unwrap();
+    let out = run(&words("session run fake fix --dossier port --in vm"));
+    let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
-        "{}",
+        "{text}{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let text = serde_json::from_slice::<Value>(&out.stdout).unwrap()["text"].to_string();
+    assert!(
+        text.starts_with("Updating the VM disk to this version of legionctl."),
+        "the progress line comes first:\n{text}"
+    );
+    assert!(mark.is_file(), "the disk is packed again, with its mark");
     for expected in ["prompt: fix", "inside: vm", "COMMIT_OK", "PUSH_REFUSED"] {
         assert!(text.contains(expected), "{expected} missing:\n{text}");
     }
@@ -4296,6 +4306,7 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         talk.join("agentWorkspaces/talk/MEMORY/probe.md").exists(),
         "the dossier is shared"
     );
+    a_failing_guest_fails_the_run_with_its_own_line(&home, &run);
     let left = Command::new("pgrep")
         .args(["-af", &format!("qemu-system.*{}", home.display())])
         .output()
@@ -4304,6 +4315,44 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         left.stdout.is_empty(),
         "the VMs end with their sessions: {}",
         String::from_utf8_lossy(&left.stdout)
+    );
+}
+
+/// A guest that fails (a stand-in static client that writes the guest's line and powers off): the run fails with the
+/// guest's own line in one sentence, not the closed ACP transport (r368).
+fn a_failing_guest_fails_the_run_with_its_own_line(
+    home: &Path,
+    run: &dyn Fn(&[&str]) -> std::process::Output,
+) {
+    let stand_in = home.join("failing-guest");
+    write(
+        &stand_in,
+        "#!/bin/sh\necho 'legionctl guest: mount /work: no such share (stand-in)' >&2\nsystemctl poweroff\n",
+    );
+    std::fs::set_permissions(
+        &stand_in,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    write(
+        &home.join(".config/legionctl/vm-guest.jsonc"),
+        &json!({"session": {"container": {"client": stand_in}}}).to_string(),
+    );
+    let failed = run(&[
+        "session",
+        "run",
+        "fake",
+        "fix",
+        "--dossier",
+        "port",
+        "--in",
+        "vm",
+    ]);
+    assert!(!failed.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&failed.stderr).trim(),
+        "Error: the agent stopped before it answered: the VM did not start the agent: mount /work: no such share \
+         (stand-in)"
     );
 }
 

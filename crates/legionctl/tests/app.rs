@@ -3465,7 +3465,7 @@ fn each_failure_of_the_chat_names_its_cause(cx: &mut TestAppContext) {
         assert!(said(a, "thread.fail")[0].contains("Install the agent's adapter no-such-adapter"));
         assert_eq!(said(a, "thread.say"), ["x"]);
     });
-    // an adapter that ends before it answers: its exit and its stderr, not the JSON-RPC envelope
+    // an adapter that ends before it answers: its own error line, not the JSON-RPC envelope
     send(cx, "/agent broken");
     send(cx, "/chat");
     send(cx, "y");
@@ -3473,7 +3473,7 @@ fn each_failure_of_the_chat_names_its_cause(cx: &mut TestAppContext) {
         cx,
         &app,
         "the adapter that ended",
-        "the agent's ACP adapter ended before it answered: Process exited with exit status: 1: cannot start: no login",
+        "the agent stopped before it answered: cannot start: no login",
     );
     app.update(cx, |a, cx| a.open_tab(Tab::Thread { id: 1 }, cx));
     wait(cx, &app, "thread 1", |a| {
