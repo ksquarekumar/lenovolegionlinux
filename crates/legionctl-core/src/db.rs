@@ -4,8 +4,10 @@
 //!   `PRAGMA user_version`. Installs, upgrades and plain starts all go through the same path. Before a step, `open`
 //!   copies the file to `<db>.v<old>.bak`, and it refuses the step while an operator of another build holds the
 //!   folder's `operator.lock` (todo-122: a worktree build stepped the user's database under the installed operator).
-//! - Concurrency: WAL lets readers run while one writer commits; commits do not sync (synchronous NORMAL), so the write
-//!   lock is short; a busy timeout makes concurrent writers wait instead of failing.
+//! - Concurrency: WAL lets readers run while one writer commits; a busy timeout makes concurrent writers wait instead
+//!   of failing. Durability by kind (todo-207 B7): control state (sessions, tokens, grants, facts, jobs, tool calls)
+//!   syncs each commit (synchronous FULL); the event log and telemetry of the recorder's flood ([`Db::open_log`]) do not
+//!   (NORMAL: the checkpoint syncs, so a power loss drops their last commits at most and never corrupts the file).
 //! - Event log: every state change appends a row to `events` (who, what, payload). The daemon (Phase 1b) turns this
 //!   into the shared log that consumers follow; see docs/design/13-daemon.md.
 
@@ -306,6 +308,19 @@ impl Db {
     /// # Errors
     /// The folder or database cannot be created or opened, or the file has another schema version.
     pub fn open(path: &Path, schema: &Schema) -> Result<Db> {
+        Self::open_with(path, schema, "FULL")
+    }
+
+    /// The operator database at `path` for the event log and telemetry that the recorder writes in floods: its commits do not
+    /// sync, so the write lock is short (todo-189).
+    ///
+    /// # Errors
+    /// As [`Db::open`].
+    pub fn open_log(path: &Path) -> Result<Db> {
+        Self::open_with(path, OPERATOR, "NORMAL")
+    }
+
+    fn open_with(path: &Path, schema: &Schema, synchronous: &str) -> Result<Db> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
@@ -314,9 +329,7 @@ impl Db {
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
-        // with FULL each commit synced the WAL under the write lock, and on a busy disk writers back to back starved
-        // the others past the timeout (todo-189); the checkpoint syncs, so a power loss drops the last commits at most
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "synchronous", synchronous)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < schema.version {

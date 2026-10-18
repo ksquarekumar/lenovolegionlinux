@@ -38,7 +38,7 @@ jobs:
       # (GPUI) needs fontconfig, xkbcommon, xcb, wayland and vulkan headers; the daemon test
       # runs a private dbus-daemon; the session test runs bwrap; the Windows overlay tests run qemu-img and qemu-io
       - name: Install libudev
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev dbus bubblewrap clang jq libarchive-tools qemu-utils libfontconfig-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev libvulkan-dev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev dbus bubblewrap clang jq libarchive-tools qemu-utils strace libfontconfig-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev libvulkan-dev
       # plain-folder workspaces mount an overlay with bwrap >= 0.10; Ubuntu 24.04 has 0.9 (Arch has the current one)
       - name: bubblewrap 0.12.0
         run: |

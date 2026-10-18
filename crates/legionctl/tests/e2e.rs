@@ -94,6 +94,16 @@ fn docker() -> [(&'static str, OsString); 1] {
 }
 
 fn operator_with(tag: &str, home: &Path, extra: &[(&str, OsString)]) -> Operator {
+    operator_under(tag, home, extra, &[])
+}
+
+/// As [`operator_with`], with `wrapper` (a tracer) in front of the operator's socket activation.
+fn operator_under(
+    tag: &str,
+    home: &Path,
+    extra: &[(&str, OsString)],
+    wrapper: &[OsString],
+) -> Operator {
     // an empty machine: no /etc/legionctl unless a test writes one; the load and memory that every Linux has
     let root = home.join("root");
     std::fs::create_dir_all(root.join("proc")).unwrap();
@@ -111,7 +121,7 @@ fn operator_with(tag: &str, home: &Path, extra: &[(&str, OsString)]) -> Operator
         ("PATH", path_with_keyring(home)),
     ];
     env.extend(extra.iter().cloned());
-    Operator::start(tag, &env)
+    Operator::start_under(tag, &env, wrapper)
 }
 
 /// This build's `PATH` behind the stand-in keyring: no test reaches the user's real keyring.
@@ -4502,6 +4512,62 @@ fn started_session(op: &Operator, repo: &Path, home: &Path, dossier: &str) -> (S
     )
 }
 
+/// Durability by kind (EV-review-16 B7): a commit of control state (here a dossier binding of `dossier use`) syncs
+/// the operator database's WAL (synchronous FULL); only the recorder's event log does not (its flood tests).
+#[test]
+fn a_control_state_commit_syncs_the_database() {
+    let home = home("durable");
+    let log = home.join("syncs.log");
+    let tracer: Vec<OsString> = [
+        "strace",
+        "-f",
+        "-qq",
+        "-y",
+        "-e",
+        "trace=fsync,fdatasync",
+        "-o",
+    ]
+    .map(OsString::from)
+    .into_iter()
+    .chain([log.clone().into_os_string()])
+    .collect();
+    let op = operator_under("durable", &home, &[], &tracer);
+    let repo = repository(&home);
+    op.ok(&["events"]);
+    // a connection of this test stays open, so the operator's last connection closes with no checkpoint (which syncs
+    // the WAL also with NORMAL)
+    let _held = legionctl_core::db::Db::open(
+        &home.join(".local/state/legionctl/operator.db"),
+        legionctl_core::db::OPERATOR,
+    )
+    .unwrap();
+    let bind = |session: &str, dossier: &str| {
+        op.run(
+            &repo,
+            &[
+                ("HOME", home.to_str().unwrap()),
+                ("LEGIONCTL_SESSION", session),
+            ],
+            &["dossier", "use", dossier],
+            "",
+        )
+    };
+    // the first write after the open makes the WAL anew, which syncs also with NORMAL
+    assert!(bind("s1", "port").status.success());
+    let before = std::fs::read_to_string(&log).unwrap().len();
+    let used = bind("s2", "other");
+    assert!(
+        used.status.success(),
+        "{}",
+        String::from_utf8_lossy(&used.stderr)
+    );
+    let syncs = std::fs::read_to_string(&log).unwrap().split_off(before);
+    assert!(
+        syncs.contains("operator.db-wal>"),
+        "no sync of the WAL: {syncs}"
+    );
+}
+
 /// A session's token works only while its session runs (EV-review-16 C3): after `session stop` (its scope still
 /// answers active), after its scope or container ended (the state at the call), and after a headless run, the token is
 /// refused; a scope that ended takes the token away, so the next call finds no such token.
@@ -8448,8 +8514,9 @@ fn tool_calls_and_runs_land_in_the_event_log_while_another_writer_floods_it() {
     std::thread::scope(|s| {
         let flood = s.spawn(|| {
             let mut n = 0;
+            // the recorder's connection: the event log does not sync each commit
             while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                Db::open(&db, OPERATOR)
+                Db::open_log(&db)
                     .and_then(|db| {
                         db.record(
                             "legionctl-system",
@@ -8464,10 +8531,16 @@ fn tool_calls_and_runs_land_in_the_event_log_while_another_writer_floods_it() {
         });
         let agents: Vec<_> = (1..9).map(|a| s.spawn(move || calls(a))).collect();
         let runs: Vec<_> = (1..4).map(|a| s.spawn(move || run(a))).collect();
-        for a in agents.into_iter().chain(runs) {
-            a.join().unwrap();
-        }
+        let ended: Vec<_> = agents
+            .into_iter()
+            .chain(runs)
+            .map(std::thread::ScopedJoinHandle::join)
+            .collect();
+        // the flood stops first, also when a caller failed: else the scope waits for it forever
         done.store(true, std::sync::atomic::Ordering::Relaxed);
+        for e in ended {
+            e.unwrap();
+        }
         assert!(flood.join().unwrap() > 100, "the flood wrote back to back");
     });
     let filter = EventFilter {

@@ -889,8 +889,9 @@ fn each_gateway_call_is_counted_while_another_writer_floods_the_event_log() {
     std::thread::scope(|scope| {
         let flood = scope.spawn(|| {
             let mut n = 0;
+            // the recorder's connection: the event log does not sync each commit
             while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                Db::open(&db, OPERATOR)
+                Db::open_log(&db)
                     .and_then(|db| {
                         db.record("legionctl-system", "session.open", &json!({"path": n}))
                     })
@@ -915,10 +916,15 @@ fn each_gateway_call_is_counted_while_another_writer_floods_the_event_log() {
                 })
             })
             .collect();
-        for c in callers {
-            c.join().unwrap();
-        }
+        let ended: Vec<_> = callers
+            .into_iter()
+            .map(std::thread::ScopedJoinHandle::join)
+            .collect();
+        // the flood stops first, also when a caller failed: else the scope waits for it forever
         done.store(true, std::sync::atomic::Ordering::Relaxed);
+        for e in ended {
+            e.unwrap();
+        }
         assert!(flood.join().unwrap() > 100, "the flood wrote back to back");
     });
     let rows: i64 = Db::open(&db, OPERATOR)

@@ -60,12 +60,29 @@ pub struct Operator {
 
 impl Operator {
     pub fn start(tag: &str, env: &[(&str, OsString)]) -> Operator {
+        Self::start_under(tag, env, &[])
+    }
+
+    /// As [`Operator::start`], with `wrapper` (a tracer: `strace -o <log> ...`) in front of the socket activation.
+    pub fn start_under(tag: &str, env: &[(&str, OsString)], wrapper: &[OsString]) -> Operator {
         // outside /tmp like /run/user/<uid>: the session sandbox replaces /tmp, which would hide what it must hide
         let runtime = Scratch::new(format!("/var/tmp/lc-{tag}-{}", std::process::id()));
         let socket = runtime.join("legionctl/api.sock");
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let nowhere = OsString::from("unix:path=/nonexistent/bus");
-        let mut cmd = Command::new("systemd-socket-activate");
+        let mut cmd = match wrapper {
+            [first, rest @ ..] => {
+                let mut cmd = Command::new(first);
+                // the wrapper runs with the operator's environment, which has no PATH of the test's
+                let activate = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                    .map(|d| d.join("systemd-socket-activate"))
+                    .find(|p| p.is_file())
+                    .expect("systemd-socket-activate is installed");
+                cmd.args(rest).arg(activate);
+                cmd
+            }
+            [] => Command::new("systemd-socket-activate"),
+        };
         cmd.env_clear().arg("-l").arg(&socket);
         // the buses and Docker point nowhere unless the test gives its own: no test reaches the user's own containers
         // (WinBoat) or buses by default; the plugin is the checkout's, never the installed package's

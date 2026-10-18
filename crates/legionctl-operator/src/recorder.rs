@@ -16,7 +16,8 @@ use crate::system1::System1Proxy;
 fn write(events: &std::sync::mpsc::Receiver<(String, Value)>) {
     while let Ok(first) = events.recv() {
         let batch: Vec<_> = std::iter::once(first).chain(events.try_iter()).collect();
-        if let Err(e) = Db::open_default().and_then(|db| db.record_all("legionctl-system", &batch))
+        if let Err(e) = Db::open_log(&legionctl_core::db::default_path())
+            .and_then(|db| db.record_all("legionctl-system", &batch))
         {
             eprintln!("operator: cannot record {} events: {e:#}", batch.len());
         }
