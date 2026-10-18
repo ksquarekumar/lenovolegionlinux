@@ -23,7 +23,8 @@ user-invocable: true
    or disk (some minutes, said in the output); a change of `session.container.npm` or of legionctl makes it again.
 7. In each sandbox, `git` is the git gate: local commands run; push, fetch, pull, remote, `reset --hard`, rebase, `clean
    -f`, `branch -D` and other history or remote commands are refused (`gates.git.deny`).
-8. MCP servers come through `legionctl mcp-proxy`: only the allowed tools, and each call is logged.
+8. MCP servers of `mcp.servers` come through legionctl's MCP server as `<server>/<tool>` (`legionctl_find`,
+   `legionctl_run`), each behind `legionctl mcp-proxy`: only the allowed tools, and each call is logged.
 9. `--gpu` gives the NVIDIA GPU for this run only. In a VM it needs a polkit dialog, a disk from `workspace pack --as vm
    --gpu`, and a desktop that does not use the GPU. See skill machine-tools for the live rule.
 10. `--account <name>` runs on a clauth account (`agents accounts list`; `agents accounts login <name>` adds one) with its own login and rate limits. clauth is the account engine (`setup apply` installs it): its daemon reads the use and switches at the limit.

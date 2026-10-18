@@ -323,7 +323,8 @@ pub struct PackageConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpConfig {
-    /// MCP servers a session's agent reaches, each through `legionctl mcp-proxy` (the allowlist and the call log).
+    /// MCP servers a session's agent reaches through legionctl's MCP server (`<server>/<tool>`), each behind
+    /// `legionctl mcp-proxy` (the allowlist and the call log).
     pub servers: BTreeMap<String, McpServer>,
 }
 

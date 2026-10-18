@@ -3334,24 +3334,11 @@ fn mcp_tools(op: &Operator, home: &Path, args: &[String]) -> Vec<String> {
     })
 }
 
-/// B-1 (EV-review-14): a remote MCP server's keyring header reaches its proxy in the proxy's environment, never in a
-/// command line (the exec sensor records every session's argv, and `events` shows them): the session's MCP config
-/// has the value only under the server's env.
-#[test]
-fn a_remote_servers_keyring_header_is_never_in_a_command_line() {
-    let (op, home) = operator("mcphdr");
-    let repo = repository(&home);
-    write(&home.join("keyring/remote-key"), "HEADER_SECRET_VALUE");
-    write(
-        &home.join(".config/legionctl/mcp.jsonc"),
-        &json!({"mcp": {"servers": {"remote": {"url": "http://127.0.0.1:9/mcp",
-                                                "keyring_headers": {"x-api-key": "remote-key"}}}}})
-        .to_string(),
-    );
-    let env = [("HOME", home.to_str().unwrap())];
+/// `session start claude` in `repo`: the session id and its `mcp.json`.
+fn session_mcp(op: &Operator, home: &Path, repo: &Path) -> (String, Value) {
     let started = op.run(
-        &repo,
-        &env,
+        repo,
+        &[("HOME", home.to_str().unwrap())],
         &["session", "start", "claude", "--dossier", "hdr", "--json"],
         "",
     );
@@ -3364,22 +3351,112 @@ fn a_remote_servers_keyring_header_is_never_in_a_command_line() {
         .as_str()
         .unwrap()
         .to_string();
-    let mcp: Value = serde_json::from_slice(
+    let config = serde_json::from_slice(
         &std::fs::read(op.runtime.join(format!("legionctl/sessions/{id}/mcp.json"))).unwrap(),
     )
     .unwrap();
-    let remote = &mcp["mcpServers"]["remote"];
+    (id, config)
+}
+
+/// DESIGN/22 rule 1 with B-1 (EV-review-14): a session's only MCP server is legionctl's, which brokers each
+/// configured server: the agent finds, describes and runs a remote server's allowed tool through the three tools, the
+/// proxy logs the call, and the keyring header reaches the server but never a command line (the exec sensor records
+/// every session's argv, and `events` shows them).
+#[test]
+fn a_session_runs_a_brokered_servers_tool_through_legionctls_three_tools() {
+    let (op, home) = operator("mcphdr");
+    let repo = repository(&home);
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-remote-mcp.py");
+    let mut server = Kill::spawn(Command::new("python3").arg(fixture).stdout(Stdio::piped()));
+    let mut port = String::new();
+    BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut port)
+        .unwrap();
+    let url = format!("http://127.0.0.1:{}/mcp", port.trim());
+    write(&home.join("keyring/remote-key"), "HEADER_SECRET_VALUE");
+    write(
+        &home.join(".config/legionctl/mcp.jsonc"),
+        &json!({"mcp": {"servers": {
+            "remote": {"url": url, "allow": ["docs"], "keyring_headers": {"x-api-key": "remote-key"}},
+            // a command server that notes the environment it gets
+            "self": {"command": ["sh", "-c", format!("env > \"$HOME/seen.env\"; exec {} mcp", env!("CARGO_BIN_EXE_legionctl"))],
+                     "allow": ["legionctl_find"]}
+        }}})
+        .to_string(),
+    );
+    let (id, config) = session_mcp(&op, &home, &repo);
+    let servers: Vec<&String> = config["mcpServers"].as_object().unwrap().keys().collect();
+    assert_eq!(servers, ["legionctl"], "{config}");
+    let legionctl = &config["mcpServers"]["legionctl"];
     assert!(
-        !remote["args"].to_string().contains("HEADER_SECRET_VALUE"),
-        "a secret in a command line: {remote}"
+        !legionctl["args"]
+            .to_string()
+            .contains("HEADER_SECRET_VALUE"),
+        "a secret in a command line: {legionctl}"
     );
-    let headers: Value =
-        serde_json::from_str(remote["env"]["LEGIONCTL_MCP_HEADERS"].as_str().unwrap()).unwrap();
+
+    // the agent's MCP server, as the harness starts it from mcp.json
+    let vars: Vec<(String, String)> = legionctl["env"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+        .chain([("HOME".into(), home.to_str().unwrap().into())])
+        .collect();
+    let vars: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut mcp = Mcp::start(&op, &vars);
+    let (found, _) = mcp.tool("legionctl_find", &json!({"group": "remote"}));
     assert_eq!(
-        headers,
-        json!({"x-api-key": "HEADER_SECRET_VALUE"}),
-        "{remote}"
+        found, "1 operations match.\nremote/docs · mcp · Look up docs",
+        "only the allowed tool"
     );
+    let (groups, _) = mcp.tool("legionctl_find", &json!({}));
+    assert!(
+        groups.contains("\nremote 1") && groups.contains("\nself 1"),
+        "{groups}"
+    );
+    let seen = std::fs::read_to_string(home.join("seen.env")).unwrap();
+    assert!(
+        !seen.contains("LEGIONCTL_MCP_BROKER") && !seen.contains("HEADER_SECRET_VALUE"),
+        "a brokered server sees the other servers' secrets: {seen}"
+    );
+    let (described, _) = mcp.tool("legionctl_describe", &json!({"op": "remote/docs"}));
+    assert!(
+        described.starts_with("remote/docs · mcp. A tool of the MCP server remote")
+            && described.ends_with("Input: {\"type\":\"object\"}"),
+        "{described}"
+    );
+    let (ran, failed) = mcp.tool(
+        "legionctl_run",
+        &json!({"op": "remote/docs", "input": {"q": "fan"}}),
+    );
+    assert!(!failed, "{ran}");
+    assert!(
+        ran.contains("'q': 'fan'") && ran.ends_with("key=HEADER_SECRET_VALUE"),
+        "the input and the header reach the server: {ran}"
+    );
+    let (refused, failed) = mcp.tool("legionctl_run", &json!({"op": "remote/admin"}));
+    assert!(
+        failed && refused.contains("No operation remote/admin. The closest: remote/docs"),
+        "{refused}"
+    );
+    let calls: Value = serde_json::from_str(&op.ok(&["tools", "calls", "--json"])).unwrap();
+    let logged: Vec<(&str, &str, &str, &str)> = calls["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["session"].as_str().unwrap(),
+                c["server"].as_str().unwrap(),
+                c["tool"].as_str().unwrap(),
+                c["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(logged, [(id.as_str(), "remote", "docs", "ok")]);
+    drop(server);
 }
 
 /// A package from the store behind the proxy: fetched and pinned, run from the store without network by the command
@@ -3419,7 +3496,13 @@ fn a_store_package_runs_pinned_and_offline_and_a_changed_one_is_refused() {
         &std::fs::read(op.runtime.join(format!("legionctl/sessions/{id}/mcp.json"))).unwrap(),
     )
     .unwrap();
-    let args: Vec<String> = mcp["mcpServers"]["probe"]["args"]
+    let brokered: Value = serde_json::from_str(
+        mcp["mcpServers"]["legionctl"]["env"]["LEGIONCTL_MCP_BROKER"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let args: Vec<String> = brokered["probe"]["args"]
         .as_array()
         .unwrap()
         .iter()

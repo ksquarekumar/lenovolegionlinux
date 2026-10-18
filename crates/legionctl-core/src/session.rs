@@ -208,7 +208,7 @@ pub struct Launch {
     pub real_git: PathBuf,
     /// The session's workspace: the agent's working folder.
     pub workdir: PathBuf,
-    /// The session's MCP servers (`mcp.json`): legionctl's own and each one behind the proxy.
+    /// The session's MCP servers (`mcp.json`): legionctl's own, which brokers each configured one behind the proxy.
     pub mcp: serde_json::Value,
     /// The operations the agent is bound to ([`Start::tools`]): its only tools; none: unbound.
     #[serde(default)]
@@ -1142,18 +1142,18 @@ fn merge_json(into: &mut serde_json::Value, over: &serde_json::Value) {
 /// and value.
 pub const HEADERS_ENV: &str = "LEGIONCTL_MCP_HEADERS";
 
-/// The session's MCP config: legionctl's own server, and every configured server behind `legionctl mcp-proxy` with
-/// its allowlist, as resolved now. A package server runs from its hash-checked store folder, without network unless
-/// the package allows it.
+/// The environment variable of `legionctl mcp` with the servers it brokers: a JSON object of server name and
+/// `{args, env}`, the `legionctl mcp-proxy` arguments and environment of each.
+pub const BROKER_ENV: &str = "LEGIONCTL_MCP_BROKER";
+
+/// The session's MCP config: legionctl's own server only (DESIGN/22 rule 1), which brokers every configured server
+/// behind `legionctl mcp-proxy` with its allowlist, as resolved now. A package server runs from its hash-checked store
+/// folder, without network unless the package allows it.
 ///
 /// # Errors
 /// A server names a package that is missing, not fetched or changed since it was fetched.
 pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<serde_json::Value> {
     let mut servers = serde_json::Map::new();
-    servers.insert(
-        "legionctl".into(),
-        serde_json::json!({ "command": "legionctl", "args": ["mcp"] }),
-    );
     for (name, server) in &config.mcp.servers {
         let mut args = vec!["mcp-proxy".to_string(), "--server".into(), name.clone()];
         for tool in &server.allow {
@@ -1181,7 +1181,7 @@ pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<ser
                     String::from_utf8_lossy(&out.stdout).trim().into(),
                 );
             }
-            let mut entry = serde_json::json!({ "command": "legionctl", "args": args });
+            let mut entry = serde_json::json!({ "args": args, "env": {} });
             if !headers.is_empty() {
                 entry["env"] = serde_json::json!({ HEADERS_ENV: serde_json::Value::Object(headers).to_string() });
             }
@@ -1207,16 +1207,19 @@ pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<ser
         );
         args.push("--".into());
         args.extend(command);
-        servers.insert(
-            name.clone(),
-            serde_json::json!({ "command": "legionctl", "args": args }),
-        );
+        servers.insert(name.clone(), serde_json::json!({ "args": args, "env": {} }));
     }
-    Ok(serde_json::json!({ "mcpServers": servers }))
+    let mut legionctl = serde_json::json!({ "command": "legionctl", "args": ["mcp"] });
+    if !servers.is_empty() {
+        legionctl["env"] =
+            serde_json::json!({ BROKER_ENV: serde_json::Value::Object(servers).to_string() });
+    }
+    Ok(serde_json::json!({ "mcpServers": { "legionctl": legionctl } }))
 }
 
-/// `mcp` with the session's operator variables in the environment of each legionctl server (its own and the proxied
-/// ones): Codex starts MCP servers with a cleared environment, so they would reach no operator, or not as the session.
+/// `mcp` with the session's operator variables in the environment of legionctl's server (the proxies of the servers it
+/// brokers inherit them): Codex starts MCP servers with a cleared environment, so they would reach no operator, or not
+/// as the session.
 fn session_env(
     mut mcp: serde_json::Value,
     id: &str,

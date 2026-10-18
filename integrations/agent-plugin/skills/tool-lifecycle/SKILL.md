@@ -25,7 +25,8 @@ user-invocable: true
    agents and scripts read its views with `views render` (text or `--json`).
 8. Long operations are jobs: `jobs list`, `jobs show <id>`. See skill sessions-and-agents.
 9. Over MCP, three tools reach every operation: `legionctl_find` (by words or group), `legionctl_describe` (help,
-   input schema, class) and `legionctl_run` (`op` is the command path with `.`: `kernel.cmdline.set`).
+   input schema, class) and `legionctl_run` (`op` is the command path with `.`: `kernel.cmdline.set`). In a session,
+   they also reach the tools of the servers in `mcp.servers` as `<server>/<tool>`.
 10. `--json` prints the operation's JSON output. `--dry-run`, where a command has it, shows the plan and changes nothing.
 11. Read `legionctl <group> --help` before you use a flag. Do not guess.
 12. Check `legionctl load` before builds, test suites and parallel runs. If the machine is busy, run less.

@@ -120,7 +120,7 @@
   "session": {
     // Agent name -> command line; {id} is the session id (Claude Code's hooks then find the session's dossier);
     // {settings} is the session's generated Claude Code settings file (the gates as permissions.deny); {mcp} is its
-    // MCP config: legionctl's own server and each of mcp.servers through legionctl mcp-proxy, and no other.
+    // MCP config: legionctl's own server only, which brokers each of mcp.servers through legionctl mcp-proxy.
     "agents": {
       "claude": ["claude", "--session-id", "{id}", "--settings", "{settings}", "--mcp-config", "{mcp}", "--strict-mcp-config"],
       "codex": ["codex"]
@@ -136,7 +136,7 @@
     // Agent name -> its ACP adapter, for headless runs (legionctl session run): Zed's adapter for Claude Code, the
     // ACP project's for Codex (on the Codex app server), run by bun (`bun --bun x --no-install <adapter>`: bun's
     // runtime in place of Node.js; a run installs a missing adapter with bun). The adapter gets the session's MCP
-    // servers (legionctl's own and the proxied ones) at session/new. A bound run (such as the ui-composer's) gets only legionctl's MCP server
+    // server (legionctl's own, which brokers the proxied ones) at session/new. A bound run (such as the ui-composer's) gets only legionctl's MCP server
     // with its tools: Claude Code through session/new (_meta disableBuiltInTools, settingSources []), Codex through
     // its own CODEX_HOME (no default environment, so no shell, patch or image tool; no web search, plugins or hooks).
     "acp": {
@@ -204,7 +204,8 @@
   },
 
   // MCP servers for session agents: name -> { "command": [...] or "package": name, "allow": [tools] }. The agent reaches each only
-  // through legionctl mcp-proxy, which offers the allowed tools and logs every call (legionctl tools calls).
+  // through legionctl's MCP server (legionctl_find, legionctl_describe, legionctl_run with op "<server>/<tool>"), which
+  // starts it behind legionctl mcp-proxy: only the allowed tools, every call logged (legionctl tools calls).
   "mcp": {
     "servers": {}
   },
