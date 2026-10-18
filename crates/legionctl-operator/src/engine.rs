@@ -2054,7 +2054,7 @@ impl Operator {
 }
 
 impl Engine for Operator {
-    fn status(&self, _: &Ctx, input: StatusIn) -> Result<Snapshot> {
+    fn status(&self, ctx: &Ctx, input: StatusIn) -> Result<Snapshot> {
         let plan = Plan::load(path(input.profile.as_ref())?)?;
         let detail = if input.fast {
             Detail::Fast
@@ -2065,14 +2065,18 @@ impl Engine for Operator {
             &plan.root,
             &plan.profile,
             detail,
-            &config(None)?.config.load,
+            &config(ctx.folder.as_deref())?.config.load,
             throttle_logged(self),
         )?
         .into_wire())
     }
 
-    fn load(&self, _: &Ctx, _: Empty) -> Result<LoadState> {
-        Ok(load::read_load(&SysRoot::from_env(), &config(None)?.config.load)?.into_wire())
+    fn load(&self, ctx: &Ctx, _: Empty) -> Result<LoadState> {
+        Ok(load::read_load(
+            &SysRoot::from_env(),
+            &config(ctx.folder.as_deref())?.config.load,
+        )?
+        .into_wire())
     }
 
     fn doctor(&self, _: &Ctx, input: ProfileIn) -> Result<Findings> {
@@ -2542,8 +2546,8 @@ impl Engine for Operator {
         Ok(agents::usage(&home().join(".claude"), &home().join(".codex"), input.days).into_wire())
     }
 
-    fn agents_plugins_list(&self, _: &Ctx, _: Empty) -> Result<Vec<Plugin>> {
-        let plugins = config(None)?.config.plugins;
+    fn agents_plugins_list(&self, ctx: &Ctx, _: Empty) -> Result<Vec<Plugin>> {
+        let plugins = config(ctx.folder.as_deref())?.config.plugins;
         let out = Command::new("claude")
             .args(["plugin", "list", "--json"])
             .output()
@@ -2571,7 +2575,7 @@ impl Engine for Operator {
 
     fn agents_plugins_install(&self, ctx: &Ctx, input: PluginInstallIn) -> Result<Lines> {
         // the user's and the system's layers only: a repository must not widen the allowlist it is checked against
-        let plugins = config(None)?.config.plugins;
+        let plugins = config(ctx.folder.as_deref())?.config.plugins;
         if let Some(why) = plugins.refusal(&input.id) {
             anyhow::bail!("{why}");
         }
@@ -2656,7 +2660,7 @@ impl Engine for Operator {
     }
 
     fn workspace_open(&self, ctx: &Ctx, input: WorkspaceOpenIn) -> Result<Workspace> {
-        let root = config(None)?.config.workspace.root;
+        let root = config(ctx.folder.as_deref())?.config.workspace.root;
         Ok(dossiers()?
             .open_workspace(
                 dossier_of(&input.session)?,
@@ -3629,14 +3633,14 @@ impl Engine for Operator {
         )?))
     }
 
-    fn packages_list(&self, _: &Ctx, _: Empty) -> Result<Packages> {
+    fn packages_list(&self, ctx: &Ctx, _: Empty) -> Result<Packages> {
         Ok(Store::new(Store::default_root())
-            .list(&config(None)?.config.packages)?
+            .list(&config(ctx.folder.as_deref())?.config.packages)?
             .into_wire())
     }
 
-    fn packages_fetch(&self, _: &Ctx, input: PackageFetchIn) -> Result<Manifest> {
-        let resolved = config(None)?;
+    fn packages_fetch(&self, ctx: &Ctx, input: PackageFetchIn) -> Result<Manifest> {
+        let resolved = config(ctx.folder.as_deref())?;
         let package = resolved
             .config
             .packages
@@ -3687,8 +3691,8 @@ impl Engine for Operator {
         Ok(Empty {})
     }
 
-    fn cache_stats(&self, _: &Ctx, _: Empty) -> Result<Vec<CacheStat>> {
-        let limits = config(None)?.config.cache;
+    fn cache_stats(&self, ctx: &Ctx, _: Empty) -> Result<Vec<CacheStat>> {
+        let limits = config(ctx.folder.as_deref())?.config.cache;
         let usage = Cache::open()?.usage()?;
         Ok(limits
             .iter()
@@ -3854,8 +3858,12 @@ impl Engine for Operator {
         Ok(Lines { lines: vec![line] })
     }
 
-    fn virt_status(&self, _: &Ctx, _: Empty) -> Result<VirtStatus> {
-        let low = config(None)?.config.load.busy.memory_available_percent;
+    fn virt_status(&self, ctx: &Ctx, _: Empty) -> Result<VirtStatus> {
+        let low = config(ctx.folder.as_deref())?
+            .config
+            .load
+            .busy
+            .memory_available_percent;
         self.runtime
             .block_on(crate::virt::status(&SysRoot::from_env(), low))
     }
@@ -4292,10 +4300,10 @@ impl Engine for Operator {
 
     fn internal_windows_vm_begin(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         input: WindowsVmBeginIn,
     ) -> Result<WindowsVmBegun> {
-        let usb = config(None)?.config.windows.vm.usb;
+        let usb = config(ctx.folder.as_deref())?.config.windows.vm.usb;
         let memlock = input.memlock_mib << 20;
         // with an overlay (a repair), Windows writes to it and the disk is only read
         let overlay = crate::wincare::start_overlay(&SysRoot::from_env())?;
@@ -4350,7 +4358,7 @@ impl Engine for Operator {
         })
     }
 
-    fn record(&self, _: &Ctx, input: RecordIn) -> Result<Recording> {
+    fn record(&self, ctx: &Ctx, input: RecordIn) -> Result<Recording> {
         let dir = input.dir.get()?;
         let empty = match std::fs::read_dir(dir) {
             Ok(mut d) => d.next().is_none(),
@@ -4381,7 +4389,7 @@ impl Engine for Operator {
             &plan.root,
             &plan.profile,
             Detail::Full,
-            &config(None)?.config.load,
+            &config(ctx.folder.as_deref())?.config.load,
             throttle_logged(self),
         )?;
         let mut recording = plan.decisions(dir, events)?;
@@ -4488,8 +4496,11 @@ impl Engine for Operator {
         bench_run_of(db.event(id)?.context("the run was not stored")?)
     }
 
-    fn tune(&self, _: &Ctx, input: TuneIn) -> Result<TuneReport> {
-        let load = load::read_load(&SysRoot::from_env(), &config(None)?.config.load)?;
+    fn tune(&self, ctx: &Ctx, input: TuneIn) -> Result<TuneReport> {
+        let load = load::read_load(
+            &SysRoot::from_env(),
+            &config(ctx.folder.as_deref())?.config.load,
+        )?;
         anyhow::ensure!(
             input.force || load.level == load::Level::Idle,
             "the machine is not idle ({}); stop other work, or add --force",

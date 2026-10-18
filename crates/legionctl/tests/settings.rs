@@ -581,6 +581,37 @@ fn project_answers_at_the_same_time_all_land(op: &std::sync::Arc<Operator>, home
     }
 }
 
+/// An operation reads the settings of its call's folder, the project's layer too: a project's own package shows in
+/// that project only (before, the package operations read the user's settings alone).
+#[test]
+fn an_operation_reads_the_settings_of_its_calls_project() {
+    let home =
+        Scratch::new(std::env::temp_dir().join(format!("lc-settings-ctx-{}", std::process::id())));
+    let repo = home.join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let file = repo.join(".legionctl/packages.jsonc");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        r#"{"packages": {"lint-tool": {"kind": "npm", "source": "lint-tool", "version": "1.0.0"}}}"#,
+    )
+    .unwrap();
+    trust::allow(&home, &file);
+    let op = Operator::start("ctx", &[("HOME", OsString::from(home.as_os_str()))]);
+    let names = |cwd: &Path| -> Vec<String> {
+        let out = op.cli_in(cwd, &["packages", "list", "--json"]);
+        assert!(out.status.success(), "{}", text(&out));
+        let list: Value = serde_json::from_slice(&out.stdout).unwrap();
+        list.to_string()
+            .contains("lint-tool")
+            .then(|| "lint-tool".to_string())
+            .into_iter()
+            .collect()
+    };
+    assert_eq!(names(&repo), ["lint-tool"]);
+    assert_eq!(names(&home), Vec::<String>::new());
+}
+
 /// Changes that run at the same time never lose each other (review/16 B10): each takes the layer's lock, writes its
 /// own temporary file and renames it. Before, two writers read the same file and the second rename dropped the first
 /// one's key. The operations that change settings for you (reminders, hooks) go the same way, with their history;
