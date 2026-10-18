@@ -91,6 +91,9 @@ pub async fn run_within(
         Ok(false) => {}
         Err(e) => eprintln!("operator: session {id}: not stopped after its run: {e:#}"),
     }
+    if let Err(e) = Db::open_default().and_then(|db| db.revoke_token(&id)) {
+        eprintln!("operator: session {id}: cannot take its token away after its run: {e:#}");
+    }
     // the dossier is free at once, also when the run failed in the hold's first minute
     if let Err(e) = dossiers.release(&id) {
         eprintln!("operator: session {id}: cannot release its dossier: {e:#}");

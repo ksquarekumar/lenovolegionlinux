@@ -20,6 +20,7 @@ MCP servers (name, command, args), the _meta of session/new or session/load and 
 environments.toml, auth.json), so a test can read what the run was bound to.
 While the file $FAKE_ACP_FORGET is there, a new process forgets the sessions (the computer started again), and
 session/load of an unknown session fails as claude-code-acp's does ("Session not found").
+A prompt that starts with TOKEN gets the line "token: <LEGIONCTL_TOKEN>", so a test can try the token after the run.
 """
 
 import json
@@ -179,6 +180,8 @@ def prompt(params):
         "bound: " + json.dumps({"mcp": [{k: s.get(k) for k in ("name", "command", "args")} for s in mcp_servers], "meta": meta,
                                 "codex_home": codex_home()}),
     ]
+    if text.startswith("TOKEN"):
+        lines.append("token: " + os.environ.get("LEGIONCTL_TOKEN", ""))
     if len(sys.argv) > 1:
         lines.append(f"agent: {sys.argv[1]}")
     if model:

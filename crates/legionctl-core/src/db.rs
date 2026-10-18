@@ -353,19 +353,31 @@ impl Db {
         Ok(())
     }
 
-    /// The session whose sandbox holds `token`, if any.
+    /// The session whose sandbox holds `token`, if any, and where it runs when it has a scope or a container
+    /// (`inside`; None: no scope, so only its end takes the token away).
     ///
     /// # Errors
     /// The database read fails.
-    pub fn token_session(&self, token: &str) -> Result<Option<String>> {
+    pub fn token_session(&self, token: &str) -> Result<Option<(String, Option<String>)>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT session FROM tokens WHERE hash = ?1",
+                "SELECT t.session, s.scoped, s.inside FROM tokens t JOIN sessions s ON s.id = t.session \
+                 WHERE t.hash = ?1",
                 [token_hash(token)],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get::<_, bool>(1)?.then(|| r.get(2)).transpose()?)),
             )
             .optional()?)
+    }
+
+    /// Take the token of `session` away: the session ended.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn revoke_token(&self, session: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM tokens WHERE session = ?1", [session])?;
+        Ok(())
     }
 
     pub fn conn(&self) -> &Connection {

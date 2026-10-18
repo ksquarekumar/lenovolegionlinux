@@ -56,7 +56,9 @@ adds calls, errors by code and total ms of each op.
 Built (2026-10-13, DESIGN/03 slice 2): every call carries `authorization: Bearer <token>`. The user token is
 `$XDG_RUNTIME_DIR/legionctl.token` (0600, made by the first client or the operator); a session's sandbox cannot see
 it (its runtime folder is a private tmpfs) and gets its own token as `LEGIONCTL_TOKEN`, which the operator maps to
-the session (`tokens` in operator.db, the hash only; a resume issues a new one). A call with a session token has
+the session (`tokens` in operator.db, the hash only; a resume issues a new one). The token ends with its session
+(EV-review-16 C3): `session stop` and the end of a headless run take it away, and for a session in a scope or a
+container each call asks whether that still runs (an ended one loses its token there). A call with a session token has
 that session's id in every session field of its input, whatever it sent. Operations named `internal.*` (hooks run,
 dossier guard, gates check, tools record, cache get/put, gpu run-env) are for legionctl's own parts and are not in
 the CLI or MCP.

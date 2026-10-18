@@ -7596,7 +7596,9 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
                 "-c",
                 "import hashlib, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
                  c.execute('INSERT INTO tokens VALUES (?, ?, 0)', \
-                 (hashlib.blake2b(sys.argv[2].encode(), digest_size=32).hexdigest(), sys.argv[3])); c.commit()",
+                 (hashlib.blake2b(sys.argv[2].encode(), digest_size=32).hexdigest(), sys.argv[3])); \
+                 c.execute(\"INSERT INTO sessions (id, agent, dossier, workdir, started) VALUES (?, 'probe', '', '', 0)\", \
+                 (sys.argv[3],)); c.commit()",
             ])
             .arg(home.join(".local/state/legionctl/operator.db"))
             .args([token, session])

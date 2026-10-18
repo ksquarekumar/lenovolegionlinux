@@ -57,7 +57,8 @@ impl Inside {
         }
     }
 
-    pub(crate) fn from_db(text: &str) -> Inside {
+    #[must_use]
+    pub fn from_db(text: &str) -> Inside {
         match text {
             "container" => Inside::Container,
             "vm" => Inside::Vm,

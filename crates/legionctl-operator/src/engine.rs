@@ -5311,7 +5311,9 @@ impl Engine for Operator {
     }
 
     fn session_stop(&self, _: &Ctx, input: SessionIdIn) -> Result<Lines> {
-        session_control(legionctl_core::session::Control::Stop, &input.id, "stopped")
+        let lines = session_control(legionctl_core::session::Control::Stop, &input.id, "stopped")?;
+        Db::open_default()?.revoke_token(&input.id)?;
+        Ok(lines)
     }
 
     fn session_activity(&self, _: &Ctx, input: SessionActivityIn) -> Result<Page<SessionExec>> {

@@ -69,9 +69,31 @@ fn principal(headers: &HeaderMap) -> Result<Principal, ApiError> {
             },
         );
     }
-    match Db::open_default().and_then(|db| db.token_session(token)) {
-        Ok(Some(session)) => Ok(Principal::Session(session)),
-        Ok(None) => Err(denied("the token is not valid (an ended session?)")),
+    // a session in a scope or a container: its token is valid while it runs
+    let checked = Db::open_default().and_then(|db| {
+        let Some((session, inside)) = db.token_session(token)? else {
+            return Ok(None);
+        };
+        let runs = match &inside {
+            Some(inside) => legionctl_core::session::active(
+                &session,
+                legionctl_core::session::Inside::from_db(inside),
+            )?,
+            None => true,
+        };
+        if !runs {
+            db.revoke_token(&session)?;
+        }
+        Ok(Some((session, runs)))
+    });
+    match checked {
+        Ok(Some((session, true))) => Ok(Principal::Session(session)),
+        Ok(Some((session, false))) => Err(denied(&format!(
+            "session {session} ended, so its token is not valid now"
+        ))),
+        Ok(None) => Err(denied(
+            "the token is not valid (it is not a legionctl token, or its session ended)",
+        )),
         Err(e) => Err(denied(&format!("checking the token: {e:#}"))),
     }
 }

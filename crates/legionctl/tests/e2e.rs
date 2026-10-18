@@ -3195,7 +3195,9 @@ fn add_session_token(home: &Path, token: &str, session: &str) {
             "-c",
             "import hashlib, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
              c.execute('INSERT INTO tokens VALUES (?, ?, 0)', \
-             (hashlib.blake2b(sys.argv[2].encode(), digest_size=32).hexdigest(), sys.argv[3])); c.commit()",
+             (hashlib.blake2b(sys.argv[2].encode(), digest_size=32).hexdigest(), sys.argv[3])); \
+             c.execute(\"INSERT INTO sessions (id, agent, dossier, workdir, started) VALUES (?, 'probe', '', '', 0)\", \
+             (sys.argv[3],)); c.commit()",
         ])
         .arg(home.join(".local/state/legionctl/operator.db"))
         .args([token, session])
@@ -4471,6 +4473,132 @@ fn a_headless_run_waits_out_memory_pressure() {
             .unwrap()
             .contains("prompt: A restart of legionctl cut off your work")
     );
+}
+
+/// `session start probe` in `repo` for `dossier`: its id and its sandbox's token.
+fn started_session(op: &Operator, repo: &Path, home: &Path, dossier: &str) -> (String, String) {
+    let out = op.run(
+        repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["session", "start", "probe", "--dossier", dossier, "--json"],
+        "",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let launch: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let argv: Vec<&str> = launch["sandbox"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    let at = argv.iter().position(|a| *a == "LEGIONCTL_TOKEN").unwrap();
+    (
+        launch["id"].as_str().unwrap().to_string(),
+        argv[at + 1].to_string(),
+    )
+}
+
+/// A session's token works only while its session runs (EV-review-16 C3): after `session stop` (its scope still
+/// answers active), after its scope or container ended (the state at the call), and after a headless run, the token is
+/// refused; a scope that ended takes the token away, so the next call finds no such token.
+#[test]
+fn a_session_token_works_only_while_its_session_runs() {
+    let (op, home) = operator("tokenlife");
+    let repo = repository(&home);
+    let script = adapter::node_script(&home);
+    adapter::executable(&home.join(".local/bin/fake-acp"), &script);
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({"session": {"agents": {"probe": ["sh", "-c", "true"]}, "acp": {"fake": adapter::COMMAND},
+                            "scope": false, "writable": []}})
+        .to_string(),
+    );
+    let home_env = ("HOME", home.to_str().unwrap());
+    let call = |token: &str| {
+        op.run(
+            &repo,
+            &[home_env, ("LEGIONCTL_TOKEN", token)],
+            &["dossier", "list"],
+            "",
+        )
+    };
+    let refused = |token: &str, why: &str| {
+        let out = call(token);
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success() && said.contains(why),
+            "{why} missing: {said}"
+        );
+    };
+    let start = |dossier: &str| started_session(&op, &repo, &home, dossier);
+    // the scope answers: active while the file `scope-ended` is not there
+    stand_in(
+        &home,
+        "systemctl",
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in *is-active*) [ -e {ended} ] && echo inactive && exit 3; echo active;; \
+             *FreezerState*) echo running;; esac; exit 0\n",
+            ended = home.join("scope-ended").display()
+        ),
+    );
+
+    let (stopped, token) = start("one");
+    assert!(
+        call(&token).status.success(),
+        "{}",
+        String::from_utf8_lossy(&call(&token).stderr)
+    );
+    sql(
+        &home,
+        &format!("UPDATE sessions SET scoped = 1 WHERE id = '{stopped}'"),
+    );
+    assert!(call(&token).status.success(), "a scope that runs");
+    op.ok(&["session", "stop", &stopped]);
+    refused(&token, "the token is not valid");
+
+    let (ended, token) = start("two");
+    sql(
+        &home,
+        &format!("UPDATE sessions SET scoped = 1 WHERE id = '{ended}'"),
+    );
+    assert!(call(&token).status.success());
+    write(&home.join("scope-ended"), "");
+    refused(
+        &token,
+        &format!("session {ended} ended, so its token is not valid now"),
+    );
+    std::fs::remove_file(home.join("scope-ended")).unwrap();
+    refused(&token, "the token is not valid");
+
+    let run = op.run(
+        &repo,
+        &[home_env],
+        &[
+            "session",
+            "run",
+            "fake",
+            "TOKEN fix the bug",
+            "--dossier",
+            "three",
+        ],
+        "",
+    );
+    let said = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let token = said
+        .lines()
+        .find_map(|l| l.strip_prefix("token: "))
+        .unwrap_or_else(|| panic!("the run's token: {said}"));
+    assert!(!token.is_empty(), "{said}");
+    refused(token, "the token is not valid");
 }
 
 /// Callers and their tokens (DESIGN/03): `{mcp}` in the agent's command is the session's MCP config; a session's
@@ -6003,6 +6131,8 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
         &home.join(".config/legionctl/session.jsonc"),
         &json!({"session": {
             "agents": {"probe": ["sh", "-c", probe, "probe", "{settings}"]},
+            // the test runs the sandbox with no scope
+            "scope": false,
             "writable": [],
             "hidden": [home.join("decoy.sock")]
         }})
