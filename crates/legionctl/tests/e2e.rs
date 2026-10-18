@@ -6227,8 +6227,8 @@ fn a_sandboxed_agent_finds_no_way_out_and_still_commits_calls_the_model_and_the_
     );
 }
 
-/// A session writes only its own branch (EV-review-16 C7): in its sandbox it commits and keeps a stash (`git stash
-/// push` itself runs `git reset --hard`, which the gate refuses), but the other
+/// A session writes only its own branch (EV-review-16 C7): in its sandbox it commits, stashes and pops (the stash's
+/// own `git reset --hard` runs; the agent's own one stays refused), but the other
 /// branches under legionctl/ (a loose one and a packed one, which a loose file of the agent would hide) and a
 /// replacement ref (which would change what the host's git shows) stay as they were, also when the agent writes the
 /// ref files itself with the real git or with its shell.
@@ -6248,7 +6248,7 @@ fn a_session_writes_only_its_own_branch() {
     let start = git(&home, &repo, &["rev-parse", "HEAD"]);
     let probe = r#"common=$(git rev-parse --path-format=absolute --git-common-dir)
         echo x > note.txt && git add note.txt && git commit -qm own && echo COMMIT_OK
-        echo y > note.txt && git stash store -m probe "$(git stash create)" && echo STASH_OK
+        echo y > note.txt && git stash -q && git stash pop -q && grep -qx y note.txt && echo STASH_OK
         head=$(git rev-parse HEAD)
         for b in loose packed; do
             echo "$head" > "$common/refs/heads/legionctl/$b" 2>/dev/null && echo "WROTE_$b"

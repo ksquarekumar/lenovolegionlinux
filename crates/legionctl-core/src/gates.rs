@@ -29,6 +29,12 @@ fn split(args: &[String]) -> Option<(&str, &[String])> {
     None
 }
 
+/// The subcommand of the git command line `args`.
+#[must_use]
+pub fn subcommand(args: &[String]) -> Option<&str> {
+    split(args).map(|(sub, _)| sub)
+}
+
 /// Whether `arg` is the flag `flag`: the same token, `--flag=value`, or a short flag inside a bundle (`-fd` has `-f`).
 fn has_flag(arg: &str, flag: &str) -> bool {
     if arg == flag

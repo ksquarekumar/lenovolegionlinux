@@ -151,8 +151,9 @@ Hardened (2026-10-16, EV-review-08, user decision "approve all, do it first"):
   and the worktree's `.git` stay read-only. C7 (EV-review-16): git writes a branch through `<branch>.lock` in its
   folder, so that folder (`refs/heads/legionctl`) is writable, and each other entry there is mounted read-only over it
   (a packed one first gets its loose file of the same value, so that a loose file of the agent cannot hide it). Limit:
-  the agent can add a new branch name there. `git stash store` works; `git stash push` runs `git reset --hard`, which
-  the gate refuses; `git gc` cannot pack refs.
+  the agent can add a new branch name there. `git stash` works: the gate lets the real git of a `git stash` run its
+  own steps (`git reset --hard`, `git clean`), and the agent's own `git reset --hard` stays refused; `git gc` cannot
+  pack refs.
 - S-6, S-8: `session.hidden` also has the system bus, `~/.ssh`, `~/.gnupg`, credentials and token files,
   `~/.local/state/legionctl` and clauth's store (`~/.clauth`); each `.env*` file at the top of the repository and the
   workspace is hidden.

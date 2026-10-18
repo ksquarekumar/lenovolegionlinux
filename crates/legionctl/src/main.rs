@@ -182,6 +182,12 @@ fn run(matches: &ArgMatches) -> Result<()> {
 /// (mounted at `LEGIONCTL_REAL_GIT`) or refuses with the reason.
 fn gate_git() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let real = std::env::var_os("LEGIONCTL_REAL_GIT")
+        .context("LEGIONCTL_REAL_GIT is not set (outside a session?)")?;
+    if stash_step(&real) {
+        let err = std::process::Command::new(real).args(args).exec();
+        return Err(err).context("running the real git");
+    }
     let input = GateIn {
         args: args.clone(),
         project: ClientPath(std::env::current_dir()?),
@@ -192,10 +198,28 @@ fn gate_git() -> Result<()> {
         eprintln!("{reason}");
         std::process::exit(1);
     }
-    let real = std::env::var_os("LEGIONCTL_REAL_GIT")
-        .context("LEGIONCTL_REAL_GIT is not set (outside a session?)")?;
     let err = std::process::Command::new(real).args(args).exec();
     Err(err).context("running the real git")
+}
+
+/// Whether this git call is a step of a `git stash` that the gate let run: the real git, running `stash`, is the
+/// parent (a stash runs `git reset --hard` itself, and `git clean` for its untracked files).
+fn stash_step(real: &std::ffi::OsStr) -> bool {
+    let parent = std::os::unix::process::parent_id();
+    let (Ok(exe), Ok(real), Ok(line)) = (
+        std::fs::read_link(format!("/proc/{parent}/exe")),
+        std::fs::canonicalize(real),
+        std::fs::read(format!("/proc/{parent}/cmdline")),
+    ) else {
+        return false;
+    };
+    let args: Vec<String> = line
+        .split(|b| *b == 0)
+        .skip(1)
+        .filter(|a| !a.is_empty())
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    exe == real && legionctl_core::gates::subcommand(&args) == Some("stash")
 }
 
 /// `legionctl trace`: print new events as they arrive (the backlog is skipped), from the operator's event stream.
