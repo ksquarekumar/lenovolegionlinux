@@ -3,6 +3,8 @@
 #[path = "common/adapter.rs"]
 mod adapter;
 mod common;
+#[path = "common/flood.rs"]
+mod flood;
 #[path = "common/git.rs"]
 mod git;
 #[path = "common/hooks.rs"]
@@ -8509,8 +8511,9 @@ fn a_workspace_in_the_home_folder_is_not_a_finding_of_the_dossiers_home() {
     assert!(!doctor.contains("agentWorkspaces is a"), "{doctor}");
 }
 
-/// todo-189, r361: a writer of the event log back to back (as the recorder was: `session.open`, a new connection per
-/// event) while agents' tool calls and headless runs come in. Each call's hook answers and its audit lands, and each
+/// todo-189, r361: the daemon's `session.open` events at 20 times the peak of r361, written as the recorder writes them
+/// (batched, on the event log's connection, which does not sync each commit), while agents' tool calls and headless
+/// runs come in (control state: each commit syncs, B7). Each call's hook answers and its audit lands, and each
 /// run keeps its ACP session id and ends: no write waits out the busy timeout (each commit held the write lock across
 /// its own fsync, and the waiters starved: "keeping the ACP session id", "audit of internal.agent.tool not recorded:
 /// database is locked").
@@ -8561,23 +8564,7 @@ fn tool_calls_and_runs_land_in_the_event_log_while_another_writer_floods_it() {
     calls(0);
     let done = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|s| {
-        let flood = s.spawn(|| {
-            let mut n = 0;
-            // the recorder's connection: the event log does not sync each commit
-            while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                Db::open_log(&db)
-                    .and_then(|db| {
-                        db.record(
-                            "legionctl-system",
-                            "session.open",
-                            &json!({"session": "x", "path": n}),
-                        )
-                    })
-                    .unwrap();
-                n += 1;
-            }
-            n
-        });
+        let flood = s.spawn(|| flood::recorder_flood(&db, &done));
         let agents: Vec<_> = (1..9).map(|a| s.spawn(move || calls(a))).collect();
         let runs: Vec<_> = (1..4).map(|a| s.spawn(move || run(a))).collect();
         let ended: Vec<_> = agents
@@ -8590,7 +8577,7 @@ fn tool_calls_and_runs_land_in_the_event_log_while_another_writer_floods_it() {
         for e in ended {
             e.unwrap();
         }
-        assert!(flood.join().unwrap() > 100, "the flood wrote back to back");
+        assert!(flood.join().unwrap() > 100, "the flood ran all along");
     });
     let filter = EventFilter {
         kinds: &["internal.agent.tool"],

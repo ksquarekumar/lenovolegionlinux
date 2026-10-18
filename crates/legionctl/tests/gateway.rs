@@ -5,6 +5,8 @@
 //! streams, tool calls both ways), or is refused with the reason.
 
 mod common;
+#[path = "common/flood.rs"]
+mod flood;
 #[path = "common/provider.rs"]
 mod provider;
 
@@ -877,8 +879,8 @@ fn prompt_cache_tokens_count_in_the_cost() {
     assert_eq!(rows, [(1110, 0.235), (1010, 1.01)]);
 }
 
-/// todo-189, r361: gateway calls while another writer floods the event log back to back (as the recorder did, a new
-/// connection and commit per event): each call's usage row lands. Before, each commit synced under the write lock and
+/// todo-189, r361: gateway calls while the daemon's events come at 20 times the peak of r361 and are written as the
+/// recorder writes them (batched, on the event log's connection): each call's usage row lands (each commit syncs, B7). Before, each commit synced under the write lock and
 /// the usage writes starved past the busy timeout ("gateway usage not recorded: database is locked").
 #[test]
 fn each_gateway_call_is_counted_while_another_writer_floods_the_event_log() {
@@ -887,19 +889,7 @@ fn each_gateway_call_is_counted_while_another_writer_floods_the_event_log() {
     let db = s.home.join(".local/state/legionctl/operator.db");
     let done = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|scope| {
-        let flood = scope.spawn(|| {
-            let mut n = 0;
-            // the recorder's connection: the event log does not sync each commit
-            while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                Db::open_log(&db)
-                    .and_then(|db| {
-                        db.record("legionctl-system", "session.open", &json!({"path": n}))
-                    })
-                    .unwrap();
-                n += 1;
-            }
-            n
-        });
+        let flood = scope.spawn(|| flood::recorder_flood(&db, &done));
         let callers: Vec<_> = (0..8)
             .map(|c| {
                 let port = s.port;
@@ -925,7 +915,7 @@ fn each_gateway_call_is_counted_while_another_writer_floods_the_event_log() {
         for e in ended {
             e.unwrap();
         }
-        assert!(flood.join().unwrap() > 100, "the flood wrote back to back");
+        assert!(flood.join().unwrap() > 100, "the flood ran all along");
     });
     let rows: i64 = Db::open(&db, OPERATOR)
         .unwrap()
