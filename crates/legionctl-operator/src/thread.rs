@@ -27,7 +27,7 @@ fn lines(lines: Vec<String>) -> Lines {
     Lines { lines }
 }
 
-pub fn start(dir: &Path, input: &ThreadStartIn) -> Result<Lines> {
+pub fn start((dir, root): (&Path, &Path), input: &ThreadStartIn) -> Result<Lines> {
     let store = dossiers()?;
     // no session: the user's own thread (the app's chat), on the dossier that the user names
     if input.session.0.is_empty() && input.team.is_none() {
@@ -35,7 +35,7 @@ pub fn start(dir: &Path, input: &ThreadStartIn) -> Result<Lines> {
             "your thread needs a dossier: give --dossier <name> (dossier list; a new one: dossier create <name>)",
         )?;
         store.known(dossier)?;
-        let id = store.thread_start(None, &input.title, dossier)?;
+        let id = store.thread_start(None, &input.title, dossier, Some(root))?;
         return Ok(lines(vec![format!(
             "thread {id} started on dossier {dossier}: your thread"
         )]));
@@ -48,7 +48,7 @@ pub fn start(dir: &Path, input: &ThreadStartIn) -> Result<Lines> {
         )?,
     };
     let Some(team) = &input.team else {
-        let id = store.thread_start(Some(me), &input.title, &dossier)?;
+        let id = store.thread_start(Some(me), &input.title, &dossier, None)?;
         return Ok(lines(vec![format!(
             "thread {id} started on dossier {dossier}: this session is main0"
         )]));
@@ -437,30 +437,12 @@ fn acp_wake(
     Ok(again)
 }
 
-/// The threads, each with the folder its runs work in (`root`: config workspace.root, as a run takes it).
-pub fn list(root: &Path) -> Result<Vec<ThreadInfo>> {
-    let mut threads = dossiers()?.threads()?;
-    for t in &mut threads {
-        in_scratch(root, t);
-    }
-    Ok(threads.into_wire())
+pub fn list() -> Result<Vec<ThreadInfo>> {
+    Ok(dossiers()?.threads()?.into_wire())
 }
 
-pub fn show(root: &Path, input: &ThreadIdIn) -> Result<ThreadView> {
-    let mut view = dossiers()?.thread_show(input.thread)?;
-    in_scratch(root, &mut view.thread);
-    Ok(view.into_wire())
-}
-
-/// A thread on no folder works in its scratch folder: the app's chat line and the agent name the same folder.
-fn in_scratch(root: &Path, t: &mut legionctl_core::thread::ThreadInfo) {
-    if t.repo.is_none() {
-        t.folder = Some(
-            legionctl_core::thread::scratch_folder(root, t.id)
-                .to_string_lossy()
-                .into_owned(),
-        );
-    }
+pub fn show(input: &ThreadIdIn) -> Result<ThreadView> {
+    Ok(dossiers()?.thread_show(input.thread)?.into_wire())
 }
 
 /// The chat bar's agent of a thread: a name of `session.acp` in the config of the thread's folder `dir`, else

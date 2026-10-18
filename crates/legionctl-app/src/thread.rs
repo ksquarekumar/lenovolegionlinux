@@ -342,7 +342,9 @@ impl Screen {
 /// The chat's line of where it works: the folder of its runs, which the agent names too.
 #[must_use]
 pub fn place_line(th: &ThreadInfo) -> String {
-    let folder = th.folder.as_deref().unwrap_or_default();
+    let Some(folder) = &th.folder else {
+        return "Works in a new folder of this chat".into();
+    };
     match (&th.repo, &th.branch) {
         (Some(repo), Some(branch)) => format!("Works in {folder}, on branch {branch} of {repo}"),
         (Some(repo), None) => {

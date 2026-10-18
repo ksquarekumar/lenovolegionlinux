@@ -4964,7 +4964,13 @@ impl Engine for Operator {
     }
 
     fn thread_start(&self, ctx: &Ctx, input: legionctl_api::ThreadStartIn) -> Result<Lines> {
-        crate::thread::start(ctx.folder()?, &input)
+        crate::thread::start(
+            (
+                ctx.folder()?,
+                &config(Some(ctx.folder()?))?.config.workspace.root,
+            ),
+            &input,
+        )
     }
 
     fn thread_repo(&self, ctx: &Ctx, input: legionctl_api::ThreadRepoIn) -> Result<Lines> {
@@ -4979,16 +4985,16 @@ impl Engine for Operator {
         })
     }
 
-    fn thread_list(&self, ctx: &Ctx, _: Empty) -> Result<Vec<legionctl_api::ThreadInfo>> {
-        crate::thread::list(&config(Some(ctx.folder()?))?.config.workspace.root)
+    fn thread_list(&self, _: &Ctx, _: Empty) -> Result<Vec<legionctl_api::ThreadInfo>> {
+        crate::thread::list()
     }
 
     fn thread_show(
         &self,
-        ctx: &Ctx,
+        _: &Ctx,
         input: legionctl_api::ThreadIdIn,
     ) -> Result<legionctl_api::ThreadView> {
-        crate::thread::show(&config(Some(ctx.folder()?))?.config.workspace.root, &input)
+        crate::thread::show(&input)
     }
 
     fn thread_import(&self, _: &Ctx, input: legionctl_api::ThreadImportIn) -> Result<Lines> {

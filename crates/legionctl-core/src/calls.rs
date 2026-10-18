@@ -46,8 +46,9 @@ macro_rules! tables {
 }
 pub(crate) use tables;
 
-/// v16 -> v17: the folder each recorded call worked in, and the folder each agent session works in now (its newest
-/// hook call's `cwd`), which that session's MCP server works in too.
+/// v16 -> v17: the folder each recorded call worked in, the folder each agent session works in now (its newest hook
+/// call's `cwd`), which that session's MCP server works in too, and each user thread's scratch folder, kept at its
+/// start (before, each caller's config gave it).
 macro_rules! folders {
     () => {
         "ALTER TABLE calls ADD COLUMN folder TEXT NOT NULL DEFAULT '';
@@ -56,7 +57,8 @@ macro_rules! folders {
         folder  TEXT NOT NULL,
         harness TEXT NOT NULL,
         seen    INTEGER NOT NULL
-     );"
+     );
+     ALTER TABLE threads ADD COLUMN scratch TEXT;"
     };
 }
 pub(crate) use folders;

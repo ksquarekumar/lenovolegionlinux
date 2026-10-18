@@ -169,8 +169,8 @@ pub struct ThreadInfo {
     /// folder. The branch of its own worktree there; none for a plain folder (an overlay).
     pub repo: Option<String>,
     pub branch: Option<String>,
-    /// The folder its runs work in: its worktree on that branch, or its overlay of the plain folder; none: its
-    /// scratch folder ([`scratch_folder`]).
+    /// The folder its runs work in: its worktree on that branch, its overlay of the plain folder, or its scratch folder
+    /// ([`scratch_folder`]); none: a thread of an older build that has not run yet.
     pub folder: Option<String>,
 }
 
@@ -610,13 +610,26 @@ impl Dossiers {
     ///
     /// # Errors
     /// The database write fails.
-    pub fn thread_start(&self, session: Option<&str>, title: &str, dossier: &str) -> Result<i64> {
+    pub fn thread_start(
+        &self,
+        session: Option<&str>,
+        title: &str,
+        dossier: &str,
+        root: Option<&Path>,
+    ) -> Result<i64> {
         let tx = self.begin()?;
         tx.execute(
             "INSERT INTO threads (title, dossier, created) VALUES (?1, ?2, ?3)",
             params![title, dossier, now()],
         )?;
         let id = tx.last_insert_rowid();
+        // the user's thread keeps its scratch folder under `root` from its start: every caller names the same one
+        if let Some(root) = root {
+            tx.execute(
+                "UPDATE threads SET scratch = ?2 WHERE id = ?1",
+                params![id, scratch_folder(root, id).to_string_lossy()],
+            )?;
+        }
         log(
             &tx,
             id,
@@ -1221,8 +1234,8 @@ impl Dossiers {
                   WHERE l.thread = t.id AND l.kind = 'thread.repo' ORDER BY l.id DESC LIMIT 1),
                  (SELECT json_extract(payload, '$.branch') FROM thread_log l
                   WHERE l.thread = t.id AND l.kind = 'thread.repo' ORDER BY l.id DESC LIMIT 1),
-                 (SELECT json_extract(payload, '$.path') FROM thread_log l
-                  WHERE l.thread = t.id AND l.kind = 'thread.repo' ORDER BY l.id DESC LIMIT 1)
+                 coalesce((SELECT json_extract(payload, '$.path') FROM thread_log l
+                  WHERE l.thread = t.id AND l.kind = 'thread.repo' ORDER BY l.id DESC LIMIT 1), t.scratch)
                  FROM threads t ORDER BY id DESC",
             )?
             .query_map([], |r| {
@@ -1483,17 +1496,29 @@ impl Dossiers {
     /// # Errors
     /// No such thread, or the folder cannot be made.
     pub fn thread_folder(&self, thread: i64, root: &Path) -> Result<PathBuf> {
-        let workdir: Option<String> = self
+        let (workdir, scratch): (Option<String>, Option<String>) = self
             .db()
-            .query_row("SELECT workdir FROM threads WHERE id = ?1", [thread], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT workdir, scratch FROM threads WHERE id = ?1",
+                [thread],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .optional()?
             .with_context(|| format!("no thread {thread}"))?;
         if let Some(dir) = workdir {
             return Ok(PathBuf::from(dir));
         }
-        let dir = scratch_folder(root, thread);
+        // a thread of an older build keeps the scratch folder of its first run
+        let dir = if let Some(dir) = scratch {
+            PathBuf::from(dir)
+        } else {
+            let dir = scratch_folder(root, thread);
+            self.db().execute(
+                "UPDATE threads SET scratch = ?2 WHERE id = ?1",
+                params![thread, dir.to_string_lossy()],
+            )?;
+            dir
+        };
         std::fs::create_dir_all(&dir).with_context(|| format!("making {}", dir.display()))?;
         Ok(dir)
     }

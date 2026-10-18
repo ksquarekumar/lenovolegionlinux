@@ -2065,6 +2065,50 @@ fn an_agents_mcp_server_works_in_the_folder_its_agent_works_in_now() {
     );
 }
 
+/// A user's thread (a chat) keeps its scratch folder from its start (plan#todo-211 item 4): a call from a project
+/// whose config moves `workspace.root` lists and uses the same folder as a call from the home: the one its start gave.
+#[test]
+fn a_users_thread_keeps_its_scratch_folder_from_its_start_whoever_asks() {
+    let (op, home) = operator("scratch");
+    let h = home.to_str().unwrap();
+    let user = |cwd: &Path, args: &[&str]| -> String {
+        let out = op.run(cwd, &[("HOME", h)], args, "");
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    user(&home, &["dossier", "create", "chat"]);
+    let project = home.join("project");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    let layer = project.join(".legionctl/root.jsonc");
+    write(
+        &layer,
+        &json!({"workspace": {"root": project.join("elsewhere")}}).to_string(),
+    );
+    trust::allow(&home, &layer);
+    user(&home, &["thread", "start", "notes", "--dossier", "chat"]);
+    let folder = |cwd: &Path| -> Value {
+        let listed: Value =
+            serde_json::from_str(&user(cwd, &["thread", "list", "--json"])).unwrap();
+        listed[0]["folder"].clone()
+    };
+    let from_home = folder(&home);
+    assert!(
+        from_home.as_str().is_some_and(
+            |f| f.ends_with("/threads/thread-1") && !f.starts_with(project.to_str().unwrap())
+        ),
+        "{from_home}"
+    );
+    assert_eq!(
+        folder(&project),
+        from_home,
+        "the same folder from the project"
+    );
+    // a call of the thread from the project uses that folder too (thread agent makes it)
+    user(&project, &["thread", "agent", "1", "claude"]);
+    assert!(Path::new(from_home.as_str().unwrap()).is_dir());
+    assert!(!project.join("elsewhere").exists());
+}
+
 /// A sandboxed session works in its own workspace (DESIGN-20 rule 7): a call from a folder outside it works in the
 /// workspace, and one from a folder inside it works there.
 #[test]
