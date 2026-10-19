@@ -183,11 +183,24 @@ pub fn registry() -> Result<&'static [Setting]> {
         .into_root_schema_for::<crate::config::Config>()
         .to_value();
     let defaults = crate::config::defaults()?;
+    let text = include_str!("../../../config/settings.jsonc");
     let mut declared: BTreeMap<String, Declared> =
-        serde_json::from_reader(json_comments::StripComments::new(
-            include_str!("../../../config/settings.jsonc").as_bytes(),
-        ))
-        .context("config/settings.jsonc")?;
+        serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
+            .context("config/settings.jsonc")?;
+    // a map keeps the last of two declarations of one key: each key once
+    let twice: Vec<&String> = declared
+        .keys()
+        .filter(|k| {
+            let at = format!("\"{k}\":");
+            text.lines()
+                .filter(|l| l.trim_start().starts_with(&at))
+                .count()
+                > 1
+        })
+        .collect();
+    if !twice.is_empty() {
+        bail!("config/settings.jsonc declares {twice:?} more than once");
+    }
     let mut keys = Vec::new();
     walk(&schema, "", &defaults, &mut keys);
     let mut out = Vec::new();

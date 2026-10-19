@@ -2042,7 +2042,7 @@ fn a_sandboxed_sessions_call_from_outside_its_workspace_works_in_its_workspace()
     std::fs::create_dir_all(&inner).unwrap();
     // the operator makes its database at its first call
     op.ok(&["events"]);
-    add_session_token(&home, "token-box", "s-box");
+    add_session_token(&home, "token-box", "s-box", &[]);
     let set = Command::new("python3")
         .args([
             "-c",
@@ -3618,7 +3618,7 @@ fn tool_cache_entries_belong_to_a_session_and_fit_the_limit() {
     let repo = repository(&home);
     op.ok(&["events"]);
     for (token, session) in [("token-a", "s-a"), ("token-b", "s-b")] {
-        add_session_token(&home, token, session);
+        add_session_token(&home, token, session, &[]);
     }
     // one hooks.list call through the proxy, as the session of `token` (none: the user); its outcome
     let call = |token: Option<&str>| -> String {
@@ -3694,7 +3694,7 @@ fn tool_cache_entries_belong_to_a_session_and_fit_the_limit() {
     let after = call(None);
     assert_eq!(after, "cached");
     // a fourth caller's put shrinks the namespace to its newest entry
-    add_session_token(&home, "token-c", "s-c");
+    add_session_token(&home, "token-c", "s-c", &[]);
     assert_eq!(call(Some("token-c")), "ok");
     assert_eq!(stats()["entries"], 1, "{}", stats());
     assert_eq!(call(Some("token-a")), "ok", "the least recently used went");

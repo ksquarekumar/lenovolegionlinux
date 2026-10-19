@@ -5,8 +5,12 @@ use std::process::Command;
 
 /// A session's token in the operator database of `home`, as `session start` issues it (only its hash is kept), and
 /// its grant: the toolsets of its own session, of your settings and of the brokered MCP tools, as a started session's
-/// skills give them.
-pub fn add_session_token(home: &Path, token: &str, session: &str) {
+/// skills give them, and the capability sets `sets`.
+pub fn add_session_token(home: &Path, token: &str, session: &str, sets: &[&str]) {
+    let sets: Vec<serde_json::Value> = sets
+        .iter()
+        .map(|s| serde_json::json!({"name": s, "version": 1, "layer": "shipped", "file": ""}))
+        .collect();
     let added = Command::new("python3")
         .args([
             "-c",
@@ -16,14 +20,14 @@ pub fn add_session_token(home: &Path, token: &str, session: &str) {
              c.execute(\"INSERT INTO sessions (id, agent, dossier, workdir, started) VALUES (?, 'probe', '', '', 0)\", \
              (s,)); \
              grant = {'runnable': 'session:' + s, 'requested': ['session-own', 'settings-change', 'mcp-tools'], \
-                      'sets': [], 'manifest': {'name': 'session:' + s, \
+                      'sets': json.loads(sys.argv[4]), 'manifest': {'name': 'session:' + s, \
                       'toolverse': {'classes': ['session', 'workspace'], 'mcp_tools': ['*/*']}}}; \
              c.execute(\"INSERT INTO facts (entity, attribute, value, scope, scope_id, source, evidence, confidence, \
                         valid_from, recorded_from) VALUES (?, 'manifest', ?, 'global', '', 'rule', '{}', 1.0, 0, 0)\", \
                        ('runnable:session:' + s, json.dumps(grant))); c.commit()",
         ])
         .arg(home.join(".local/state/legionctl/operator.db"))
-        .args([token, session])
+        .args([token, session, &serde_json::Value::from(sets).to_string()])
         .status()
         .unwrap();
     assert!(added.success());

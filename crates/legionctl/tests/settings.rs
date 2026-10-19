@@ -14,6 +14,8 @@ mod desktop;
 mod mcp;
 #[path = "common/plain.rs"]
 mod plain;
+#[path = "common/tokens.rs"]
+mod tokens;
 #[path = "common/trust.rs"]
 mod trust;
 
@@ -614,6 +616,224 @@ fn an_operation_reads_the_settings_of_its_calls_project() {
     };
     assert_eq!(names(&repo), ["lint-tool"]);
     assert_eq!(names(&home), Vec::<String>::new());
+}
+
+/// A project never widens what an agent may do before the user trusts it: its actions.allow entries (op:, toolset:,
+/// tool:) grant nothing until the user's first-use answer of its file, at dispatch and in the grant of a toolset; its
+/// actions.forbid entries wait the same way (its file could as well empty the list). After the answer, its allowed
+/// operation runs with no toolset question and its toolset may join a grant.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_untrusted_projects_allowed_actions_grant_nothing_until_the_user_allows_its_file() {
+    let lab = Lab::new("untrusted", &["deny", "deny", "deny", "deny"]).await;
+    let repo = lab.home.join("repo");
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let sets = lab.home.join(".config/legionctl/capabilities");
+    std::fs::create_dir_all(&sets).unwrap();
+    std::fs::write(
+        sets.join("deploy.jsonc"),
+        r#"{ "name": "deploy", "version": 1, "connections": { "out": [{ "host": "deploy.example.com" }] } }"#,
+    )
+    .unwrap();
+    let file = repo.join(".legionctl/actions.jsonc");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        r#"{"actions": {
+            "allow+": [{"pattern": "op:facts.set", "reason": "notes"}, {"pattern": "toolset:deploy", "reason": "ship"},
+                       {"pattern": "tool:remote/admin", "reason": "admin"}],
+            "forbid+": [{"pattern": "op:views.list", "reason": "views stay"}]
+        }}"#,
+    )
+    .unwrap();
+    let in_repo = |args: &[&str]| -> Value {
+        let out = lab.op.cli_in(&repo, &[args, &["--json"]].concat());
+        assert!(out.status.success(), "{args:?}: {}", text(&out));
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let patterns = |key: &str| -> Vec<String> {
+        in_repo(&["config", "settings", "--key", key])["items"][0]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["pattern"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let deploy = |check: &Value| {
+        check["sets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "deploy")
+            .unwrap()["refusal"]
+            .clone()
+    };
+    // before the answer: none of the project's entries is used, and the file waits
+    for (key, pattern) in [
+        ("actions.allow", "op:facts.set"),
+        ("actions.allow", "toolset:deploy"),
+        ("actions.allow", "tool:remote/admin"),
+        ("actions.forbid", "op:views.list"),
+    ] {
+        assert!(
+            !patterns(key).iter().any(|p| p == pattern),
+            "{pattern} used before the answer"
+        );
+    }
+    assert_eq!(
+        deploy(&in_repo(&["runnables", "check"])),
+        "your settings do not allow it (actions.allow)"
+    );
+    let mut agent = lab.agent_in(&repo);
+    let (out, failed) = agent.run(
+        "facts.set",
+        &json!({"entity": "x", "attribute": "y", "value": "1"}),
+    );
+    assert!(
+        failed
+            && out["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("needs the toolset session-own"),
+        "the project's allowed operation still asks: {out}"
+    );
+    let (out, failed) = agent.run("views.list", &json!({}));
+    assert!(!failed, "the project's forbidden entry waits too: {out}");
+
+    trust::allow(&lab.home, &file);
+    let asked = lab.asked.lock().unwrap().len();
+    let (out, failed) = agent.run(
+        "facts.set",
+        &json!({"entity": "x", "attribute": "y", "value": "1"}),
+    );
+    assert!(!failed, "{out}");
+    assert_eq!(
+        lab.asked.lock().unwrap().len(),
+        asked,
+        "no toolset question after the answer"
+    );
+    assert_eq!(deploy(&in_repo(&["runnables", "check"])), Value::Null);
+    assert!(patterns("actions.allow").contains(&"tool:remote/admin".to_string()));
+    let (_, failed) = agent.run("views.list", &json!({}));
+    assert!(
+        failed,
+        "the project's forbidden entry binds after the answer"
+    );
+}
+
+/// Trust answers that arrive at the same moment are all kept (the answers' file is changed under its lock): sixteen
+/// projects with a file that waits for an answer are read at once, the desktop allows each, and each answer is stored.
+/// Before, two answers read the same file and the second rename dropped the first one.
+#[tokio::test(flavor = "multi_thread")]
+async fn trust_answers_at_the_same_moment_are_all_kept() {
+    let lab = Lab::new("answers", &["allow"; 16]).await;
+    let repos: Vec<std::path::PathBuf> = (0..16)
+        .map(|i| {
+            let repo = lab.home.join(format!("p{i}"));
+            std::fs::create_dir_all(repo.join(".git")).unwrap();
+            std::fs::create_dir_all(repo.join(".legionctl")).unwrap();
+            std::fs::write(
+                repo.join(".legionctl/gate.jsonc"),
+                format!(r#"{{"dossier": {{"gate": false, "nudge_turns": {i}}}}}"#),
+            )
+            .unwrap();
+            repo
+        })
+        .collect();
+    let op = &lab.op;
+    std::thread::scope(|scope| {
+        for repo in &repos {
+            scope.spawn(move || {
+                // the file waits for its answer, so config show reports it (and exits 1)
+                let out = op.cli_in(repo, &["config", "show"]);
+                assert!(
+                    text(&out).contains("is not used until you allow"),
+                    "{}",
+                    text(&out)
+                );
+            });
+        }
+    });
+    let approvals = lab.home.join(".local/state/legionctl/approvals.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let asked = lab.asked.lock().unwrap().len();
+        let stored = std::fs::read(&approvals)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .map_or(0, |v| v.as_object().map_or(0, serde_json::Map::len));
+        if asked == 16 && stored == 16 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{asked} questions, {stored} answers kept"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// A forbidden git command of a capability set binds the sessions that hold the set, in the git gate: a session with
+/// the set is refused it, one without the set runs it.
+#[test]
+fn a_sets_forbidden_git_command_binds_only_the_sessions_that_hold_the_set() {
+    let home =
+        Scratch::new(std::env::temp_dir().join(format!("lc-settings-set-{}", std::process::id())));
+    let op = Operator::start("setgate", &[("HOME", OsString::from(home.as_os_str()))]);
+    op.ok(&[
+        "config",
+        "add",
+        "actions.forbid",
+        "git:tag",
+        "--reason",
+        "Releases stay with you",
+        "--set",
+        "rust-dev",
+    ]);
+    tokens::add_session_token(&home, "with-token", "with", &["rust-dev"]);
+    tokens::add_session_token(&home, "without-token", "without", &[]);
+    let repo = home.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let gate = home.join("gate");
+    std::fs::create_dir_all(&gate).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_legionctl"), gate.join("git")).unwrap();
+    let tag = |token: &str| {
+        Command::new(gate.join("git"))
+            .args(["tag", "--list"])
+            .current_dir(&repo)
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", &*op.runtime)
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("LEGIONCTL_REAL_GIT", "/usr/bin/git")
+            .env("LEGIONCTL_TOKEN", token)
+            .output()
+            .unwrap()
+    };
+    let with = tag("with-token");
+    assert!(
+        !with.status.success()
+            && text(&with).contains(
+                "'git tag' is forbidden in this session (actions.forbid): Releases stay with you"
+            ),
+        "{}",
+        text(&with)
+    );
+    let without = tag("without-token");
+    assert!(without.status.success(), "{}", text(&without));
 }
 
 /// Changes that run at the same time never lose each other (review/16 B10): each takes the layer's lock, writes its

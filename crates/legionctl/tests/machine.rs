@@ -8306,7 +8306,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let home = Scratch::new(format!("/var/tmp/legionctl-evs-{}", std::process::id()));
         let op = Operator::start("evs", &[("HOME", home.as_os_str().to_owned())]);
         op.ok(&["events"]);
-        add_session_token(&home, "agent-token", "agent-1");
+        add_session_token(&home, "agent-token", "agent-1", &[]);
         let added = std::process::Command::new("python3")
             .args([
                 "-c",
@@ -8364,7 +8364,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             ],
         ));
         op.ok(&["events"]);
-        add_session_token(&home, "agent-token", "agent-1");
+        add_session_token(&home, "agent-token", "agent-1", &[]);
         let agent = {
             let (op, home) = (op.clone(), home.clone());
             move |args: &[&str]| {
@@ -8572,7 +8572,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             ],
         );
         op.ok(&["events"]);
-        add_session_token(&home, "agent-token", "agent-1");
+        add_session_token(&home, "agent-token", "agent-1", &[]);
         let denied = op.run(
             &home,
             &[
@@ -8620,7 +8620,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
         // `events` opens the operator database, so its tables exist
         op.ok(&["events"]);
-        add_session_token(&home, "agent-token", "agent-1");
+        add_session_token(&home, "agent-token", "agent-1", &[]);
         let agent = |args: &[&str]| {
             op.run(
                 &home,

@@ -108,8 +108,5 @@
 
   "views.composer_models": {"label": "View maker models", "help": "The model that each agent uses to make views.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["views", "composer-cost"]},
   "views.rlcd": {"label": "Reuse views with the fast model", "help": "Use the fast decision model to find a view you already have.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["views", "composer-cost"]},
-  "views.rlcd_min": {"label": "Reuse confidence (0 to 1)", "help": "How sure the fast decision model must be before it reuses a view.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["views", "composer-cost"]},
-
-  "actions.allow": {"label": "Allowed actions", "help": "Actions that agents can do without a question, such as a tool set or a tool of a tool server.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools", "runnables", "settings-actions"]},
-  "actions.forbid": {"label": "Forbidden actions", "help": "Actions that agents can never do, such as a git command or an operation.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools", "runnables", "settings-actions"]}
+  "views.rlcd_min": {"label": "Reuse confidence (0 to 1)", "help": "How sure the fast decision model must be before it reuses a view.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["views", "composer-cost"]}
 }
