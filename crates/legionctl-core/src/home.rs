@@ -29,6 +29,9 @@ pub(crate) fn backup_root() -> PathBuf {
 /// The import, the link or the ignore line fails; nothing of the source folder is lost.
 pub(crate) fn link(dossiers: &Dossiers, dir: &Path) -> Result<Vec<String>> {
     let at = dir.join(LINK);
+    // the root is made with the first dossier or the first link to it (a first start makes nothing)
+    std::fs::create_dir_all(&dossiers.root)
+        .with_context(|| format!("making {}", dossiers.root.display()))?;
     let root = dossiers.root.canonicalize()?;
     if holds_root(&root, dir) {
         return Ok(Vec::new());

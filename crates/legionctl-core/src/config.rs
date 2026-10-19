@@ -967,13 +967,25 @@ fn trust_lists(
     Ok((locks, approve, repo_never))
 }
 
-/// Resolve the config for work in `project` (its repository layer applies), or without a repository.
+/// Resolve the config for work in `project`, and ask the user about the repository files that wait for an answer
+/// (see [`resolve_quiet`]).
+///
+/// # Errors
+/// As [`resolve_quiet`].
+pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
+    let resolved = resolve_quiet(dirs, project)?;
+    ask(&resolved.unapproved);
+    Ok(resolved)
+}
+
+/// The config for work in `project` (its repository layer applies), or without a repository, with no question to
+/// the user: a check before an operation reads it this way (the operation's own read asks).
 ///
 /// # Errors
 /// The built-in defaults do not parse, `/etc/legionctl` sets an unknown layer, or the merged config does not match
 /// [`Config`] (the message names the key), or a layer folder or file cannot be read or is not a JSONC object (a typo
 /// must not drop a setting such as a gate in silence).
-pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
+pub fn resolve_quiet(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
     let defaults = defaults()?;
     let system_dir = dirs.system.clone();
     let user_dir = dirs.user.clone();
@@ -1063,7 +1075,6 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         crate::runnables::load(&set_layers, &approvals, &mut problems, &mut unapproved)?;
     config.gateway.check()?;
     drop_unfit_reminders(&mut config, &mut problems);
-    ask(&unapproved);
     Ok(Resolved {
         config,
         value,

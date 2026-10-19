@@ -261,10 +261,9 @@ async fn in_scope(
 fn powerful_setting(op: &OpInfo, input: &Value, folder: Option<&std::path::Path>) -> bool {
     use legionctl_core::settings::Class as Kind;
     // the class on this computer (with its overrides); a setting that cannot be read asks
-    let resolved = crate::engine::config(folder).ok();
     let class = |key: &str| {
-        resolved
-            .as_ref()
+        crate::engine::config_quiet(folder)
+            .ok()
             .and_then(|r| r.declared(key))
             .map_or(Kind::Powerful, |(_, class)| class)
     };

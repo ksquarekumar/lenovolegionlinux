@@ -1884,6 +1884,11 @@ pub(crate) fn config(project: Option<&Path>) -> Result<Resolved> {
     resolve(&Dirs::from_env(), project)
 }
 
+/// The config of `project` for a check at dispatch: no question to the user (the operation's own read asks).
+pub(crate) fn config_quiet(project: Option<&Path>) -> Result<Resolved> {
+    legionctl_core::config::resolve_quiet(&Dirs::from_env(), project)
+}
+
 impl Operator {
     /// The rows of `legionctl sensors`: a new sample with the ring's history, and the daemon's fan state.
     fn readings(&self) -> Result<Vec<sensors::Reading>> {

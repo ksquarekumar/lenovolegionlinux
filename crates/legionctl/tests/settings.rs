@@ -326,7 +326,11 @@ async fn a_first_start_writes_nothing_and_each_change_is_checked_kept_and_undone
     ] {
         lab.op.ok(args);
     }
-    assert!(!layer.exists(), "a first start wrote {}", layer.display());
+    lab.op.ok(&["dossier", "list"]);
+    let notes = lab.home.join("agentWorkspaces");
+    for made in [&layer, &notes] {
+        assert!(!made.exists(), "a first start made {}", made.display());
+    }
     assert_eq!(settings(&lab.op, &["--changed"]), Vec::<Value>::new());
 
     let said = lab.op.ok(&["config", "set", "dossier.nudge_turns", "7"]);

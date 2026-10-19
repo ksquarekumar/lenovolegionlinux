@@ -348,13 +348,13 @@ impl Dossiers {
         Self::at(config, &crate::db::default_path())
     }
 
-    /// The dossiers in `config.root` with the operator's database at `operator`.
+    /// The dossiers in `config.root` with the operator's database at `operator`; the root is made with the first
+    /// dossier (a first start writes nothing there).
     ///
     /// # Errors
-    /// The root or the database cannot be created.
+    /// The database cannot be opened.
     pub fn at(config: &DossierConfig, operator: &Path) -> Result<Dossiers> {
         let root = crate::config::expand_home(&config.root)?;
-        std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
         Ok(Dossiers {
             db: Db::open(operator, crate::db::OPERATOR)?,
             root,

@@ -45,7 +45,7 @@ fn internal(e: &anyhow::Error) -> ApiError {
 /// # Errors
 /// The operation is forbidden, or the settings cannot be read.
 pub(crate) fn forbidden(name: &str, folder: Option<&std::path::Path>) -> Result<(), ApiError> {
-    let config = crate::engine::config(folder)
+    let config = crate::engine::config_quiet(folder)
         .map_err(|e| internal(&e))?
         .config;
     match config.actions.forbidden("op", name) {
@@ -78,7 +78,7 @@ pub(crate) async fn check(
     if holds(&scope.manifest.toolverse, name, class) {
         return Ok(false);
     }
-    let config = crate::engine::config(folder)
+    let config = crate::engine::config_quiet(folder)
         .map_err(|e| internal(&e))?
         .config;
     if config.actions.allowed("op", name) {

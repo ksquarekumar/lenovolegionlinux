@@ -417,6 +417,8 @@ fn live_bindings(old_db: &Path, stale: i64) -> Result<Vec<String>> {
 /// Give each old dossier folder an id and move it to the root; returns the names of every dossier moved now or
 /// before (the registry keeps the old folder as its origin).
 fn move_folders(store: &Dossiers, legacy: &Path) -> Result<Vec<String>> {
+    // the dossiers come into the root: it is made with them
+    std::fs::create_dir_all(&store.root)?;
     for entry in std::fs::read_dir(legacy)?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let from = entry.path();
