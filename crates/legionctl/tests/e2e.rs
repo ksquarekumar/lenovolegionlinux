@@ -9458,6 +9458,75 @@ fn a_workspace_in_the_home_folder_is_not_a_finding_of_the_dossiers_home() {
     assert!(!doctor.contains("agentWorkspaces is a"), "{doctor}");
 }
 
+/// `n` users' `views save` in parallel while the daemon's events flood the log, each a change with its call record row,
+/// its version fact and its audit: the calls that failed, and the ok rows, audits and version facts there are.
+fn parallel_changes(tag: &str, n: usize) -> (Vec<String>, [i64; 3]) {
+    use legionctl_core::db::{Db, EventFilter, OPERATOR};
+    let (op, home) = operator(tag);
+    let db = home.join(".local/state/legionctl/operator.db");
+    op.ok(&["events"]);
+    let h = home.to_str().unwrap();
+    let save = |i: usize| {
+        let view = format!(
+            r#"{{"name": "v{i}", "widget": "table", "source": {{"op": "thread.list", "path": "$"}}, "columns": ["title"]}}"#
+        );
+        op.run(&home, &[("HOME", h)], &["views", "save"], &view)
+    };
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let (failed, flooded) = std::thread::scope(|s| {
+        let flood = s.spawn(|| flood::recorder_flood(&db, &done));
+        let saves: Vec<_> = (0..n).map(|i| s.spawn(move || save(i))).collect();
+        let outs: Vec<_> = saves.into_iter().map(|t| t.join().unwrap()).collect();
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        let failed: Vec<String> = outs
+            .into_iter()
+            .filter(|o| !o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+            .collect();
+        (failed, flood.join().unwrap())
+    });
+    assert!(flooded > 100, "the flood ran all along");
+    let db = Db::open(&db, OPERATOR).unwrap();
+    let count = |sql: &str| -> i64 { db.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
+    let filter = EventFilter {
+        kinds: &["views.save"],
+        ..Default::default()
+    };
+    let audits = i64::try_from(db.events_page(&filter, 0, 1000).unwrap().0.len()).unwrap();
+    (
+        failed,
+        [
+            count("SELECT count(*) FROM calls WHERE name = 'views.save' AND outcome = 'ok'"),
+            audits,
+            count(
+                "SELECT count(DISTINCT entity) FROM facts WHERE entity LIKE 'view:v%' AND attribute = 'version'",
+            ),
+        ],
+    )
+}
+
+/// Many changes at once (EV-validation-one-context: 1 of 40 parallel `views save` failed "the call record: database
+/// is locked ... busy for 5 s"): 40, then 200 users' changes in parallel while the daemon's events flood the log. Each
+/// call succeeds, and each has its row in the call record, its audit and its view's version fact.
+#[test]
+fn parallel_changes_all_land_while_the_event_log_floods() {
+    for n in [40, 200] {
+        let (failed, rows) = parallel_changes(&format!("par{n}"), n);
+        assert!(
+            failed.is_empty(),
+            "{} of {n} failed: {:?}",
+            failed.len(),
+            failed.first()
+        );
+        let n = i64::try_from(n).unwrap();
+        assert_eq!(
+            rows,
+            [n, n, n],
+            "the call record's ok rows, the audits and the version facts"
+        );
+    }
+}
+
 /// todo-189, r361: the daemon's `session.open` events at 20 times the peak of r361, written as the recorder writes them
 /// (batched, on the event log's connection, which does not sync each commit), while agents' tool calls and headless
 /// runs come in (control state: each commit syncs, B7). Each call's hook answers and its audit lands, and each

@@ -121,14 +121,11 @@ pub(crate) fn begin_op(
         name: op.name,
         input_hash: &hash,
         scope: &scope,
+        folder: &folder.map(|f| f.to_string_lossy()).unwrap_or_default(),
     };
     let db = Db::open_default().map_err(|e| internal(&e))?;
     match db.call_begin(&call).map_err(|e| internal(&e))? {
-        Begun::New => {
-            let folder = folder.map(|f| f.to_string_lossy().into_owned());
-            db.call_folder(&id, folder.as_deref().unwrap_or_default())
-                .map_err(|e| internal(&e))?;
-        }
+        Begun::New => {}
         Begun::Ended { output, .. } => return Ok(Some(Start::Answer(id, replay(output)))),
         Begun::Open { started } => {
             return Err(coded(
@@ -198,7 +195,10 @@ pub(crate) fn end_op(call: &OpCall, answer: &Result<Value, ApiError>) {
 ///
 /// # Errors
 /// The record cannot be written, or the call id is open or of another call.
-pub(crate) fn begin_tool(principal: &Principal, input: &CallBeginIn) -> Result<CallStart> {
+pub(crate) fn begin_tool(
+    (principal, folder): (&Principal, Option<&std::path::Path>),
+    input: &CallBeginIn,
+) -> Result<CallStart> {
     let id = match &input.call {
         Some(id) => id.clone(),
         None => legionctl_core::calls::new_id()?,
@@ -215,6 +215,7 @@ pub(crate) fn begin_tool(principal: &Principal, input: &CallBeginIn) -> Result<C
         name: &name,
         input_hash: &input.args_hash,
         scope: "",
+        folder: &folder.map(|f| f.to_string_lossy()).unwrap_or_default(),
     };
     let db = Db::open_default()?;
     match db.call_begin(&call)? {

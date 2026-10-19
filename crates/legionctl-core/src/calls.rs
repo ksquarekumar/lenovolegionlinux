@@ -97,6 +97,30 @@ pub struct Call<'a> {
     pub input_hash: &'a str,
     /// The caller's toolsets as one text: a cached answer is for the same scope only.
     pub scope: &'a str,
+    /// The folder the call works in; empty when there is none.
+    pub folder: &'a str,
+}
+
+/// A [`Call`] that the control writer owns.
+struct Owned([String; 9]);
+
+impl Owned {
+    fn of(c: &Call) -> Owned {
+        Owned(
+            [
+                c.call,
+                c.principal,
+                c.session,
+                c.kind,
+                c.server,
+                c.name,
+                c.input_hash,
+                c.scope,
+                c.folder,
+            ]
+            .map(String::from),
+        )
+    }
 }
 
 /// What the record says of a call id when the call starts.
@@ -147,88 +171,90 @@ pub fn new_id() -> Result<String> {
 }
 
 impl Db {
-    /// Start `call`: a new row before the call runs, or what the record has for its id.
+    /// Start `call`: a new row before the call runs, or what the record has for its id. Through the control writer:
+    /// one transaction with the other calls that start or end at that time.
     ///
     /// # Errors
     /// The database write fails.
     pub fn call_begin(&self, call: &Call) -> Result<Begun> {
-        let tx = rusqlite::Transaction::new_unchecked(
-            self.conn(),
-            rusqlite::TransactionBehavior::Immediate,
-        )?;
-        let found = tx
-            .query_row(
-                "SELECT principal, name, input_hash, ended, outcome, output, started FROM calls WHERE call = ?1",
-                [call.call],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, Option<i64>>(3)?,
-                        r.get::<_, Option<String>>(4)?,
-                        r.get::<_, Option<String>>(5)?,
-                        r.get::<_, i64>(6)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let begun = if let Some((principal, name, hash, ended, outcome, output, started)) = found {
-            if principal != call.principal || name != call.name || hash != call.input_hash {
-                Begun::Other
-            } else if ended.is_some() {
-                Begun::Ended {
+        let Owned(
+            [
+                call,
+                principal,
+                session,
+                kind,
+                server,
+                name,
+                input_hash,
+                scope,
+                folder,
+            ],
+        ) = Owned::of(call);
+        self.queued(move |tx| {
+            let found = tx
+                .query_row(
+                    "SELECT principal, name, input_hash, ended, outcome, output, started FROM calls WHERE call = ?1",
+                    [&call],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, Option<i64>>(3)?,
+                            r.get::<_, Option<String>>(4)?,
+                            r.get::<_, Option<String>>(5)?,
+                            r.get::<_, i64>(6)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            Ok(match found {
+                Some((p, n, h, _, _, _, _)) if p != principal || n != name || h != input_hash => Begun::Other,
+                Some((_, _, _, Some(_), outcome, output, _)) => Begun::Ended {
                     outcome: outcome.unwrap_or_default(),
                     output,
+                },
+                Some((_, _, _, None, _, _, started)) => Begun::Open { started },
+                None => {
+                    tx.execute(
+                        "INSERT INTO calls (call, principal, session, kind, server, name, input_hash, scope, folder, \
+                         started) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        params![call, principal, session, kind, server, name, input_hash, scope, folder, now_ms()],
+                    )?;
+                    Begun::New
                 }
-            } else {
-                Begun::Open { started }
-            }
-        } else {
-            tx.execute(
-                    "INSERT INTO calls (call, principal, session, kind, server, name, input_hash, scope, started)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        call.call,
-                        call.principal,
-                        call.session,
-                        call.kind,
-                        call.server,
-                        call.name,
-                        call.input_hash,
-                        call.scope,
-                        now_ms()
-                    ],
-                )?;
-            Begun::New
-        };
-        tx.commit()?;
-        Ok(begun)
+            })
+        })
     }
 
-    /// A call that ended already (a model call of the gateway, which writes its usage row after the call).
+    /// A call that ended already (a model call of the gateway, which writes its usage row after the call), through the
+    /// control writer.
     ///
     /// # Errors
     /// The database write fails.
     pub fn call_add(&self, call: &Call, (started, ended): (i64, i64), outcome: &str) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO calls (call, principal, session, kind, server, name, input_hash, scope, started, ended, outcome)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                call.call,
-                call.principal,
-                call.session,
-                call.kind,
-                call.server,
-                call.name,
-                call.input_hash,
-                call.scope,
-                started,
-                ended,
-                outcome
+        let Owned(
+            [
+                call,
+                principal,
+                session,
+                kind,
+                server,
+                name,
+                input_hash,
+                scope,
+                folder,
             ],
-        )?;
-        Ok(())
+        ) = Owned::of(call);
+        let outcome = outcome.to_string();
+        self.queued(move |tx| {
+            tx.execute(
+                "INSERT INTO calls (call, principal, session, kind, server, name, input_hash, scope, folder, started, \
+                 ended, outcome) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![call, principal, session, kind, server, name, input_hash, scope, folder, started, ended, outcome],
+            )?;
+            Ok(())
+        })
     }
 
     /// The output of the newest ended call of `call`'s caller, name, input and scope since `since` (ms), when the
@@ -253,18 +279,6 @@ impl Db {
                 |r| r.get(0),
             )
             .optional()?)
-    }
-
-    /// The folder that call `call` works in.
-    ///
-    /// # Errors
-    /// The database write fails.
-    pub fn call_folder(&self, call: &str, folder: &str) -> Result<()> {
-        self.conn().execute(
-            "UPDATE calls SET folder = ?2 WHERE call = ?1",
-            params![call, folder],
-        )?;
-        Ok(())
     }
 
     /// Agent `session` of `harness` (claude or codex) works in `folder` now (its hook call says so).
@@ -334,17 +348,25 @@ impl Db {
         output: Option<&str>,
         bytes: u64,
     ) -> Result<()> {
-        self.conn().execute(
-            "UPDATE calls SET ended = ?2, outcome = ?3, output = ?4, bytes = ?5 WHERE call = ?1",
-            params![
-                call,
-                now_ms(),
-                outcome,
-                output,
-                i64::try_from(bytes).unwrap_or(i64::MAX)
-            ],
-        )?;
-        Ok(())
+        let (call, outcome, output) = (
+            call.to_string(),
+            outcome.to_string(),
+            output.map(String::from),
+        );
+        // through the control writer: one transaction with the other calls that start or end at that time
+        self.queued(move |tx| {
+            tx.execute(
+                "UPDATE calls SET ended = ?2, outcome = ?3, output = ?4, bytes = ?5 WHERE call = ?1",
+                params![
+                    call,
+                    now_ms(),
+                    outcome,
+                    output,
+                    i64::try_from(bytes).unwrap_or(i64::MAX)
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     /// Rows of the record after the row `after`, oldest first, of `session` and `kind` when given; and the row to go

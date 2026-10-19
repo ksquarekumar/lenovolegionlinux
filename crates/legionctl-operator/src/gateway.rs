@@ -455,6 +455,7 @@ fn record(row: &GatewayUsage) {
             name: &row.model,
             input_hash: "",
             scope: "",
+            folder: "",
         };
         db.call_add(&call, (ended - row.ms, ended), outcome)
     });

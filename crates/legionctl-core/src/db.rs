@@ -114,12 +114,119 @@ fn log(
     }
 }
 
+/// The answer of a control write, of the type its caller expects.
+type Answer = Box<dyn std::any::Any + Send>;
+
+/// The statements of a control write.
+type Statements = Box<dyn FnOnce(&Connection) -> Result<Answer> + Send>;
+
+/// A write of control state through [`Db::queued`]: its statements, and where its answer goes.
+struct ControlWrite {
+    run: Statements,
+    ack: std::sync::mpsc::Sender<std::result::Result<Answer, (bool, String)>>,
+}
+
+/// The one writer of each database's control state in this process (the call record): the jobs that came in during
+/// its last write go in one transaction (synchronous FULL: one sync for all of them), each in a savepoint of its own, so
+/// a failed job leaves the others. Before, each call held the write lock across its own syncs, and under many calls at
+/// once the busy handler's waits starved some past the busy timeout.
+fn control_writer(path: &Path) -> std::sync::mpsc::Sender<ControlWrite> {
+    static WRITERS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::mpsc::Sender<ControlWrite>>>,
+    > = std::sync::OnceLock::new();
+    let mut writers = WRITERS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    writers
+        .entry(path.to_path_buf())
+        .or_insert_with(|| {
+            let (send, jobs) = std::sync::mpsc::channel::<ControlWrite>();
+            let path = path.to_path_buf();
+            std::thread::spawn(move || {
+                while let Ok(first) = jobs.recv() {
+                    let batch: Vec<ControlWrite> =
+                        std::iter::once(first).chain(jobs.try_iter()).collect();
+                    // each job's answer; a job that did not run (the transaction did not start) gets its failure
+                    let mut acks: Vec<_> = Vec::new();
+                    let mut jobs = batch.into_iter();
+                    let ran = Db::open(&path, OPERATOR).and_then(|mut db| {
+                        let mut tx = db
+                            .conn
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                        for job in jobs.by_ref() {
+                            let ran = tx.savepoint().and_then(|mut sp| {
+                                let answer = (job.run)(&sp);
+                                if answer.is_ok() {
+                                    sp.commit()?;
+                                } else {
+                                    sp.rollback()?;
+                                }
+                                Ok(answer)
+                            });
+                            match ran {
+                                Ok(answer) => acks.push((job.ack, Some(answer))),
+                                Err(e) => {
+                                    acks.push((job.ack, None));
+                                    return Err(e.into());
+                                }
+                            }
+                        }
+                        tx.commit()?;
+                        Ok(())
+                    });
+                    acks.extend(jobs.map(|job| (job.ack, None)));
+                    let failed = ran.err().map(|e| {
+                        (
+                            crate::error::message_of(&e).contains("busy for"),
+                            format!("{e:#}"),
+                        )
+                    });
+                    for (ack, answer) in acks {
+                        let _ = ack.send(match (&failed, answer) {
+                            (Some(why), _) => Err(why.clone()),
+                            (None, Some(Ok(value))) => Ok(value),
+                            (None, Some(Err(e))) => Err((false, format!("{e:#}"))),
+                            (None, None) => Err((false, "the control write did not run".into())),
+                        });
+                    }
+                }
+            });
+            send
+        })
+        .clone()
+}
+
 /// Append `events` of `actor` to the event log of the operator database without waiting (the recorder's machine and
 /// session events); a failed write is a line in the operator's journal.
 pub fn log_later(actor: &str, events: Vec<(String, serde_json::Value)>) {
     if let Err(e) = log(&default_path(), actor, events, false) {
         eprintln!("legionctl: events of {actor} not recorded: {e:#}");
     }
+}
+
+/// How long a write waits for another writer's lock before it fails (`error::message_of` says it).
+const BUSY: Duration = Duration::from_secs(5);
+
+/// SQLite's handler while another connection holds the write lock: try again after 1 ms, for [`BUSY`] at most. The
+/// handler of `busy_timeout` sleeps longer and longer (up to 100 ms between tries), so with many writers at once a
+/// waiter slept through the short moments the lock was free and others took it: some waited out the 5 s (40 parallel
+/// changes: 9 to 10 of 40 failed).
+fn busy(tries: i32) -> bool {
+    thread_local! {
+        static SINCE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    }
+    let since = SINCE.with(|s| {
+        if tries == 0 {
+            s.set(Some(std::time::Instant::now()));
+        }
+        s.get().unwrap_or_else(std::time::Instant::now)
+    });
+    if since.elapsed() >= BUSY {
+        return false;
+    }
+    std::thread::sleep(Duration::from_millis(1));
+    true
 }
 
 /// A database's schema: the tables of `version`, made at once in a new file, and the steps that bring a file of an
@@ -437,7 +544,7 @@ impl Db {
             make(path, schema)?;
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
-        conn.busy_timeout(Duration::from_secs(5))?;
+        conn.busy_handler(Some(busy))?;
         conn.pragma_update(None, "synchronous", synchronous)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -537,6 +644,38 @@ impl Db {
     /// The database write fails.
     pub fn record_all(&self, actor: &str, events: &[(String, serde_json::Value)]) -> Result<()> {
         log(&self.path, actor, events.to_vec(), true).map(|_| ())
+    }
+
+    /// Run `write` on this database's control writer ([`control_writer`]): in one transaction with the other writes
+    /// that wait at that time, in a savepoint of its own; its answer once that transaction is committed.
+    ///
+    /// # Errors
+    /// `write` fails (its savepoint is rolled back), or the transaction fails.
+    pub fn queued<T: Send + 'static>(
+        &self,
+        write: impl FnOnce(&Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let (ack, answer) = std::sync::mpsc::channel();
+        control_writer(&self.path)
+            .send(ControlWrite {
+                run: Box::new(move |conn| write(conn).map(|v| Box::new(v) as Answer)),
+                ack,
+            })
+            .ok()
+            .context("the control writer has ended")?;
+        match answer.recv().context("the control writer has ended")? {
+            Ok(value) => value
+                .downcast::<T>()
+                .map(|v| *v)
+                .map_err(|_| anyhow::anyhow!("the control writer answered another type")),
+            // the same error as a direct write that waited out the lock, which error::message_of says in one plain
+            // sentence
+            Err((true, _)) => Err(anyhow::Error::new(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                None,
+            ))),
+            Err((false, text)) => Err(anyhow::anyhow!("{text}")),
+        }
     }
 
     /// The writer's one transaction: each batch's events, and their ids.
@@ -977,6 +1116,64 @@ fn make(path: &Path, schema: &Schema) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Many writers of control state at once (synchronous FULL, on a disk that syncs): 300 threads, each with its
+    /// connection, start and end 4 calls in the call record. Each write lands, none waits out the busy timeout (with
+    /// SQLite's own busy handler and one transaction per write, some did: "database is locked").
+    #[test]
+    fn many_control_writers_at_once_all_land() {
+        let dir = crate::scratch::Scratch::new(format!(
+            "/var/tmp/legionctl-db-writers-{}",
+            std::process::id()
+        ));
+        let path = dir.join("operator.db");
+        Db::open(&path, OPERATOR).unwrap();
+        let failed: Vec<String> = std::thread::scope(|s| {
+            let writers: Vec<_> = (0..300)
+                .map(|t| {
+                    let path = &path;
+                    s.spawn(move || -> Result<()> {
+                        let db = Db::open(path, OPERATOR)?;
+                        for i in 0..4 {
+                            let id = format!("{t}-{i}");
+                            let call = crate::calls::Call {
+                                call: &id,
+                                principal: "user",
+                                session: "",
+                                kind: "op",
+                                server: "legionctl",
+                                name: "views.save",
+                                input_hash: "h",
+                                scope: "",
+                                folder: "",
+                            };
+                            db.call_begin(&call)?;
+                            db.call_end(&id, "ok", None, 0)?;
+                        }
+                        Ok(())
+                    })
+                })
+                .collect();
+            writers
+                .into_iter()
+                .filter_map(|w| w.join().unwrap().err().map(|e| format!("{e:#}")))
+                .collect()
+        });
+        assert!(
+            failed.is_empty(),
+            "{} of 300 failed: {:?}",
+            failed.len(),
+            failed.first()
+        );
+        let db = Db::open(&path, OPERATOR).unwrap();
+        let ended: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM calls WHERE outcome = 'ok'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(ended, 1200, "each call's row");
+    }
 
     /// A file from another release (an old step-by-step version, or a newer schema) is refused, names its version,
     /// and keeps its data; a file at this version opens with its data.

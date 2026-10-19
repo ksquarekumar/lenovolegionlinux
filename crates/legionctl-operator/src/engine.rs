@@ -3700,7 +3700,7 @@ impl Engine for Operator {
                 .block_on(crate::scope::check(id, &name, &what))
                 .map_err(anyhow::Error::new)?;
         }
-        crate::calls::begin_tool(&ctx.principal, &input)
+        crate::calls::begin_tool((&ctx.principal, ctx.folder.as_deref()), &input)
     }
 
     fn calls_end(&self, _: &Ctx, input: legionctl_api::CallEndIn) -> Result<Empty> {
