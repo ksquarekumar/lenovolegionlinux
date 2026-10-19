@@ -119,8 +119,8 @@ pub enum Then {
     /// The chat's environment step: the folder becomes the app's project; a new chat works in it from the base ref,
     /// an existing chat (its `thread` in the form's input) moves to it.
     ChatPlace,
-    /// The view tab reads the code of this folder.
-    TabRepo,
+    /// The folder becomes the app's project, and the view tab reads its code.
+    TabProject,
 }
 
 /// What the app knows besides the screen.

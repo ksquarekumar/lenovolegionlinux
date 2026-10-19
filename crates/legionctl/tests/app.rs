@@ -603,7 +603,7 @@ fn choose_the_repository(
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
-        window.click("view-code-tree-choose-repo", cx);
+        window.click("view-code-tree-choose-project", cx);
     });
     wait(cx, app, "the folder's form", |a| a.state.form.is_some());
     cx.update(|window, cx| {
@@ -3279,7 +3279,7 @@ fn agent_folder(answer: &str) -> String {
 fn attach_repository(cx: &mut VisualTestContext, app: &Entity<LegionApp>, repo: &Path) {
     cx.update(|window, cx| {
         window.render_frame(cx);
-        window.click("thread-repo", cx);
+        window.click("chat-place-change", cx);
     });
     wait(cx, app, "the environment step", |a| a.state.form.is_some());
     let given = app.read_with(cx, |a, _| {

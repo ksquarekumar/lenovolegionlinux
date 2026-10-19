@@ -226,14 +226,14 @@ impl LegionApp {
             .child(
                 div().h_flex().child(
                     Button::new(SharedString::from(format!(
-                        "view-{}-choose-repo",
+                        "view-{}-choose-project",
                         data.name
                     )))
                     .small()
                     .primary()
                     .label("Choose a repository")
                     .on_click(cx.listener(|app, _, _, cx| {
-                        app.choose_place(crate::Then::TabRepo, None, cx);
+                        app.choose_place(crate::Then::TabProject, None, cx);
                     })),
                 ),
             )

@@ -1567,7 +1567,7 @@ impl LegionApp {
             .child(text)
             .child("· sandbox, model gateway only")
             .child(
-                Button::new("thread-repo")
+                Button::new("chat-place-change")
                     .small()
                     .outline()
                     .label(label)
@@ -1605,7 +1605,7 @@ impl LegionApp {
             kind: legionctl_api::form::Kind::Text,
             required: true,
             help: match then {
-                crate::Then::TabRepo => {
+                crate::Then::TabProject => {
                     "A folder in a git repository: the view shows its code".into()
                 }
                 _ => "A git repository gets its own branch; a plain folder gets a copy".into(),
@@ -1620,12 +1620,12 @@ impl LegionApp {
             default: String::new(),
         };
         let fields = match then {
-            crate::Then::TabRepo => vec![folder],
+            crate::Then::TabProject => vec![folder],
             _ => vec![folder, base],
         };
         // a view tab asks because its folder is no repository: its form starts empty
         let mut input = match then {
-            crate::Then::TabRepo => json!({}),
+            crate::Then::TabProject => json!({}),
             _ => json!({"folder": self.screen.project}),
         };
         if let Some(id) = thread {
@@ -1638,7 +1638,7 @@ impl LegionApp {
         let values = legionctl_api::form::texts(&input);
         let button = legionctl_api::ViewButton {
             label: match then {
-                crate::Then::TabRepo => "Choose a repository",
+                crate::Then::TabProject => "Choose a repository",
                 _ => "Where the chat works",
             }
             .into(),
@@ -1674,7 +1674,7 @@ impl LegionApp {
         self.set_project(&path, cx);
         match (then, thread) {
             // the tab keeps its key: read its view again for the new project
-            (crate::Then::TabRepo, _) => self.render_view(cx),
+            (crate::Then::TabProject, _) => self.render_view(cx),
             (_, Some(id)) => {
                 let mut input = json!({"thread": id});
                 if !base.is_empty() {
