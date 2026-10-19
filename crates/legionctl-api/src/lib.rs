@@ -1010,7 +1010,7 @@ operations! {
     config_unset / ConfigUnset = "config.unset", Workspace, ConfigUnsetIn => SettingChanged;
     /// Add an entry to a list setting, such as a forbidden action with its reason.
     config_add / ConfigAdd = "config.add", Workspace, ConfigItemIn => SettingChanged;
-    /// Remove an entry from a list setting.
+    /// Remove an entry from a list setting, or an entry of a map setting by its name (also from the layers below).
     config_remove / ConfigRemove = "config.remove", Workspace, ConfigItemIn => SettingChanged;
     /// Undo a change of a setting: the value before it applies again, in the same layer.
     config_revert / ConfigRevert = "config.revert", Workspace, ConfigRevertIn => SettingChanged;

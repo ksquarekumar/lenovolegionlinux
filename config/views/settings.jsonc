@@ -1,7 +1,8 @@
 // Seed (DESIGN-14, DESIGN-20): every setting from the registry by module, with its value, where the value comes from
 // and what it does; a search field above it. Change opens the form of config.set with the setting's own field (a
 // choice, yes or no, a number with its range); Reset removes your value, so the one below it applies again. The gear
-// of another view opens this view with view=<its name>: only the settings that change it.
+// of another view opens this view with view=<its name>: only the settings that change it. A map's Entries opens its
+// entries (setting-entries).
 {
   "$schema": "../../docs/api/view.schema.json",
   "name": "settings",
@@ -18,7 +19,8 @@
   "group": { "field": "module" },
   "row_actions": [
     { "label": "Change", "op": "config.set", "input": { "key": "{row.key}", "value": "{row.edit}" } },
-    { "label": "Reset", "op": "config.unset", "input": { "key": "{row.key}" } }
+    { "label": "Reset", "op": "config.unset", "input": { "key": "{row.key}" } },
+    { "label": "{item.name}", "op": "{item.op}", "input": "{item.input}", "each": "actions" }
   ],
   "refresh": { "events": ["config.*", "hooks.*", "reminders.*"] }
 }

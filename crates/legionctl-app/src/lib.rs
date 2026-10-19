@@ -487,6 +487,25 @@ impl LegionApp {
     /// repository's or a model's view, which confirms every change); a change with a dry run shows its plan first; a
     /// change without one asks inline with its operation and input. Apply runs it; for the machine, polkit asks.
     pub fn act(&mut self, button: ViewButton, cx: &mut Context<Self>) {
+        // a button that renders a view opens it in a tab (a map setting's entries)
+        if button.op == "views.render"
+            && let Some(name) = button.input["name"].as_str()
+        {
+            let params = button.input["params"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.as_str().map(String::from))
+                .collect();
+            self.open_tab(
+                Tab::View {
+                    name: name.to_string(),
+                    params,
+                },
+                cx,
+            );
+            return;
+        }
         let Some(info) = OPS.iter().find(|o| o.name == button.op && !o.internal()) else {
             self.state.message = Some(format!("{}: unknown operation {}", button.label, button.op));
             cx.notify();

@@ -1,0 +1,22 @@
+// Seed (DESIGN-14): the entries of one map setting (key=<setting>), each with its value and where it comes from; Change
+// writes one entry for you, Remove takes it out (also a built-in one), Add makes a new one (its name after the dot).
+// The Settings view's Entries button of a map opens it.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "setting-entries",
+  "title": "Entries of a setting",
+  "intent": "the entries of a setting",
+  "space": "agents",
+  "params": { "key": "string" },
+  "defaults": { "key": "" },
+  "widget": "table",
+  "source": { "op": "config.settings", "input": { "key": "{key}" }, "path": "$.items.0.entries" },
+  "columns": ["name", "text", "from"],
+  "labels": { "name": "Entry", "text": "Value", "from": "Set by" },
+  "row_actions": [
+    { "label": "Change", "op": "config.set", "input": { "key": "{row.key}", "value": "{row.edit}" } },
+    { "label": "Remove", "op": "config.remove", "input": { "key": "{key}", "value": "{row.name}" } }
+  ],
+  "actions": [{ "label": "Add an entry", "op": "config.set", "input": { "key": "{key}." } }],
+  "refresh": { "events": ["config.*", "hooks.*", "reminders.*"] }
+}

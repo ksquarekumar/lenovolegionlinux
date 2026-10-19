@@ -87,8 +87,43 @@ fn value_and_source(resolved: &Resolved, key: &str) -> (Value, String) {
     (explained.value, layer_word(from).to_string())
 }
 
-/// The entries of a list setting, each with the lowest layer that has it (where it comes from).
+/// Whether `setting` is a map whose entries are the person's (`reminders`, `views.composer_models`, `checks.*`).
+fn is_map(setting: &Setting) -> bool {
+    setting.key.ends_with(".*") || setting.kind["additionalProperties"].is_object()
+}
+
+/// What a row offers besides Change and Reset: a map's entries in a view of their own.
+fn row_actions(setting: &Setting) -> Result<Vec<legionctl_api::ResourceAction>> {
+    if !is_map(setting) {
+        return Ok(Vec::new());
+    }
+    Ok(vec![crate::resources::action(
+        "Entries",
+        "views.render",
+        json!({ "name": "setting-entries", "params": [format!("key={}", setting.key.trim_end_matches(".*"))] }),
+    )?])
+}
+
+/// The entries of a list setting, each with the lowest layer that has it (where it comes from); of a map setting,
+/// each entry with its key and the highest layer that sets it.
 fn entries(resolved: &Resolved, setting: &Setting, value: &Value) -> Vec<Value> {
+    if let (Value::Object(map), true) = (value, is_map(setting)) {
+        let base = setting.key.trim_end_matches(".*");
+        return map
+            .iter()
+            .map(|(name, v)| {
+                let at = format!("{base}.{name}");
+                let from = resolved
+                    .trace
+                    .iter()
+                    .filter(|(k, _)| **k == at || k.starts_with(&format!("{at}.")))
+                    .flat_map(|(_, sets)| sets.iter().map(|s| s.source.layer.as_str()))
+                    .max_by_key(|l| rank(l))
+                    .unwrap_or("defaults");
+                json!({ "name": name, "key": at, "text": short(v), "edit": v, "from": layer_word(from) })
+            })
+            .collect();
+    }
     let Some(items) = value.as_array() else {
         return Vec::new();
     };
@@ -148,6 +183,7 @@ fn rows(resolved: Resolved, input: &SettingsIn) -> Result<SettingsView> {
             (setting.scope, setting.class) = (scope, class);
         }
         items.push(SettingRow {
+            actions: row_actions(&setting)?,
             entries: entries(&resolved, &setting, &value),
             text: short(&value),
             edit: if value.is_null() {
@@ -371,6 +407,27 @@ impl Operator {
         ctx: &Ctx,
         input: &ConfigItemIn,
     ) -> Result<SettingChanged> {
+        let by = crate::calls::principal_key(&ctx.principal);
+        // an entry of a map: null at its key removes it, also from the layers below
+        if let Some(map) = settings::setting_of(&input.key)
+            .filter(|s| is_map(s) && s.key.trim_end_matches(".*") == input.key)
+        {
+            let resolved = config(Some(ctx.folder()?))?;
+            let (value, _) = value_and_source(&resolved, &map.key);
+            let name = text(&input.value);
+            if value.get(&name).is_none() {
+                bail!("{}: there is no {name}", map.label);
+            }
+            return self.change_setting(
+                ctx.folder()?,
+                &Edit {
+                    key: &format!("{}.{name}", input.key),
+                    scope: input.scope,
+                    value: Some(Value::Null),
+                    by: &by,
+                },
+            );
+        }
         let (setting, mut items) = Self::base_list(ctx, input)?;
         let item = Self::item(
             setting,
@@ -389,7 +446,6 @@ impl Operator {
                 text(&input.value)
             );
         }
-        let by = crate::calls::principal_key(&ctx.principal);
         self.change_setting(
             ctx.folder()?,
             &Edit {

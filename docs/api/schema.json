@@ -14215,9 +14215,63 @@
                 "type": "string"
               },
               "entries": {
-                "description": "A list's entries, each with where it comes from (a list of rules: pattern, reason, from).",
+                "description": "A list's entries, each with where it comes from (a list of rules: pattern, reason, from); a map's: name, key,\ntext, edit, from.",
                 "type": "array",
                 "items": true
+              },
+              "actions": {
+                "description": "What the row offers besides Change and Reset (a map: its entries in a view of their own).",
+                "type": "array",
+                "items": {
+                  "description": "An action of a resource: the operation it runs, with this input.",
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "op": {
+                      "description": "The operation (`knobs.release`), which runs as a call of its own.",
+                      "type": "string"
+                    },
+                    "input": true,
+                    "class": {
+                      "description": "The operation's permission class.",
+                      "oneOf": [
+                        {
+                          "description": "Reads only; no gate.",
+                          "type": "string",
+                          "const": "read"
+                        },
+                        {
+                          "description": "Changes only the caller's own session: its dossier, its workspace, its hooks. An agent calls these freely.",
+                          "type": "string",
+                          "const": "session"
+                        },
+                        {
+                          "description": "Changes your files and settings or other sessions; when an agent calls it, legionctl asks you first in a\ndesktop notice.",
+                          "type": "string",
+                          "const": "workspace"
+                        },
+                        {
+                          "description": "Changes the machine; `legionctl-system` asks for polkit approval. An operation that changes something without\nthe daemon (your own rule layers, a kernel build, the Windows VM's guest or overlay) is `Workspace`: polkit\nasks only for the daemon's part of it.",
+                          "type": "string",
+                          "const": "machine"
+                        }
+                      ]
+                    },
+                    "dry_run": {
+                      "description": "The operation has a dry run of its own.",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "op",
+                    "input",
+                    "class",
+                    "dry_run"
+                  ]
+                }
               }
             },
             "required": [
@@ -14509,7 +14563,7 @@
       "properties": {
         "key": {
           "type": "string",
-          "description": "Dotted key of a list setting (`actions.forbid`, `session.hidden`)."
+          "description": "Dotted key of a list setting (`actions.forbid`, `session.hidden`), or of a map setting (remove: the entry's name)."
         },
         "value": {
           "description": "The entry: for a list of rules its pattern (`git:push`, `op:boot.*`), else the item (text or JSON)."
@@ -14649,7 +14703,7 @@
       "properties": {
         "key": {
           "type": "string",
-          "description": "Dotted key of a list setting (`actions.forbid`, `session.hidden`)."
+          "description": "Dotted key of a list setting (`actions.forbid`, `session.hidden`), or of a map setting (remove: the entry's name)."
         },
         "value": {
           "description": "The entry: for a list of rules its pattern (`git:push`, `op:boot.*`), else the item (text or JSON)."

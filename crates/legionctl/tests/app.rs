@@ -1546,6 +1546,45 @@ impl SettingsTab<'_> {
         );
     }
 
+    /// A map setting's Entries opens its entries: Change writes one entry, Remove takes one out.
+    fn map_entries(&self, cx: &mut VisualTestContext) {
+        self.search(cx, "view maker");
+        let (row, _) = self.setting(cx, "View maker models").expect("the row");
+        Self::click(cx, &format!("view-settings-row-{row}-action-2"));
+        let entries = |a: &LegionApp| shown(a, "setting-entries").map(|v| v.rows);
+        wait(cx, self.app, "the entries", |a| {
+            entries(a).is_some_and(|rows| rows.iter().any(|r| r[0] == "claude"))
+        });
+        let at = |cx: &mut VisualTestContext, name: &str| {
+            self.app.read_with(cx, |a, _| {
+                entries(a)
+                    .unwrap()
+                    .iter()
+                    .position(|r| r[0] == name)
+                    .unwrap()
+            })
+        };
+        let claude = at(cx, "claude");
+        Self::click(cx, &format!("view-setting-entries-row-{claude}-action-0"));
+        Self::click(cx, "form-field-value");
+        cx.update(|window, cx| {
+            window.press("ctrl-a", cx);
+            window.input("sonnet", cx);
+        });
+        self.apply(cx, "View maker models: set for you.");
+        let codex = at(cx, "codex");
+        Self::click(cx, &format!("view-setting-entries-row-{codex}-action-1"));
+        Self::click(cx, "apply");
+        wait(cx, self.app, "codex gone, claude changed", |a| {
+            entries(a).is_some_and(|rows| {
+                !rows.iter().any(|r| r[0] == "codex")
+                    && rows
+                        .iter()
+                        .any(|r| r[0] == "claude" && r[1..3] == ["sonnet", "user"])
+            })
+        });
+    }
+
     /// The gear of the view `name` opens the settings that change it: all of `module`, in plain words.
     fn gear_opens_its_settings(&self, cx: &mut VisualTestContext, name: &str, module: &str) {
         self.app.update(cx, |a, cx| a.open_tab(view(name), cx));
@@ -1677,6 +1716,7 @@ fn the_settings_view_changes_a_setting_through_its_own_field_and_a_views_gear_op
     );
 
     tab.several(cx);
+    tab.map_entries(cx);
     tab.gear_opens_its_settings(cx, "dossiers", "dossier");
     drop(runtime);
 }

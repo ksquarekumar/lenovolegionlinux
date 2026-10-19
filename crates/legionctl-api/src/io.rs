@@ -87,9 +87,13 @@ pub struct SettingRow {
     pub locked: bool,
     /// Why the value in use does not work, with the step that fixes it (its deep check); empty when it works.
     pub finding: String,
-    /// A list's entries, each with where it comes from (a list of rules: pattern, reason, from).
+    /// A list's entries, each with where it comes from (a list of rules: pattern, reason, from); a map's: name, key,
+    /// text, edit, from.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<serde_json::Value>,
+    /// What the row offers besides Change and Reset (a map: its entries in a view of their own).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ResourceAction>,
 }
 
 /// The layer that a change goes into.
@@ -121,7 +125,7 @@ pub struct ConfigUnsetIn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigItemIn {
-    /// Dotted key of a list setting (`actions.forbid`, `session.hidden`).
+    /// Dotted key of a list setting (`actions.forbid`, `session.hidden`), or of a map setting (remove: the entry's name).
     pub key: String,
     /// The entry: for a list of rules its pattern (`git:push`, `op:boot.*`), else the item (text or JSON).
     pub value: serde_json::Value,
