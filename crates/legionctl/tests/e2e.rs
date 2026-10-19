@@ -4790,12 +4790,14 @@ fn sandbox_calls(home: &Path) -> usize {
         .count()
 }
 
-/// The container tests share the agent image of `repo` (each test's repository has that name): one at a time.
-fn repo_image() -> std::sync::MutexGuard<'static, ()> {
-    static IMAGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    IMAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// The container tests share the agent image of `repo` (each test's repository has that name), also with the tests of
+/// other checkouts on this machine (one Docker): one at a time, by a lock on a file that every checkout uses.
+fn repo_image() -> std::fs::File {
+    let lock = Path::new("/var/tmp/legionctl-test-cache");
+    std::fs::create_dir_all(lock).unwrap();
+    let file = std::fs::File::create(lock.join("repo-image.lock")).unwrap();
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    file
 }
 
 /// A session in a container reaches its granted connections through the gateway's tunnel as on the host (r393: Codex
