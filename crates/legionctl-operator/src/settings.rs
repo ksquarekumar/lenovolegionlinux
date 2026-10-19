@@ -347,6 +347,23 @@ impl Operator {
             Scope::Project => config(Some(ctx.folder()?))?,
             Scope::User | Scope::Computer => config(None)?,
         };
+        // a list whose entries add up: the layer's own entries (what legionctl wrote there)
+        if setting.union {
+            let file = settings::layer_dir(&resolved, input.scope)?
+                .join(legionctl_machine::settings_file::MANAGED)
+                .display()
+                .to_string();
+            let own = resolved
+                .trace
+                .get(&input.key)
+                .into_iter()
+                .flatten()
+                .filter(|s| s.source.file == file)
+                .filter_map(|s| s.value.as_array().cloned())
+                .flatten()
+                .collect();
+            return Ok((setting, own));
+        }
         let (value, _) = value_and_source(&resolved, &input.key);
         Ok((setting, value.as_array().cloned().unwrap_or_default()))
     }
@@ -439,6 +456,18 @@ impl Operator {
         )?;
         let before = items.len();
         items.retain(|i| !Self::same(setting, i, &item));
+        if items.len() == before && setting.union {
+            bail!(
+                "{}: {} is not one of the entries {}; each layer removes only its own (legionctl config settings shows where each entry comes from)",
+                setting.label,
+                text(&input.value),
+                match input.scope {
+                    Scope::User => "for you",
+                    Scope::Project => "of this project",
+                    Scope::Computer => "of this computer",
+                }
+            );
+        }
         if items.len() == before {
             bail!(
                 "{}: {} is not in the list",

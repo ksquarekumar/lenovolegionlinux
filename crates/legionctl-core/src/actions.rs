@@ -11,7 +11,8 @@
 //!
 //! A `git:` or `cmd:` entry with a `set` binds only the sessions that hold that capability set.
 //!
-//! Forbidden wins over allowed. The lists bind agents; your own calls are yours.
+//! Forbidden wins over allowed. The forbidden entries of all layers add up (a layer removes only its own); the
+//! allowed list replaces the one below, and a project's waits for the user's answer. The lists bind agents; your own calls are yours.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

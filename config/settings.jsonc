@@ -6,7 +6,8 @@
 //   password). restart: what must start again before a change applies: none, operator, login or reboot. affects: the
 //   views and operation groups that use it (the gear of a view opens these settings). check: what legionctl checks
 //   when the value is used: path (it exists), folder (a folder legionctl can write or make), port (free on this
-//   computer). A test checks that every config key has an entry here and that no entry names a key that is gone.
+//   computer). union: a list whose entries add up across the layers (a layer removes only its own). A test checks
+//   that every config key has an entry here and that no entry names a key that is gone.
 {
   "config.precedence": {"label": "Order of settings files", "help": "The order in which settings files apply, from the built-in defaults to the project.", "scope": ["computer"], "class": "machine", "restart": "none", "affects": ["config"]},
   "config.overrides": {"label": "This computer's own rules for settings", "help": "Settings that only this computer's administrator can change, that a project never changes, or that a project changes only after you allow it.", "scope": ["computer"], "class": "machine", "restart": "none", "affects": ["config"]},
@@ -99,7 +100,7 @@
   "checks.timeout_minutes": {"label": "Check time limit (minutes)", "help": "Stop a check after this many minutes.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["code"]},
 
   "actions.allow": {"label": "Allowed actions", "help": "Actions that agents can do without a question, such as a tool set or a tool of a tool server.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools", "runnables", "settings-actions"]},
-  "actions.forbid": {"label": "Forbidden actions", "help": "Actions that agents can never do, such as a git command or an operation.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools", "runnables", "settings-actions"]},
+  "actions.forbid": {"label": "Forbidden actions", "help": "Actions that agents can never do, such as a git command or an operation.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools", "runnables", "settings-actions"], "union": true},
 
   "app.agent": {"label": "App agent", "help": "The agent that the app uses when you do not choose one.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["thread"]},
 

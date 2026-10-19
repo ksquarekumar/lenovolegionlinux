@@ -352,7 +352,10 @@
   // toolset:<set> (allowed: a shipped, system or user set that a grant may hold), tool:<server>/<tool> (a server with
   // allowed entries offers only those), git:<subcommand> <flags> (the git gate of a session sandbox; a short flag
   // also matches in a bundle such as -fd), cmd:<command> (Claude Code's permissions.deny in a session). Forbidden
-  // wins over allowed. Merge goes through the workspace merge; pushes and history changes stay with you.
+  // wins over allowed. "forbid" adds up across the layers (these defaults, this computer, you, a project): each layer
+  // adds entries and removes only its own, so a project's entries bind at once and nobody below loses one; "allow"
+  // replaces the list below, and a project's waits for your answer. Merge goes through the workspace merge; pushes
+  // and history changes stay with you.
   "actions": {
     "allow": [
       { "pattern": "toolset:claude-code", "reason": "Ships with legionctl." },

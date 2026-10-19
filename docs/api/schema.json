@@ -14192,6 +14192,11 @@
                   }
                 ]
               },
+              "union": {
+                "description": "A list whose entries add up across the layers: a layer removes only its own entries, never one from below, so\na project's entries apply before trust (they only restrict).",
+                "type": "boolean",
+                "default": false
+              },
               "value": {
                 "description": "The value in use."
               },

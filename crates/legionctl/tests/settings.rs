@@ -620,7 +620,7 @@ fn an_operation_reads_the_settings_of_its_calls_project() {
 
 /// A project never widens what an agent may do before the user trusts it: its actions.allow entries (op:, toolset:,
 /// tool:) grant nothing until the user's first-use answer of its file, at dispatch and in the grant of a toolset; its
-/// actions.forbid entries wait the same way (its file could as well empty the list). After the answer, its allowed
+/// actions.forbid entries bind at once (they add to the list and only restrict). After the answer, its allowed
 /// operation runs with no toolset question and its toolset may join a grant.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_untrusted_projects_allowed_actions_grant_nothing_until_the_user_allows_its_file() {
@@ -675,17 +675,13 @@ async fn an_untrusted_projects_allowed_actions_grant_nothing_until_the_user_allo
             .clone()
     };
     // before the answer: none of the project's entries is used, and the file waits
-    for (key, pattern) in [
-        ("actions.allow", "op:facts.set"),
-        ("actions.allow", "toolset:deploy"),
-        ("actions.allow", "tool:remote/admin"),
-        ("actions.forbid", "op:views.list"),
-    ] {
+    for pattern in ["op:facts.set", "toolset:deploy", "tool:remote/admin"] {
         assert!(
-            !patterns(key).iter().any(|p| p == pattern),
+            !patterns("actions.allow").iter().any(|p| p == pattern),
             "{pattern} used before the answer"
         );
     }
+    assert!(patterns("actions.forbid").contains(&"op:views.list".to_string()));
     assert_eq!(
         deploy(&in_repo(&["runnables", "check"])),
         "your settings do not allow it (actions.allow)"
@@ -703,8 +699,8 @@ async fn an_untrusted_projects_allowed_actions_grant_nothing_until_the_user_allo
                 .contains("needs the toolset session-own"),
         "the project's allowed operation still asks: {out}"
     );
-    let (out, failed) = agent.run("views.list", &json!({}));
-    assert!(!failed, "the project's forbidden entry waits too: {out}");
+    let (_, failed) = agent.run("views.list", &json!({}));
+    assert!(failed, "the project's forbidden entry binds at once");
 
     trust::allow(&lab.home, &file);
     let asked = lab.asked.lock().unwrap().len();
@@ -720,11 +716,85 @@ async fn an_untrusted_projects_allowed_actions_grant_nothing_until_the_user_allo
     );
     assert_eq!(deploy(&in_repo(&["runnables", "check"])), Value::Null);
     assert!(patterns("actions.allow").contains(&"tool:remote/admin".to_string()));
-    let (_, failed) = agent.run("views.list", &json!({}));
+}
+
+/// The forbidden list adds up across the layers: this computer's, yours and a project's entries all bind; a project
+/// file that sets the list to [] removes nothing below it; you remove your own entry, and this computer's stays.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_forbidden_list_adds_up_and_a_layer_removes_only_its_own_entries() {
+    let lab = Lab::new("union", &[]).await;
+    let repo = lab.home.join("repo");
     assert!(
-        failed,
-        "the project's forbidden entry binds after the answer"
+        Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repo)
+            .status()
+            .unwrap()
+            .success()
     );
+    std::fs::create_dir_all(repo.join(".legionctl")).unwrap();
+    std::fs::write(
+        repo.join(".legionctl/a-forbid.jsonc"),
+        r#"{"actions": {"forbid": [{"pattern": "op:views.list", "reason": "views stay"}]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join(".legionctl/b-empty.jsonc"),
+        r#"{"actions": {"forbid": []}}"#,
+    )
+    .unwrap();
+    lab.op.ok(&[
+        "config",
+        "add",
+        "actions.forbid",
+        "op:jobs.list",
+        "--reason",
+        "mine",
+    ]);
+    let mut agent = lab.agent_in(&repo);
+    for (op, binds) in [
+        ("views.list", true),
+        ("jobs.list", true),
+        ("dossier.list", false),
+    ] {
+        let (out, failed) = agent.run(op, &json!({}));
+        assert_eq!(failed, binds, "{op}: {out}");
+    }
+    let out = lab.op.cli_in(
+        &repo,
+        &["config", "settings", "--key", "actions.forbid", "--json"],
+    );
+    let row: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let from = |pattern: &str| {
+        row["items"][0]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["pattern"] == pattern)
+            .map(|e| e["from"].clone())
+    };
+    assert_eq!(
+        (
+            from("git:push"),
+            from("op:jobs.list"),
+            from("op:views.list")
+        ),
+        (
+            Some(json!("defaults")),
+            Some(json!("user")),
+            Some(json!("project"))
+        ),
+        "the project's [] removes nothing below it"
+    );
+    let below = lab.fails(&["config", "remove", "actions.forbid", "git:push"]);
+    assert!(
+        below.contains("git:push is not one of the entries for you"),
+        "{below}"
+    );
+    lab.op
+        .ok(&["config", "remove", "actions.forbid", "op:jobs.list"]);
+    let (out, failed) = lab.agent().run("jobs.list", &json!({}));
+    assert!(!failed, "{out}");
 }
 
 /// Trust answers that arrive at the same moment are all kept (the answers' file is changed under its lock): sixteen

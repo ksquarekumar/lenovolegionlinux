@@ -804,6 +804,10 @@ impl Merge<'_> {
                 }
                 continue;
             }
+            if crate::settings::unions().contains(&path.as_str()) {
+                self.add_up(into, &key, &path, value);
+                continue;
+            }
             match (into.get_mut(&key), value) {
                 (Some(Value::Object(lower)), Value::Object(higher)) => {
                     self.object(lower, higher, &path);
@@ -828,6 +832,28 @@ impl Merge<'_> {
                 }
             }
         }
+    }
+
+    /// A list whose entries add up: this file's entries join the ones below; anything else is ignored and reported.
+    fn add_up(&mut self, into: &mut Map<String, Value>, key: &str, path: &str, value: Value) {
+        let Value::Array(items) = value else {
+            self.problems.push(format!(
+                "{}: {path} adds entries to the ones below and cannot remove them; ignored",
+                self.source.file
+            ));
+            return;
+        };
+        let list = into
+            .entry(key.to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Value::Array(lower) = list {
+            for item in &items {
+                if !lower.contains(item) {
+                    lower.push(item.clone());
+                }
+            }
+        }
+        self.note(path, Value::Array(items));
     }
 
     fn note(&mut self, path: &str, value: Value) {
@@ -954,7 +980,9 @@ fn trust_lists(
         }) else {
             continue;
         };
-        if class != Class::Safe {
+        // a list whose entries add up only restricts: a project's entries need no answer
+        let union = crate::settings::setting_of(&key).is_some_and(|s| s.union && s.key == key);
+        if class != Class::Safe && !union {
             approve.push(key.clone());
         }
         if !scope.contains(&Scope::Project) {

@@ -139,6 +139,8 @@ struct Declared {
     affects: Vec<String>,
     #[serde(default)]
     check: Option<Check>,
+    #[serde(default)]
+    union: bool,
 }
 
 /// One setting.
@@ -164,6 +166,21 @@ pub struct Setting {
     pub affects: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check: Option<Check>,
+    /// A list whose entries add up across the layers: a layer removes only its own entries, never one from below, so
+    /// a project's entries apply before trust (they only restrict).
+    #[serde(default)]
+    pub union: bool,
+}
+
+/// The keys of the lists whose entries add up across the layers.
+#[must_use]
+pub fn unions() -> Vec<&'static str> {
+    registry()
+        .unwrap_or_default()
+        .iter()
+        .filter(|s| s.union)
+        .map(|s| s.key.as_str())
+        .collect()
 }
 
 static REGISTRY: OnceLock<Vec<Setting>> = OnceLock::new();
@@ -222,6 +239,7 @@ pub fn registry() -> Result<&'static [Setting]> {
             restart: d.restart,
             affects: d.affects,
             check: d.check,
+            union: d.union,
         });
     }
     if !missing.is_empty() || !declared.is_empty() {

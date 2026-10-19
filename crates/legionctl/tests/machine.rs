@@ -3233,6 +3233,45 @@ mod operator_and_daemon {
         );
     }
 
+    /// This computer's forbidden entry adds to the list: you cannot remove it (only your own), and it stays.
+    fn a_computers_forbidden_entry_stays(op: &Operator) {
+        op.ok(&[
+            "config",
+            "add",
+            "actions.forbid",
+            "op:knobs.list",
+            "--reason",
+            "Site rule",
+            "--scope",
+            "computer",
+        ]);
+        let refused = op.cli(&["config", "remove", "actions.forbid", "op:knobs.list"]);
+        assert!(
+            !refused.status.success()
+                && String::from_utf8_lossy(&refused.stderr)
+                    .contains("op:knobs.list is not one of the entries for you"),
+            "{refused:?}"
+        );
+        let site = serde_json::from_str::<Value>(&op.ok(&[
+            "config",
+            "settings",
+            "--key",
+            "actions.forbid",
+            "--json",
+        ]))
+        .unwrap()["items"][0]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["pattern"] == "op:knobs.list")
+            .map(|e| e["from"].clone());
+        assert_eq!(
+            site,
+            Some(serde_json::json!("computer")),
+            "the computer's entry stays"
+        );
+    }
+
     /// A setting for this computer goes only through the system service: polkit asks for each change, the service
     /// writes /etc/legionctl/managed.jsonc, your own value applies over it, the history keeps who changed what for
     /// which layer, and a setting that this computer locks is refused for you and changes for the computer only.
@@ -3325,9 +3364,10 @@ mod operator_and_daemon {
             "{}",
             m.file("/etc/legionctl/managed.jsonc")
         );
+        a_computers_forbidden_entry_stays(&op);
         let actions: Vec<String> = asked.lock().unwrap().iter().map(|a| a.1.clone()).collect();
         assert_eq!(
-            actions, ["org.legionctl.settings"; 4],
+            actions, ["org.legionctl.settings"; 5],
             "the computer's changes ask; yours do not"
         );
     }
