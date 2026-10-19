@@ -430,9 +430,14 @@ fn pass(from: &mut impl std::io::Read, to: &mut impl std::io::Write) -> std::io:
 /// writable share that would write on the host.
 fn mount(args: &[&str], path: &Path, make: bool) -> Result<()> {
     if make && !path.exists() {
-        std::fs::create_dir_all(path)?;
+        std::fs::create_dir_all(path)
+            .with_context(|| format!("making the mount point {}", path.display()))?;
     }
-    let out = Command::new("mount").args(args).arg(path).output()?;
+    let out = Command::new("mount")
+        .args(args)
+        .arg(path)
+        .output()
+        .context("running mount")?;
     anyhow::ensure!(
         out.status.success(),
         "mount {} {}: {}",
@@ -468,8 +473,10 @@ fn mounts(spec: &GuestSpec) -> Result<()> {
                 }
             }
             GuestMount::File(path, text) => {
-                std::fs::write(path, text)?;
-                std::os::unix::fs::chown(path, Some(spec.uid), Some(spec.gid))?;
+                std::fs::write(path, text)
+                    .with_context(|| format!("writing {}", path.display()))?;
+                std::os::unix::fs::chown(path, Some(spec.uid), Some(spec.gid))
+                    .with_context(|| format!("giving {} to the user", path.display()))?;
             }
         }
     }
@@ -491,14 +498,20 @@ pub fn guest() -> Result<()> {
 }
 
 fn session() -> Result<()> {
-    let spec: GuestSpec = serde_json::from_str(&std::fs::read_to_string(
-        Path::new(SPEC_DIR).join("guest.json"),
-    )?)?;
+    let file = Path::new(SPEC_DIR).join("guest.json");
+    let spec: GuestSpec = serde_json::from_str(
+        &std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?,
+    )
+    .with_context(|| format!("reading {}", file.display()))?;
     mounts(&spec)?;
     // the operator socket at its usual path: each connection goes to the host
-    let runtime = tokio::runtime::Runtime::new()?;
-    let listener = runtime.block_on(async { tokio::net::UnixListener::bind(&spec.socket) })?;
-    std::os::unix::fs::chown(&spec.socket, Some(spec.uid), Some(spec.gid))?;
+    let runtime = tokio::runtime::Runtime::new().context("starting the relays")?;
+    let socket = spec.socket.display();
+    let listener = runtime
+        .block_on(async { tokio::net::UnixListener::bind(&spec.socket) })
+        .with_context(|| format!("listening at {socket}"))?;
+    std::os::unix::fs::chown(&spec.socket, Some(spec.uid), Some(spec.gid))
+        .with_context(|| format!("giving {socket} to the user"))?;
     runtime.spawn(async move {
         loop {
             let agent = accepted("relay", listener.accept().await);
@@ -510,7 +523,9 @@ fn session() -> Result<()> {
     });
     if let Some(port) = spec.gateway {
         // the gateway at 127.0.0.1:<port>, as on the host: each connection goes to the host's gateway socket
-        let gateway = runtime.block_on(tokio::net::TcpListener::bind(("127.0.0.1", port)))?;
+        let gateway = runtime
+            .block_on(tokio::net::TcpListener::bind(("127.0.0.1", port)))
+            .with_context(|| format!("listening on 127.0.0.1:{port}"))?;
         runtime.spawn(async move {
             loop {
                 let agent = accepted("relay", gateway.accept().await);
@@ -550,14 +565,26 @@ fn session() -> Result<()> {
         .current_dir(&spec.workdir);
     if spec.interactive {
         agent
-            .stdin(console.try_clone()?)
-            .stdout(console.try_clone()?)
+            .stdin(
+                console
+                    .try_clone()
+                    .with_context(|| format!("opening {channel}"))?,
+            )
+            .stdout(
+                console
+                    .try_clone()
+                    .with_context(|| format!("opening {channel}"))?,
+            )
             .stderr(console);
         agent.status().context("running the agent")?;
         return Ok(());
     }
-    // a headless agent gets pipes, as on the host: a runtime that reads its input as a file (bun: pread) fails on a
-    // port; its stderr goes apart from its output (the ACP channel), to the host's stderr
+    headless(agent, console, &channel)
+}
+
+/// A headless agent with pipes, as on the host: a runtime that reads its input as a file (bun: pread) fails on a
+/// port; its stderr goes apart from its output (the ACP channel), to the host's stderr.
+fn headless(mut agent: Command, console: std::fs::File, channel: &str) -> Result<()> {
     let port = format!("/dev/virtio-ports/{STDERR_PORT}");
     let mut stderr = std::fs::OpenOptions::new()
         .write(true)
@@ -574,14 +601,16 @@ fn session() -> Result<()> {
         child.stdout.take().context("the agent's stdout")?,
         child.stderr.take().context("the agent's stderr")?,
     );
-    let mut from = console.try_clone()?;
+    let mut from = console
+        .try_clone()
+        .with_context(|| format!("opening {channel}"))?;
     std::thread::spawn(move || pass(&mut from, &mut input));
     let mut to = console;
     let (done, copied) = std::sync::mpsc::channel();
     let also = done.clone();
     std::thread::spawn(move || done.send(pass(&mut output, &mut to)));
     std::thread::spawn(move || also.send(pass(&mut errors, &mut stderr)));
-    child.wait()?;
+    child.wait().context("waiting for the agent")?;
     // its output and errors reach the host before the VM powers off; a process it left behind with them open does
     // not hold the VM
     let deadline = Instant::now() + Duration::from_secs(5);

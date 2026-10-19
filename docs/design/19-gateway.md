@@ -124,3 +124,9 @@ ACP sessions run in images built and run as 20-images describes:
   each agent's version and a short ACP `initialize` before the image is marked ready;
 - **config mounts** at start: gateway base URL and token, agent settings, MCP proxy endpoints (14), the dossier
   (18). Nothing secret is baked into an image.
+
+Callers (2026-10-19, r393): the gateway knows a caller on its socket by the peer's cgroup: a host or VM session by
+its scope (`legionctl-session-<id>.scope`; a VM's relay runs there), a container session by its container
+(`docker-<id>.scope` or `/docker/<id>`), whose name legionctl gave it (`legionctl-session-<id>`) and the agent in it
+cannot change. The tunnel (CONNECT, the sessions' `HTTPS_PROXY`) opens only the caller session's granted connections;
+any other caller is refused.

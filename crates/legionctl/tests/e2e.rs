@@ -4680,6 +4680,8 @@ fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf
                  [ -d \"$s/sib-1\" ] && { (touch \"$s/sib-1/y\") 2>/dev/null || echo NEST_READ_ONLY; }; \
                  grep -q old \"$HOME/.claude/.credentials.json\" && \
                  echo '{\"refresh\": \"new\"}' > \"$HOME/.claude/.credentials.json\" && echo LOGIN_THROUGH; \
+                 grep -q old \"$HOME/.codex/auth.json\" && \
+                 echo '{\"refresh\": \"new\"}' > \"$HOME/.codex/auth.json\" && echo CODEX_LOGIN_THROUGH; \
                  python3 ask-gateway.py";
     let client =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/static/release/legionctl");
@@ -4725,6 +4727,8 @@ fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf
     write(&alt, "{\"refresh\": \"old\"}");
     std::fs::create_dir_all(home.join(".claude")).unwrap();
     std::os::unix::fs::symlink(&alt, home.join(".claude/.credentials.json")).unwrap();
+    // Codex's login as Codex leaves it: a file of its own
+    write(&home.join(".codex/auth.json"), "{\"refresh\": \"old\"}");
     write(
         &home.join(".config/legionctl/run.jsonc"),
         &json!({"session": {
@@ -4733,7 +4737,7 @@ fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf
                 { echo 'the adapter has no pipes' >&2; exit 1; }; exec python3 fake-acp-agent.py"]},
             "agents": {"probe": ["sh", "-c", probe]},
             "scope": false,
-            "writable": [state, home.join(".claude")],
+            "writable": [state, home.join(".claude"), home.join(".codex")],
             "container": {"base": "unused", "npm": [], "client": client},
         },
         "gateway": {
@@ -4746,10 +4750,18 @@ fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf
     repo
 }
 
-/// The probe refreshed its login (`LOGIN_THROUGH` in its `text`), and the refresh reached the file that clauth's
-/// link points to.
+/// The probe refreshed both logins (`LOGIN_THROUGH`, `CODEX_LOGIN_THROUGH` in its `text`), and each refresh reached the
+/// real file: Claude's through clauth's link, Codex's own.
 fn refresh_reached_clauth(home: &Path, text: &str) {
     assert!(text.contains("LOGIN_THROUGH"), "{text}");
+    assert!(text.contains("CODEX_LOGIN_THROUGH"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(home.join(".codex/auth.json"))
+            .unwrap()
+            .trim(),
+        "{\"refresh\": \"new\"}",
+        "Codex's refresh reached its login file"
+    );
     assert_eq!(
         std::fs::read_to_string(home.join(".clauth/profiles/alt/credentials.json"))
             .unwrap()
@@ -4778,6 +4790,107 @@ fn sandbox_calls(home: &Path) -> usize {
         .count()
 }
 
+/// The container tests share the agent image of `repo` (each test's repository has that name): one at a time.
+fn repo_image() -> std::sync::MutexGuard<'static, ()> {
+    static IMAGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    IMAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A session in a container reaches its granted connections through the gateway's tunnel as on the host (r393: Codex
+/// in a container could not reach chatgpt.com: the gateway knew sessions only by their host scope, so it took the
+/// container's caller for a program outside sessions). The gateway knows it by the container that legionctl named;
+/// a host the session was not granted is still refused. Needs docker and `make static`.
+#[test]
+fn a_container_session_reaches_its_granted_connections_through_the_gateway_tunnel() {
+    let _image = repo_image();
+    let home = home("ctunnel");
+    let op = operator_with("ctunnel", &home, &docker());
+    let (_provider, ports) = gateway_ports(&home);
+    let repo = container_repository(&home, ports);
+    drop(op);
+    let op = operator_with("ctunnel2", &home, &docker());
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = server.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in server.incoming().flatten() {
+            let mut stream = stream;
+            let mut request = [0; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut request);
+            let _ = std::io::Write::write_all(&mut stream, b"HTTP/1.0 200 OK\r\n\r\nTUNNEL_OK");
+        }
+    });
+    write(
+        &home.join(".config/legionctl/capabilities/service.jsonc"),
+        &json!({"name": "service", "version": 1, "connections": {
+            "out": [{"host": "localhost", "port": port, "why": "the test's server"}]}})
+        .to_string(),
+    );
+    write(
+        &home.join(".config/legionctl/runnables.jsonc"),
+        r#"{ "runnables": { "allow+": ["service"] } }"#,
+    );
+    // Python's HTTP client through the session's HTTPS_PROXY, as an agent's client does: a granted host, then another
+    let probe = format!(
+        "import http.client, os\n\
+         proxy = os.environ['HTTPS_PROXY'].split('//')[1].split(':')\n\
+         for host in ['localhost', '127.0.0.1']:\n\
+         \x20   c = http.client.HTTPConnection(proxy[0], int(proxy[1]), timeout=20)\n\
+         \x20   c.set_tunnel(host, {port})\n\
+         \x20   try:\n\
+         \x20       c.request('GET', '/')\n\
+         \x20       print(host, c.getresponse().read().decode())\n\
+         \x20   except OSError as e:\n\
+         \x20       print(host, 'REFUSED', e)\n"
+    );
+    write(
+        &home.join(".config/legionctl/tunnel.jsonc"),
+        &json!({"session": {"agents": {"tunnel": ["python3", "-c", probe]}}}).to_string(),
+    );
+    let started = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &[
+            "session",
+            "start",
+            "tunnel",
+            "--dossier",
+            "talk",
+            "--in",
+            "container",
+            "--capability",
+            "service",
+        ],
+        "",
+    );
+    let text = String::from_utf8_lossy(&started.stdout);
+    assert!(
+        text.contains("localhost TUNNEL_OK") && text.contains("127.0.0.1 REFUSED"),
+        "{text}{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let events: Value =
+        serde_json::from_str(&op.ok(&["events", "--limit", "1000", "--json"])).unwrap();
+    let tunnels: Vec<&Value> = events["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "gateway.tunnel")
+        .collect();
+    assert_eq!(tunnels.len(), 1, "{events:#}");
+    assert!(
+        tunnels[0]["payload"]["who"]
+            .as_str()
+            .unwrap()
+            .starts_with("session:"),
+        "the container's caller is its session: {tunnels:?}"
+    );
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "localhost/repo/legionctl-agent:latest"])
+        .output();
+}
+
 /// W5 (note 18): `workspace pack` puts the agent layer on the repository's own image (its Dockerfile, built by I1),
 /// and sessions `--in container` run there, headless and interactive (through the real client): the workspace, its
 /// git data and the dossier are mounted at their own paths, so the agent's commits land in the workspace on the host;
@@ -4786,6 +4899,7 @@ fn sandbox_calls(home: &Path) -> usize {
 /// another agent layer, makes it first and says so. The adapter gets pipes. Needs docker and `make static`.
 #[test]
 fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
+    let _image = repo_image();
     let home = home("container");
     let op = operator_with("container", &home, &docker());
     let (_provider, ports) = gateway_ports(&home);
@@ -4914,6 +5028,19 @@ fn an_image_of_another_agent_layer_is_made_again(
     );
 }
 
+/// 40 other branches in folders of their own in the folder of the sessions' branches, half of them packed: each is
+/// read-only in the session (C7), and the VM still has room for its devices (r390: one share per folder ran out of
+/// PCI slots). Returns the value of `legionctl/sib-0/x`.
+fn sibling_branches(home: &Path, repo: &Path) -> String {
+    for i in 0..40 {
+        git(home, repo, &["branch", &format!("legionctl/sib-{i}/x")]);
+        if i == 19 {
+            git(home, repo, &["pack-refs", "--all"]);
+        }
+    }
+    git(home, repo, &["rev-parse", "legionctl/sib-0/x"])
+}
+
 /// The Debian 13 cloud image of the VM tests and its SHA512SUMS, downloaded once into /var/tmp/legionctl-test-cache.
 fn debian_cloud_image() -> PathBuf {
     let cache = Path::new("/var/tmp/legionctl-test-cache");
@@ -4976,16 +5103,7 @@ fn vm_repository(
 fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
     let (op, home, repo, _provider) = vm_repository("vm", "vm2");
     let run = |args: &[&str]| op.run(&repo, &[("HOME", home.to_str().unwrap())], args, "");
-    // 40 other branches in folders of their own in the folder of the sessions' branches, half of them packed: each
-    // is read-only in the session (C7), and the VM still has room for its devices (r390: one share per folder ran out
-    // of PCI slots)
-    for i in 0..40 {
-        git(&home, &repo, &["branch", &format!("legionctl/sib-{i}/x")]);
-        if i == 19 {
-            git(&home, &repo, &["pack-refs", "--all"]);
-        }
-    }
-    let sibling = git(&home, &repo, &["rev-parse", "legionctl/sib-0/x"]);
+    let sibling = sibling_branches(&home, &repo);
 
     let words = |line: &'static str| line.split(' ').collect::<Vec<_>>();
     // no disk: the first run makes it (here one that asks for the GPU, which this disk does not have)
@@ -5054,6 +5172,13 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         git(&home, &repo, &["rev-parse", "legionctl/sib-0/x"]),
         sibling,
         "the other branches are as they were"
+    );
+    // git packing the refs (gc, pack-refs) keeps the sessions' branch folder, which the mounts of a session hold (r393:
+    // a pack during a VM's boot took its mount point away)
+    git(&home, &repo, &["pack-refs", "--all", "--prune"]);
+    assert!(
+        repo.join(".git/refs/heads/legionctl").is_dir(),
+        "the branch folder outlives a pack"
     );
     assert!(!home.join("outside").exists(), "the VM's home is its own");
     refresh_reached_clauth(&home, &text);

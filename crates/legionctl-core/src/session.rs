@@ -1578,6 +1578,9 @@ fn git_mounts(mounts: &mut Vec<Mount>, workdir: &Path, branch: &str) -> Result<(
     }
     let branches = refs.join("heads").join(folder);
     std::fs::create_dir_all(&branches)?;
+    // git removes a ref folder that packing leaves empty (pack-refs, gc); the session's mounts would then lose it (r393:
+    // a VM's mount point was gone). An empty dot folder in it is no ref (git fsck accepts it), so git keeps both
+    std::fs::create_dir_all(branches.join(".legionctl"))?;
     mounts.push(Mount::Writable(branches.clone()));
     // git writes the branch through <branch>.lock in its folder; each other entry there stays read-only
     let mine = Path::new(branch)

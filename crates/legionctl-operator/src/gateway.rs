@@ -43,17 +43,59 @@ impl
             .ok()
             .and_then(|c| c.pid())
             .and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok())
-            .and_then(|cgroup| {
-                cgroup.split(['/', '\n']).find_map(|part| {
-                    part.strip_prefix("legionctl-session-")?
-                        .strip_suffix(".scope")
-                        .map(String::from)
-                })
-            });
+            .and_then(|cgroup| session_of(&cgroup));
         Caller {
             who: session.map_or_else(|| "host".into(), |id| format!("session:{id}")),
         }
     }
+}
+
+/// The session of a process in `cgroup`: its scope on the host or in a VM (`legionctl-session-<id>.scope`), else its
+/// container (Docker's `docker-<container>.scope` or `/docker/<container>`), whose name legionctl gave it.
+fn session_of(cgroup: &str) -> Option<String> {
+    let parts: Vec<&str> = cgroup.split(['/', '\n']).collect();
+    if let Some(id) = parts.iter().find_map(|part| {
+        part.strip_prefix("legionctl-session-")?
+            .strip_suffix(".scope")
+    }) {
+        return Some(id.to_string());
+    }
+    let container = parts.windows(2).find_map(|w| match w {
+        [_, part] if part.starts_with("docker-") => {
+            part.strip_prefix("docker-")?.strip_suffix(".scope")
+        }
+        ["docker", part] => Some(*part),
+        _ => None,
+    })?;
+    container_session(container)
+}
+
+/// The session of container `id`: from its name (`legionctl-session-<session>`), which the agent in it cannot change;
+/// kept, since each connection asks.
+fn container_session(id: &str) -> Option<String> {
+    static NAMES: std::sync::Mutex<std::collections::BTreeMap<String, Option<String>>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let mut names = NAMES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(known) = names.get(id) {
+        return known.clone();
+    }
+    let out = std::process::Command::new("docker")
+        .args(["inspect", "-f", "{{.Name}}", id])
+        .output()
+        .ok()?;
+    // a container that docker does not know (gone) is no session; not kept, a new one may take the id
+    if !out.status.success() {
+        return None;
+    }
+    let session = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .trim_start_matches('/')
+        .strip_prefix("legionctl-session-")
+        .map(String::from);
+    names.insert(id.to_string(), session.clone());
+    session
 }
 
 impl
