@@ -907,6 +907,21 @@ pub fn defaults() -> Result<Value> {
         .context("parsing the built-in defaults")
 }
 
+/// One file of a layer as legionctl reads and approves it: a JSONC object without its top-level `$schema` (an
+/// editor's or a repository's schema link, feedbacks/0007, not a setting).
+///
+/// # Errors
+/// The file cannot be read, does not parse or is not a JSON object.
+pub fn read_layer_file(file: &Path) -> Result<Value> {
+    match read_jsonc(file)? {
+        Value::Object(mut map) => {
+            map.remove("$schema");
+            Ok(Value::Object(map))
+        }
+        _ => bail!("{}: not a JSON object", file.display()),
+    }
+}
+
 /// Resolve the config for work in `project` (its repository layer applies), or without a repository.
 ///
 /// # Errors
@@ -923,10 +938,7 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
     let read = |dir: &Path| -> Result<Vec<(PathBuf, Value)>> {
         layer_files(dir)?
             .into_iter()
-            .map(|file| match read_jsonc(&file)? {
-                Value::Object(map) => Ok((file, Value::Object(map))),
-                _ => bail!("{}: not a JSON object", file.display()),
-            })
+            .map(|file| Ok((file.clone(), read_layer_file(&file)?)))
             .collect()
     };
     let system = read(&system_dir)?;

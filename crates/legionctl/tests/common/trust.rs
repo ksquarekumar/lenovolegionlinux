@@ -8,7 +8,7 @@ pub fn allow(home: &Path, file: &Path) {
     allow_value(
         home,
         file,
-        &legionctl_machine::profile::read_jsonc(file).unwrap(),
+        &legionctl_core::config::read_layer_file(file).unwrap(),
     );
 }
 

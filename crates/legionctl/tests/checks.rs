@@ -325,10 +325,17 @@ fn two_languages_an_unknown_one_and_the_written_proposal(lab: &Lab, rust_text: &
         text(&refused).1
     );
 
-    // detect wrote nothing; its proposal as the repository's file is what the repository checks with
+    // detect wrote nothing; its proposal as the repository's file is what the repository checks with, also with the
+    // schema link that a repository that checks its JSON files adds (feedbacks/0007)
     let rust = lab.home.join("rust");
     assert!(!rust.join(".legionctl").exists());
-    write(&rust.join(".legionctl/checks.jsonc"), rust_text);
+    let linked = rust_text.replacen(
+        '{',
+        "{\n  \"$schema\": \"./.schema/legionctl-checks.json\",",
+        1,
+    );
+    assert_ne!(linked, rust_text);
+    write(&rust.join(".legionctl/checks.jsonc"), &linked);
     trust::allow(&lab.home, &rust.join(".legionctl/checks.jsonc"));
     let listed = lab.ok(&rust, &["code", "checks", "list"]);
     assert!(
