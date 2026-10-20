@@ -166,6 +166,11 @@ pub struct SettingChanged {
     pub lines: Vec<String>,
 }
 
+/// The JSON Schema of a settings layer file.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct LayerSchema(pub serde_json::Value);
+
 /// The changes of settings, newest first.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SettingsHistory {

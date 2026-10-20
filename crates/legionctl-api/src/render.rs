@@ -1026,6 +1026,12 @@ fn value_text(value: &serde_json::Value) -> String {
     }
 }
 
+impl Render for crate::LayerSchema {
+    fn text(&self) -> String {
+        serde_json::to_string_pretty(&self.0).unwrap_or_default()
+    }
+}
+
 impl Render for SettingChanged {
     fn text(&self) -> String {
         self.lines.join("\n")

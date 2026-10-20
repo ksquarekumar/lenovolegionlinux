@@ -5626,6 +5626,12 @@ impl Engine for Operator {
         crate::settings::history(&input)
     }
 
+    fn config_schema(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::LayerSchema> {
+        Ok(legionctl_api::LayerSchema(
+            legionctl_core::settings::layer_schema()?,
+        ))
+    }
+
     fn config_layers(&self, ctx: &Ctx, _: Empty) -> Result<LayerList> {
         let resolved = config(Some(ctx.folder()?))?;
         let locked = resolved.locks().to_vec();

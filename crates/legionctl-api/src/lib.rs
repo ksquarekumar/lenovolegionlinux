@@ -1016,6 +1016,8 @@ operations! {
     config_revert / ConfigRevert = "config.revert", Workspace, ConfigRevertIn => SettingChanged;
     /// The changes of settings, newest first: what changed, where, from what to what, and who changed it.
     config_history / ConfigHistory = "config.history", Read, ConfigHistoryIn => SettingsHistory;
+    /// The JSON Schema of a settings layer file: a repository can keep it and name it in its files' `$schema`.
+    config_schema / ConfigSchema = "config.schema", Read, Empty => LayerSchema;
     /// The config layers in merge order, their files, and the locked keys.
     config_layers / ConfigLayers = "config.layers", Read, Empty => LayerList;
     /// Each resource of the machine (VMs, GPU, mounts, configsets, sessions and workspaces): its state, what uses it,

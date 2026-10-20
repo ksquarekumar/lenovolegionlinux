@@ -1135,6 +1135,18 @@ fn typed(value: &Value, trace: &BTreeMap<String, Vec<Setting>>) -> Result<Config
             .map(|s| s.source.file.clone())
             .find(|f| f != "built in")
             .unwrap_or_else(|| "built in".into());
+        // an unknown key in the person's words: what is not a setting, and the nearest one
+        if e.inner().to_string().starts_with("unknown field") {
+            let close = crate::settings::closest(&key);
+            return anyhow::anyhow!(
+                "{file}: {key} is not a setting{}",
+                if close.is_empty() {
+                    " (legionctl config settings lists them)".to_string()
+                } else {
+                    format!("; did you mean {}?", close.join(", "))
+                }
+            );
+        }
         anyhow::anyhow!("{file}: {key}: {}", e.inner()).context("the merged config is not valid")
     })
 }

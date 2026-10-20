@@ -1,0 +1,27 @@
+// A copy of agency-os .legionctl/checks.jsonc (2026-10-21) with its $schema line (feedbacks/0007).
+// The repository's checks for legionctl (dossier health, `legionctl code checks run`). All of them call Bazel
+// (AGENTS.md): lint and type tests carry the tag "lint"; Rust clippy and rustfmt run inside the build.
+{
+  "$schema": "./legionctl.schema.json",
+  "checks": {
+    "format": {
+      "kind": "format",
+      "run": "bazel run //:format.check",
+      "fix": "bazel run //:format"
+    },
+    "lint": {
+      "kind": "lint",
+      "run": "bazel test --test_tag_filters=lint //..."
+    },
+    "build": {
+      "kind": "build",
+      "run": "bazel build //...",
+      "gate": "merge"
+    },
+    "test": {
+      "kind": "test",
+      "run": "bazel test --test_tag_filters=-lint //...",
+      "gate": "merge"
+    }
+  }
+}

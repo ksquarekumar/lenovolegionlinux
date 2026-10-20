@@ -183,6 +183,50 @@ pub fn unions() -> Vec<&'static str> {
         .collect()
 }
 
+/// The JSON Schema of one settings layer file (a `.jsonc` of /etc/legionctl, ~/.config/legionctl or a repository's
+/// .legionctl), for editors and for a repository that keeps a copy: every key may be left out (a layer sets only what
+/// it changes), `null` removes a key, `<list>+` appends to a list, and `$schema` names this schema.
+///
+/// # Errors
+/// The schema does not serialize.
+pub fn layer_schema() -> Result<Value> {
+    fn partial(node: &mut Value) {
+        let Value::Object(map) = node else { return };
+        map.remove("required");
+        if let Some(Value::Object(props)) = map.get_mut("properties") {
+            for prop in props.values_mut() {
+                partial(prop);
+                *prop = serde_json::json!({ "anyOf": [prop.clone(), { "type": "null" }] });
+            }
+        }
+        if map.get("additionalProperties") == Some(&Value::Bool(false)) {
+            map.insert(
+                "patternProperties".into(),
+                serde_json::json!({ "\\+$": { "type": "array" } }),
+            );
+        }
+        for key in ["additionalProperties", "items"] {
+            if let Some(sub) = map.get_mut(key) {
+                partial(sub);
+            }
+        }
+        for key in ["anyOf", "oneOf", "allOf"] {
+            if let Some(Value::Array(parts)) = map.get_mut(key) {
+                parts.iter_mut().for_each(partial);
+            }
+        }
+    }
+    let mut schema = schemars::generate::SchemaSettings::draft2020_12()
+        .with(|s| s.inline_subschemas = true)
+        .into_generator()
+        .into_root_schema_for::<crate::config::Config>()
+        .to_value();
+    partial(&mut schema);
+    schema["title"] = "legionctl settings layer file".into();
+    schema["properties"]["$schema"] = serde_json::json!({ "type": "string" });
+    Ok(schema)
+}
+
 static REGISTRY: OnceLock<Vec<Setting>> = OnceLock::new();
 
 /// Every setting, in the order of the config type.
@@ -309,7 +353,7 @@ pub fn kind_of(key: &str) -> Option<Value> {
     Some(kind)
 }
 
-/// The settings whose key is close to `key`, for a key that is not one: the longest shared start first.
+/// The settings whose key is nearest to `key`, for a key that is not one: the longest shared start.
 #[must_use]
 pub fn closest(key: &str) -> Vec<&'static str> {
     let shared = |k: &str| {
@@ -318,14 +362,19 @@ pub fn closest(key: &str) -> Vec<&'static str> {
             .take_while(|(a, b)| a == b)
             .count()
     };
-    let mut all: Vec<(usize, &'static str)> = registry()
+    let all: Vec<(usize, &'static str)> = registry()
         .unwrap_or_default()
         .iter()
         .map(|s| (shared(&s.key), s.key.as_str()))
         .filter(|(n, _)| *n > 2)
         .collect();
-    all.sort_by_key(|(n, _)| std::cmp::Reverse(*n));
-    all.into_iter().take(3).map(|(_, k)| k).collect()
+    // the nearest: the longest shared start (its ties too)
+    let best = all.iter().map(|(n, _)| *n).max().unwrap_or(0);
+    all.into_iter()
+        .filter(|(n, _)| *n == best)
+        .take(3)
+        .map(|(_, k)| k)
+        .collect()
 }
 
 /// The types that a schema allows (`anyOf` and `type` lists unfolded).

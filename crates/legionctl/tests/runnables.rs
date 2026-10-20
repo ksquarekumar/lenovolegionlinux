@@ -9,6 +9,8 @@ mod common;
 mod desktop;
 #[path = "common/git.rs"]
 mod git;
+#[path = "common/trust.rs"]
+mod trust;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -684,5 +686,65 @@ fn a_session_reaches_its_granted_connections_through_the_gateway_tunnel_and_noth
                 "this session may never reach it".to_string()
             )
         ]
+    );
+}
+
+/// A repository's settings files may name their JSON Schema (`$schema`): checks, config and a session start work
+/// with it, `legionctl config schema` gives a schema that a copy of agency-os's checks file passes, and a key that is
+/// not a setting is one sentence with the nearest one (feedbacks/0007).
+#[test]
+fn a_repository_settings_file_may_name_its_schema() {
+    let lab = Lab::new("schema", &[], &[], None);
+    lab.agents(&json!({"probe": ["true"]}));
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/agency-os/checks.jsonc");
+    let checks = lab.repo.join(".legionctl/checks.jsonc");
+    write(&checks, &std::fs::read_to_string(&fixture).unwrap());
+    let config = lab.repo.join(".legionctl/config.jsonc");
+    write(
+        &config,
+        r#"{ "$schema": "./legionctl.schema.json", "workspace": { "nudge": false } }"#,
+    );
+    for file in [&checks, &config] {
+        trust::allow(&lab.home, file);
+    }
+    for args in [&["code", "checks", "list"][..], &["config", "show"]] {
+        let out = lab.op.cli_in(&lab.repo, args);
+        assert!(out.status.success(), "{args:?}: {}", text(&out));
+    }
+    assert!(lab.start("probe", "schema", &[]).status.success());
+
+    let schema = lab.op.cli_in(&lab.repo, &["config", "schema"]);
+    assert!(schema.status.success(), "{}", text(&schema));
+    let schema_file = lab.home.join("legionctl.schema.json");
+    std::fs::write(&schema_file, &schema.stdout).unwrap();
+    // the copy passes; a check without its run line passes too (a layer sets only what it changes); a wrong type fails
+    let validate = |file: &Path| {
+        Command::new("python3")
+            .args([
+                "-I",
+                "-c",
+                "import json, re, sys, jsonschema; s = json.load(open(sys.argv[1])); \
+                 d = json.loads(re.sub(r'(?m)^\\s*//.*$', '', open(sys.argv[2]).read())); \
+                 jsonschema.validate(d, s)",
+            ])
+            .arg(&schema_file)
+            .arg(file)
+            .output()
+            .unwrap()
+    };
+    let passed = validate(&fixture);
+    assert!(passed.status.success(), "{}", text(&passed));
+    let wrong = lab.home.join("wrong.jsonc");
+    write(&wrong, r#"{ "workspace": { "nudge": "often" } }"#);
+    assert!(!validate(&wrong).status.success());
+
+    write(&config, r#"{ "workspace": { "nudg": false } }"#);
+    trust::allow(&lab.home, &config);
+    let typo = lab.op.cli_in(&lab.repo, &["config", "show"]);
+    assert!(
+        text(&typo).contains("workspace.nudg is not a setting; did you mean workspace.nudge?"),
+        "{}",
+        text(&typo)
     );
 }

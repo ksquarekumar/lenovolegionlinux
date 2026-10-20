@@ -15042,6 +15042,20 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "config.schema": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "description": "The JSON Schema of a settings layer file.",
+      "title": "LayerSchema",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "config.layers": {
     "class": "read",
     "internal": false,
