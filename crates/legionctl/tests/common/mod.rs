@@ -72,6 +72,40 @@ pub struct Operator {
     pub held: Vec<Scratch>,
 }
 
+/// The operator's HOME: the test's (it must be a scratch folder), else its runtime folder. A config file puts
+/// `workspace.root` there, first in the lowest layer the test has (its machine's `/etc/legionctl` when it has a
+/// stand-in machine root, else the user's layer), so the test's own files win: no test makes worktrees or thread
+/// folders in the user's real workspace root (CI run 39189528444 made /data/worktrees/threads/thread-1).
+fn scratch_home(env: &[(&str, OsString)], runtime: &Path) -> PathBuf {
+    let home = env
+        .iter()
+        .find(|(k, _)| *k == "HOME")
+        .map_or_else(|| runtime.to_path_buf(), |(_, h)| PathBuf::from(h));
+    assert!(
+        home.starts_with("/var/tmp") || home.starts_with(std::env::temp_dir()),
+        "the operator's HOME {} is not a test's scratch folder",
+        home.display()
+    );
+    let var = |name: &str| {
+        env.iter()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| PathBuf::from(v))
+    };
+    let config = match var("LEGIONCTL_SYSROOT") {
+        Some(root) => root.join("etc/legionctl"),
+        None => var("XDG_CONFIG_HOME")
+            .unwrap_or_else(|| home.join(".config"))
+            .join("legionctl"),
+    };
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("00-test-root.jsonc"),
+        serde_json::json!({"workspace": {"root": home.join("worktrees")}}).to_string(),
+    )
+    .unwrap();
+    home
+}
+
 impl Operator {
     pub fn start(tag: &str, env: &[(&str, OsString)]) -> Operator {
         Self::start_under(tag, env, &[])
@@ -108,9 +142,11 @@ impl Operator {
             ("DOCKER_HOST", "unix:///nonexistent/docker.sock".into()),
             ("XDG_RUNTIME_DIR", runtime.as_os_str().to_owned()),
         ];
-        let unset = defaults
+        let home = scratch_home(env, &runtime);
+        let defaults = defaults
             .into_iter()
-            .filter(|(k, _)| !env.iter().any(|(e, _)| e == k));
+            .chain(std::iter::once(("HOME", home.into_os_string())));
+        let unset = defaults.filter(|(k, _)| !env.iter().any(|(e, _)| e == k));
         for (name, value) in env.iter().cloned().chain(unset) {
             // the user's own clauth never runs in a test: a folder of PATH outside the tests' homes that has one is
             // left out (a test gives its stand-in in its home)

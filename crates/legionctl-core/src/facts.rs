@@ -305,39 +305,7 @@ impl Ancestry {
 
 impl Dossiers {
     fn facts_where(&self, filter: &str, args: &[&dyn rusqlite::ToSql]) -> Result<Vec<Fact>> {
-        let sql = format!("SELECT {COLUMNS} FROM facts WHERE {filter} ORDER BY id");
-        let mut stmt = self.db().prepare(&sql)?;
-        Ok(stmt
-            .query_map(args, row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    fn fact_insert(&self, f: &New, recorded: i64, corrects: Option<i64>) -> Result<i64> {
-        self.db().execute(
-            "INSERT INTO facts (entity, attribute, value, scope, scope_id, source, evidence, confidence, valid_from,
-             valid_to, recorded_from, repo, from_ref, to_ref, anchor_key, anchor_hash, corrects)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
-            params![
-                f.entity,
-                f.attribute,
-                f.value.to_string(),
-                f.scope.0.as_str(),
-                f.scope.1,
-                f.source,
-                f.evidence.to_string(),
-                f.confidence,
-                f.valid_from,
-                f.valid_to,
-                recorded,
-                f.repo.as_ref().map(|r| r.to_string_lossy().into_owned()),
-                f.from_ref,
-                f.to_ref,
-                f.anchor.as_ref().map(|a| &a.0),
-                f.anchor.as_ref().map(|a| &a.1),
-                corrects
-            ],
-        )?;
-        Ok(self.db().last_insert_rowid())
+        facts_where(self.db(), filter, args)
     }
 
     /// Add a fact. It supersedes the open facts of the same entity, attribute, scope and source that started before
@@ -348,46 +316,46 @@ impl Dossiers {
     /// # Errors
     /// The database write fails.
     pub fn fact_add(&self, f: &New) -> Result<i64> {
-        let recorded = now_ms();
-        // IMMEDIATE: it reads the open facts, then writes; a deferred one fails at once (SQLITE_BUSY) when another
-        // writer (a run's output events) commits between its read and its write
-        let tx = self.begin()?;
-        let open = self.facts_where(
-            "entity = ?1 AND attribute = ?2 AND scope = ?3 AND scope_id = ?4 AND source = ?5 \
-             AND recorded_to IS NULL AND to_ref IS NULL AND (valid_to IS NULL OR valid_to > ?6)",
-            &[
-                &f.entity,
-                &f.attribute,
-                &f.scope.0.as_str(),
-                &f.scope.1,
-                &f.source,
-                &f.valid_from,
-            ],
-        )?;
-        let mut new = f.clone();
-        for old in open {
-            if old.valid_from > f.valid_from {
-                new.valid_to = Some(
-                    new.valid_to
-                        .map_or(old.valid_from, |t| t.min(old.valid_from)),
-                );
-                continue;
-            }
-            self.db().execute(
-                "UPDATE facts SET recorded_to = ?2 WHERE id = ?1",
-                params![old.id, recorded],
+        let f = f.clone();
+        // through the control writer: it reads the open facts, then writes, in the writer's transaction
+        self.operator().queued(move |conn| {
+            let recorded = now_ms();
+            let open = facts_where(
+                conn,
+                "entity = ?1 AND attribute = ?2 AND scope = ?3 AND scope_id = ?4 AND source = ?5 \
+                 AND recorded_to IS NULL AND to_ref IS NULL AND (valid_to IS NULL OR valid_to > ?6)",
+                &[
+                    &f.entity,
+                    &f.attribute,
+                    &f.scope.0.as_str(),
+                    &f.scope.1,
+                    &f.source,
+                    &f.valid_from,
+                ],
             )?;
-            let mut ended = to_new(&old);
-            if old.from_ref.is_some() && f.from_ref.is_some() && old.repo == f.repo {
-                ended.to_ref.clone_from(&f.from_ref);
-            } else {
-                ended.valid_to = Some(f.valid_from);
+            let mut new = f.clone();
+            for old in open {
+                if old.valid_from > f.valid_from {
+                    new.valid_to = Some(
+                        new.valid_to
+                            .map_or(old.valid_from, |t| t.min(old.valid_from)),
+                    );
+                    continue;
+                }
+                conn.execute(
+                    "UPDATE facts SET recorded_to = ?2 WHERE id = ?1",
+                    params![old.id, recorded],
+                )?;
+                let mut ended = to_new(&old);
+                if old.from_ref.is_some() && f.from_ref.is_some() && old.repo == f.repo {
+                    ended.to_ref.clone_from(&f.from_ref);
+                } else {
+                    ended.valid_to = Some(f.valid_from);
+                }
+                fact_insert(conn, &ended, recorded, Some(old.id))?;
             }
-            self.fact_insert(&ended, recorded, Some(old.id))?;
-        }
-        let id = self.fact_insert(&new, recorded, None)?;
-        tx.commit()?;
-        Ok(id)
+            fact_insert(conn, &new, recorded, None)
+        })
     }
 
     /// Correct the fact `id` (bitemporal), as its own source or the user: its recorded time closes and a row with the new value and the same valid
@@ -402,32 +370,31 @@ impl Dossiers {
         source: &str,
         evidence: Value,
     ) -> Result<i64> {
-        let old = self
-            .facts_where("id = ?1 AND recorded_to IS NULL", &[&id])?
-            .pop()
-            .with_context(|| {
-                format!("no fact {id} that is still recorded (`facts history` shows its rows)")
-            })?;
-        ensure!(
-            source == old.source || rank(source) == USER,
-            "fact {id} is from {}: only it or the user corrects it; set a new fact instead",
-            old.source
-        );
-        let recorded = now_ms();
-        // IMMEDIATE: it reads the open facts, then writes; a deferred one fails at once (SQLITE_BUSY) when another
-        // writer (a run's output events) commits between its read and its write
-        let tx = self.begin()?;
-        self.db().execute(
-            "UPDATE facts SET recorded_to = ?2 WHERE id = ?1",
-            params![id, recorded],
-        )?;
-        let mut new = to_new(&old);
-        new.value = value;
-        new.source = source.to_string();
-        new.evidence = evidence;
-        let added = self.fact_insert(&new, recorded, Some(id))?;
-        tx.commit()?;
-        Ok(added)
+        let source = source.to_string();
+        // through the control writer: the old row is read in the transaction that closes it (EV-review-16 B10: it
+        // was read before, so two corrections at once could both close it)
+        self.operator().queued(move |conn| {
+            let old = facts_where(conn, "id = ?1 AND recorded_to IS NULL", &[&id])?
+                .pop()
+                .with_context(|| {
+                    format!("no fact {id} that is still recorded (`facts history` shows its rows)")
+                })?;
+            ensure!(
+                source == old.source || rank(&source) == USER,
+                "fact {id} is from {}: only it or the user corrects it; set a new fact instead",
+                old.source
+            );
+            let recorded = now_ms();
+            conn.execute(
+                "UPDATE facts SET recorded_to = ?2 WHERE id = ?1",
+                params![id, recorded],
+            )?;
+            let mut new = to_new(&old);
+            new.value = value;
+            new.source = source;
+            new.evidence = evidence;
+            fact_insert(conn, &new, recorded, Some(id))
+        })
     }
 
     /// The facts that hold at `at` (valid and recorded time, scopes, ref), with the winner of each entity and
@@ -571,6 +538,52 @@ fn entity_filter(entity: Option<&str>) -> (String, String) {
             None => ("entity = ?1".into(), e.to_string()),
         },
     }
+}
+
+/// The facts of `filter` (a WHERE clause with `args`), oldest first.
+fn facts_where(
+    conn: &rusqlite::Connection,
+    filter: &str,
+    args: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<Fact>> {
+    let sql = format!("SELECT {COLUMNS} FROM facts WHERE {filter} ORDER BY id");
+    let mut stmt = conn.prepare(&sql)?;
+    Ok(stmt
+        .query_map(args, row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn fact_insert(
+    conn: &rusqlite::Connection,
+    f: &New,
+    recorded: i64,
+    corrects: Option<i64>,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO facts (entity, attribute, value, scope, scope_id, source, evidence, confidence, valid_from,
+         valid_to, recorded_from, repo, from_ref, to_ref, anchor_key, anchor_hash, corrects)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        params![
+            f.entity,
+            f.attribute,
+            f.value.to_string(),
+            f.scope.0.as_str(),
+            f.scope.1,
+            f.source,
+            f.evidence.to_string(),
+            f.confidence,
+            f.valid_from,
+            f.valid_to,
+            recorded,
+            f.repo.as_ref().map(|r| r.to_string_lossy().into_owned()),
+            f.from_ref,
+            f.to_ref,
+            f.anchor.as_ref().map(|a| &a.0),
+            f.anchor.as_ref().map(|a| &a.1),
+            corrects
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
 }
 
 fn to_new(f: &Fact) -> New {

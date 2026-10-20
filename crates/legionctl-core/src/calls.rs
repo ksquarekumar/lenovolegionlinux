@@ -286,13 +286,18 @@ impl Db {
     /// # Errors
     /// The database write fails.
     pub fn agent_folder_set(&self, session: &str, folder: &str, harness: &str) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO agent_folders (session, folder, harness, seen) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (session) DO UPDATE SET folder = excluded.folder, harness = excluded.harness,
-             seen = excluded.seen",
-            params![session, folder, harness, now_ms()],
-        )?;
-        Ok(())
+        let (session, folder, harness) =
+            (session.to_string(), folder.to_string(), harness.to_string());
+        // through the control writer: each hook call of each agent writes it
+        self.queued(move |tx| {
+            tx.execute(
+                "INSERT INTO agent_folders (session, folder, harness, seen) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (session) DO UPDATE SET folder = excluded.folder, harness = excluded.harness,
+                 seen = excluded.seen",
+                params![session, folder, harness, now_ms()],
+            )?;
+            Ok(())
+        })
     }
 
     /// Agent `session` ended: it works in no folder.

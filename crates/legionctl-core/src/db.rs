@@ -715,12 +715,16 @@ impl Db {
     /// # Errors
     /// The database write fails.
     pub fn gateway_usage_add(&self, row: &GatewayUsage) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO gateway_usage (ts, account, model, tokens_in, tokens_out, cached, status, ms, cost_usd)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![now(), row.account, row.model, row.tokens_in, row.tokens_out, row.cached, row.status, row.ms, row.cost_usd],
-        )?;
-        Ok(())
+        let row = row.clone();
+        // through the control writer: each model call writes one
+        self.queued(move |tx| {
+            tx.execute(
+                "INSERT INTO gateway_usage (ts, account, model, tokens_in, tokens_out, cached, status, ms, cost_usd)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![now(), row.account, row.model, row.tokens_in, row.tokens_out, row.cached, row.status, row.ms, row.cost_usd],
+            )?;
+            Ok(())
+        })
     }
 
     /// Usage rows after the row id `after`, oldest first, at most `limit`; and the id to go on after when more

@@ -9458,25 +9458,47 @@ fn a_workspace_in_the_home_folder_is_not_a_finding_of_the_dossiers_home() {
     assert!(!doctor.contains("agentWorkspaces is a"), "{doctor}");
 }
 
-/// `n` users' `views save` in parallel while the daemon's events flood the log, each a change with its call record row,
-/// its version fact and its audit: the calls that failed, and the ok rows, audits and version facts there are.
-fn parallel_changes(tag: &str, n: usize) -> (Vec<String>, [i64; 3]) {
+/// Three kinds of changes, `n` of each at once, while the daemon's events flood the log: users' `views save` (a call
+/// record row, a version fact, an audit), users' `facts set`, and agents' `dossier use` (a binding; each agent loads
+/// its skills through the post-tool hook first, as `Operator::run` does). The calls that failed, and the rows there
+/// are: ok views.save rows in the call record, views.save audits, view version facts, set facts, live bindings.
+fn parallel_changes(tag: &str, n: usize) -> (Vec<String>, [i64; 5]) {
     use legionctl_core::db::{Db, EventFilter, OPERATOR};
     let (op, home) = operator(tag);
     let db = home.join(".local/state/legionctl/operator.db");
     op.ok(&["events"]);
     let h = home.to_str().unwrap();
-    let save = |i: usize| {
-        let view = format!(
-            r#"{{"name": "v{i}", "widget": "table", "source": {{"op": "thread.list", "path": "$"}}, "columns": ["title"]}}"#
-        );
-        op.run(&home, &[("HOME", h)], &["views", "save"], &view)
+    let change = |kind: usize, i: usize| match kind {
+        0 => {
+            let view = format!(
+                r#"{{"name": "v{i}", "widget": "table", "source": {{"op": "thread.list", "path": "$"}}, "columns": ["title"]}}"#
+            );
+            op.run(&home, &[("HOME", h)], &["views", "save"], &view)
+        }
+        1 => op.run(
+            &home,
+            &[("HOME", h)],
+            &["facts", "set", &format!("e{i}"), &i.to_string()],
+            "",
+        ),
+        _ => {
+            let session = format!("par-{i}");
+            op.run(
+                &home,
+                &[("HOME", h), ("LEGIONCTL_SESSION", &session)],
+                &["dossier", "use", &format!("d{i}")],
+                "",
+            )
+        }
     };
     let done = std::sync::atomic::AtomicBool::new(false);
     let (failed, flooded) = std::thread::scope(|s| {
         let flood = s.spawn(|| flood::recorder_flood(&db, &done));
-        let saves: Vec<_> = (0..n).map(|i| s.spawn(move || save(i))).collect();
-        let outs: Vec<_> = saves.into_iter().map(|t| t.join().unwrap()).collect();
+        let calls: Vec<_> = (0..3)
+            .flat_map(|kind| (0..n).map(move |i| (kind, i)))
+            .map(|(kind, i)| s.spawn(move || change(kind, i)))
+            .collect();
+        let outs: Vec<_> = calls.into_iter().map(|t| t.join().unwrap()).collect();
         done.store(true, std::sync::atomic::Ordering::Relaxed);
         let failed: Vec<String> = outs
             .into_iter()
@@ -9501,28 +9523,32 @@ fn parallel_changes(tag: &str, n: usize) -> (Vec<String>, [i64; 3]) {
             count(
                 "SELECT count(DISTINCT entity) FROM facts WHERE entity LIKE 'view:v%' AND attribute = 'version'",
             ),
+            count(
+                "SELECT count(DISTINCT entity) FROM facts WHERE entity GLOB 'e[0-9]*' AND recorded_to IS NULL",
+            ),
+            count("SELECT count(*) FROM bindings WHERE session LIKE 'par-%' AND released IS NULL"),
         ],
     )
 }
 
 /// Many changes at once (EV-validation-one-context: 1 of 40 parallel `views save` failed "the call record: database
-/// is locked ... busy for 5 s"): 40, then 200 users' changes in parallel while the daemon's events flood the log. Each
-/// call succeeds, and each has its row in the call record, its audit and its view's version fact.
+/// is locked ... busy for 5 s"; facts, bindings and the gateway's usage are the same kind of write): 40, then 200 of
+/// each kind of change in parallel while the daemon's events flood the log. Each call succeeds, and each has its rows.
 #[test]
 fn parallel_changes_all_land_while_the_event_log_floods() {
     for n in [40, 200] {
         let (failed, rows) = parallel_changes(&format!("par{n}"), n);
         assert!(
             failed.is_empty(),
-            "{} of {n} failed: {:?}",
+            "{} of {} failed: {:?}",
             failed.len(),
+            3 * n,
             failed.first()
         );
         let n = i64::try_from(n).unwrap();
         assert_eq!(
-            rows,
-            [n, n, n],
-            "the call record's ok rows, the audits and the version facts"
+            rows, [n; 5],
+            "views.save rows, audits and version facts; set facts; bindings"
         );
     }
 }

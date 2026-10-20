@@ -879,8 +879,9 @@ fn prompt_cache_tokens_count_in_the_cost() {
     assert_eq!(rows, [(1110, 0.235), (1010, 1.01)]);
 }
 
-/// todo-189, r361: gateway calls while the daemon's events come at 20 times the peak of r361 and are written as the
-/// recorder writes them (batched, on the event log's connection): each call's usage row lands (each commit syncs, B7). Before, each commit synced under the write lock and
+/// todo-189, r361: gateway calls (200 callers at once, and 8 with 15 calls each) while the daemon's events come at 20
+/// times the peak of r361 and are written as the recorder writes them (batched, on the event log's connection): each
+/// call's usage row lands (each commit syncs, B7). Before, each commit synced under the write lock and
 /// the usage writes starved past the busy timeout ("gateway usage not recorded: database is locked").
 #[test]
 fn each_gateway_call_is_counted_while_another_writer_floods_the_event_log() {
@@ -890,11 +891,12 @@ fn each_gateway_call_is_counted_while_another_writer_floods_the_event_log() {
     let done = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|scope| {
         let flood = scope.spawn(|| flood::recorder_flood(&db, &done));
-        let callers: Vec<_> = (0..8)
+        // 200 callers at once, each with one call (and 8 with 15 in a row): 320 calls
+        let callers: Vec<_> = (0..208)
             .map(|c| {
                 let port = s.port;
                 scope.spawn(move || {
-                    for i in 0..15 {
+                    for i in 0..if c < 8 { 15 } else { 1 } {
                         let (status, _, body) = post(
                             port,
                             "/v1/messages",
@@ -921,13 +923,13 @@ fn each_gateway_call_is_counted_while_another_writer_floods_the_event_log() {
     let count = |sql: &str| -> i64 { db.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
     assert_eq!(
         count("SELECT count(*) FROM gateway_usage"),
-        120,
+        320,
         "each call has its usage row"
     );
     // DESIGN/22 rule 3: one record of calls, beside the gateway's own cache
     assert_eq!(
         count("SELECT count(*) FROM calls WHERE kind = 'model' AND ended IS NOT NULL"),
-        120,
+        320,
         "each call has its row in the call record"
     );
 }

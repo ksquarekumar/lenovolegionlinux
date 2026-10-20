@@ -258,6 +258,79 @@ pub struct Dossiers {
     config: DossierConfig,
 }
 
+/// A held binding that changes hands, as the control writer writes it: none when the holder is no more the one asked
+/// about (`seen`, the caller asks again); else whether the session held it already (no `previous`), the dossier that
+/// the session released (`previous`) and who held the dossier before.
+type Bound = Option<(Option<Option<String>>, Option<String>)>;
+
+fn bound(
+    tx: &rusqlite::Connection,
+    [session, tool, name]: [String; 3],
+    place: Option<&str>,
+    (seen, stale, now): (Option<(String, String, i64)>, bool, i64),
+) -> Result<Bound> {
+    if holder_of(tx, &name)? != seen {
+        return Ok(None);
+    }
+    if seen
+        .as_ref()
+        .is_some_and(|(holder, _, _)| *holder == session)
+    {
+        tx.execute(
+            "UPDATE bindings SET updated = ?1, place = coalesce(?3, place) WHERE session = ?2 \
+             AND released IS NULL",
+            params![now, session, place],
+        )?;
+        return Ok(Some((None, None)));
+    }
+    let held = if let Some((holder, _, _)) = &seen {
+        tx.execute(
+            "UPDATE bindings SET released = ?1 WHERE dossier = ?2 AND released IS NULL",
+            params![now, name],
+        )?;
+        Some(format!(
+            "{name} was held by session {holder} ({})",
+            if stale {
+                "stale"
+            } else {
+                "taken over with steal"
+            }
+        ))
+    } else {
+        None
+    };
+    let previous: Option<String> = tx
+        .query_row(
+            "SELECT dossier FROM bindings WHERE session = ?1 AND released IS NULL",
+            [&session],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if previous.is_some() {
+        tx.execute(
+            "UPDATE bindings SET released = ?1 WHERE session = ?2 AND released IS NULL",
+            params![now, session],
+        )?;
+    }
+    tx.execute(
+        "INSERT INTO bindings (session, tool, dossier, acquired, updated, place) VALUES (?1, ?2, ?3, ?4, \
+         ?4, ?5)",
+        params![session, tool, name, now, place],
+    )?;
+    Ok(Some((Some(previous), held)))
+}
+
+/// The live session that holds dossier `name`: its id, tool and last activity.
+fn holder_of(conn: &rusqlite::Connection, name: &str) -> Result<Option<(String, String, i64)>> {
+    Ok(conn
+        .query_row(
+            "SELECT session, tool, updated FROM bindings WHERE dossier = ?1 AND released IS NULL",
+            [name],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?)
+}
+
 impl Dossiers {
     /// The dossiers in `config.root` (`~/` is the home folder), with the rows that span them in the operator's
     /// database.
@@ -443,87 +516,58 @@ impl Dossiers {
         if !dir.is_dir() {
             out.extend(self.create(name)?);
         }
-        let holder_of = |conn: &rusqlite::Connection| -> Result<Option<(String, String, i64)>> {
-            Ok(conn
-                .query_row(
-                    "SELECT session, tool, updated FROM bindings WHERE dossier = ?1 AND released IS NULL",
-                    [name],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .optional()?)
-        };
         let now = now();
-        // whether the holder lives (systemctl, docker inspect) is asked outside the write lock (todo-189); the lock
-        // then goes on only while the holder is still the one asked about
-        let (tx, holder, stale) = loop {
-            let seen = holder_of(self.db.conn())?;
+        let place = place.map(|p| p.to_string_lossy().into_owned());
+        // whether the holder lives (systemctl, docker inspect) is asked outside the write lock (todo-189); the write
+        // then goes on, through the control writer, only while the holder is still the one asked about
+        let (released, held) = loop {
+            let seen = holder_of(self.db.conn(), name)?;
             let stale = match &seen {
                 Some((holder, _, updated)) if holder != session => {
                     !self.live(holder, *updated, now)?
                 }
                 _ => false,
             };
-            // IMMEDIATE: two sessions binding at once see each other's row
-            let tx = Transaction::new_unchecked(self.db.conn(), TransactionBehavior::Immediate)?;
-            if holder_of(&tx)? == seen {
-                break (tx, seen, stale);
-            }
-        };
-        match holder {
-            Some((holder, _, _)) if holder == session => {
-                tx.execute(
-                    "UPDATE bindings SET updated = ?1, place = coalesce(?3, place) WHERE session = ?2 AND released IS NULL",
-                    params![now, session, place.map(|p| p.to_string_lossy().into_owned())],
-                )?;
-                tx.commit()?;
-                out.push(format!("active dossier: {name} ({})", dir.display()));
-                return Ok(out);
-            }
-            Some((holder, holder_tool, updated)) => {
-                if !(stale || steal) {
-                    return Err(crate::error::coded(
-                        crate::error::Code::Conflict,
-                        format!(
-                            "dossier '{name}' is in use by session {holder} ({holder_tool}), last active {} min ago; use \
-                             another dossier (--dossier <name>; a new name makes one), or take this one over with --steal",
-                            (now - updated) / 60
-                        ),
-                    ));
-                }
-                tx.execute(
-                    "UPDATE bindings SET released = ?1 WHERE dossier = ?2 AND released IS NULL",
-                    params![now, name],
-                )?;
-                out.push(format!(
-                    "{name} was held by session {holder} ({})",
-                    if stale {
-                        "stale"
-                    } else {
-                        "taken over with steal"
-                    }
+            if let Some((holder, holder_tool, updated)) = &seen
+                && holder != session
+                && !(stale || steal)
+            {
+                return Err(crate::error::coded(
+                    crate::error::Code::Conflict,
+                    format!(
+                        "dossier '{name}' is in use by session {holder} ({holder_tool}), last active {} min ago; use \
+                         another dossier (--dossier <name>; a new name makes one), or take this one over with --steal",
+                        (now - updated) / 60
+                    ),
                 ));
             }
-            None => {}
-        }
-        let previous: Option<String> = tx
-            .query_row(
-                "SELECT dossier FROM bindings WHERE session = ?1 AND released IS NULL",
-                [session],
-                |r| r.get(0),
-            )
-            .optional()?;
+            let (session, tool, name, place) = (
+                session.to_string(),
+                tool.to_string(),
+                name.to_string(),
+                place.clone(),
+            );
+            let written = self.db.queued(move |tx| {
+                bound(
+                    tx,
+                    [session, tool, name],
+                    place.as_deref(),
+                    (seen, stale, now),
+                )
+            })?;
+            if let Some(written) = written {
+                break written;
+            }
+        };
+        let Some(previous) = released else {
+            // the session held it already
+            out.push(format!("active dossier: {name} ({})", dir.display()));
+            return Ok(out);
+        };
+        out.extend(held);
         if let Some(previous) = previous {
-            tx.execute(
-                "UPDATE bindings SET released = ?1 WHERE session = ?2 AND released IS NULL",
-                params![now, session],
-            )?;
             out.insert(0, format!("released {previous}"));
         }
-        tx.execute(
-            "INSERT INTO bindings (session, tool, dossier, acquired, updated, place) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
-            params![session, tool, name, now, place.map(|p| p.to_string_lossy().into_owned())],
-        )?;
-        tx.commit()?;
         out.push(format!("active dossier: {name} ({})", dir.display()));
         let memory = self.recent_memory(name, 3)?;
         if !memory.is_empty() {
@@ -561,10 +605,15 @@ impl Dossiers {
     /// The database write fails.
     pub fn release(&self, session: &str) -> Result<Option<String>> {
         let active = self.active(session)?;
-        self.db.conn().execute(
-            "UPDATE bindings SET released = ?1 WHERE session = ?2 AND released IS NULL",
-            params![now(), session],
-        )?;
+        let session = session.to_string();
+        // through the control writer, with the other writes of that moment
+        self.db.queued(move |tx| {
+            tx.execute(
+                "UPDATE bindings SET released = ?1 WHERE session = ?2 AND released IS NULL",
+                params![now(), session],
+            )?;
+            Ok(())
+        })?;
         Ok(active)
     }
 
@@ -655,11 +704,15 @@ impl Dossiers {
     /// # Errors
     /// The database write fails.
     pub fn touch(&self, session: &str) -> Result<()> {
-        self.db.conn().execute(
-            "UPDATE bindings SET updated = ?1 WHERE session = ?2 AND released IS NULL",
-            params![now(), session],
-        )?;
-        Ok(())
+        let session = session.to_string();
+        // through the control writer: each hook call of each agent writes it
+        self.db.queued(move |tx| {
+            tx.execute(
+                "UPDATE bindings SET updated = ?1 WHERE session = ?2 AND released IS NULL",
+                params![now(), session],
+            )?;
+            Ok(())
+        })
     }
 
     /// A new dossier `name`, its home linked into `folder` (E1a) when one is given; an existing name is refused
