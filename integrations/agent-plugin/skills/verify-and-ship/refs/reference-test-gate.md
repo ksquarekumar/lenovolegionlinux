@@ -43,6 +43,8 @@ Notes do not refuse: a duplicate (another test kills each mutant this test kills
 | `code tests list`, `code tests show <test>` | The tests with their last result and kills; the runs, kills and accepts of one test. |
 
 The pre-commit hook `legionctl-test-gate` (`scripts/test-gate.sh`) runs `code tests review --staged` for commits made
-with plain `git commit`. `git commit -a` and `git commit <path>` commit an index file of their own: the client sends
+with plain `git commit`. `workspace checkpoint` reviewed its tree already and gives the tree's id to its commit
+(`LEGIONCTL_CHECKPOINT_TREE`): the hook lets that tree through, also in a session's sandbox, where it cannot reach the
+operator, and reviews any other tree. `git commit -a` and `git commit <path>` commit an index file of their own: the client sends
 the hook's `GIT_INDEX_FILE` as `--index`, and the review reads that index. With nothing staged (`make lint`, CI) it has nothing to review. When the `legionctl` on
 `PATH` has no `code tests review`, it refuses the commit: install the new package (`make install-package`).

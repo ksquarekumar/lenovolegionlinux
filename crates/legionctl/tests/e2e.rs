@@ -8560,6 +8560,91 @@ fn jail_files(home: &Path, workspace: &Path) {
     );
 }
 
+/// F13 (Codex P1 #5 of the F13 challenge, lead 2026-10-22): a session's checkpoint commits in its jail, where the
+/// operator socket is hidden, so legionctl's own commit hook (scripts/test-gate.sh, the test review for a plain commit)
+/// failed every checkpoint of Rust code from a session. The checkpoint reviewed that tree already and gives its id to
+/// the commit (`LEGIONCTL_CHECKPOINT_TREE`): the hook lets that tree through and reviews any other one, so the variable
+/// with another tree's id skips nothing.
+#[test]
+fn a_session_checkpoint_passes_the_test_gate_hook_and_a_commit_of_another_tree_is_reviewed() {
+    let (op, home) = operator("gate-hook");
+    let repo = repository(&home);
+    let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-gate.sh");
+    let hook = repo.join(".git/hooks/pre-commit");
+    write(&hook, &format!("#!/bin/sh\nexec sh {}\n", gate.display()));
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let agent = "echo 'pub fn x() {}' > lib.rs && legionctl workspace checkpoint 'add x'";
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({"session": {"agents": {"probe": ["sh", "-c", agent]}, "writable": [], "scope": false}})
+            .to_string(),
+    );
+    let started = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["session", "start", "probe", "--dossier", "hook", "--json"],
+        "",
+    );
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let out = run_launch(
+        &op,
+        &home,
+        &serde_json::from_slice(&started.stdout).unwrap(),
+    );
+    let workspace = home.join("worktrees/repo/hook");
+    assert_eq!(
+        git(&home, &workspace, &["log", "-1", "--format=%s"]),
+        "add x",
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // a plain commit that names another tree: the hook runs the review (a stand-in legionctl that refuses)
+    let bin = home.join("gate-bin");
+    write(
+        &bin.join("legionctl"),
+        "#!/bin/sh\ncase \"$*\" in *--help*) exit 0 ;; esac\necho \"$*\" >> \"$HOME/reviewed\"\nexit 1\n",
+    );
+    std::fs::set_permissions(
+        bin.join("legionctl"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let reviewed = git(&home, &workspace, &["rev-parse", "HEAD^{tree}"]);
+    write(&workspace.join("lib.rs"), "pub fn y() {}\n");
+    git(&home, &workspace, &["add", "lib.rs"]);
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(&workspace)
+        .args(["commit", "--quiet", "-m", "manual"])
+        .env("HOME", &home)
+        .env("LEGIONCTL_CHECKPOINT_TREE", &reviewed)
+        .env(
+            "PATH",
+            std::env::join_paths(
+                std::iter::once(bin.clone())
+                    .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+            )
+            .unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert!(!commit.status.success(), "the hook refused the other tree");
+    assert_eq!(
+        std::fs::read_to_string(home.join("reviewed")).unwrap(),
+        "code tests review --staged\n"
+    );
+    assert_eq!(
+        git(&home, &workspace, &["log", "-1", "--format=%s"]),
+        "add x"
+    );
+}
+
 /// DESIGN-12 wall 1: a harness that refreshes its login in a session rotates the refresh token, so the new login
 /// must reach the real file, or the user's own Claude Code or Codex keeps a spent token and is logged out. A stand-in
 /// harness rewrites both login files and a settings file: the logins are new in the real home after the session, the

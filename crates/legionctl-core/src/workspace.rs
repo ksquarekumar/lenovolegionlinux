@@ -690,6 +690,9 @@ impl Dossiers {
         if git(&ws.path, &["diff", "--cached", "--quiet"]).is_ok() {
             return Ok(vec!["nothing to checkpoint".into()]);
         }
+        // the tree that the test gate reviews: a commit hook that runs the same review (legionctl's
+        // scripts/test-gate.sh, which cannot reach the operator from a session's sandbox) lets this tree alone through
+        let tree = git(&ws.path, &["write-tree"])?;
         self.test_gate(&ws.path)?;
         let mut lines = self
             .gate(
@@ -699,23 +702,23 @@ impl Dossiers {
             )
             .map_err(|e| refused("checkpoint refused, nothing committed", &e))?;
         let commit = ["commit", "--quiet", "-m", message];
-        match jail {
-            Some(jail) => {
-                let out = jail
-                    .command(&ws.path, &[&["git"][..], &commit].concat())
-                    .output()
-                    .context("running the commit in the session's sandbox")?;
-                ensure!(
-                    out.status.success(),
-                    "git commit: {}{}",
-                    String::from_utf8_lossy(&out.stdout).trim(),
-                    String::from_utf8_lossy(&out.stderr).trim()
-                );
-            }
-            None => {
-                git(&ws.path, &commit)?;
-            }
-        }
+        let mut cmd = if let Some(jail) = jail {
+            jail.command(&ws.path, &[&["git"][..], &commit].concat())
+        } else {
+            let mut cmd = crate::git::command(&ws.path);
+            cmd.args(commit);
+            cmd
+        };
+        let out = cmd
+            .env("LEGIONCTL_CHECKPOINT_TREE", &tree)
+            .output()
+            .context("running git commit")?;
+        ensure!(
+            out.status.success(),
+            "git commit: {}{}",
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
         lines.push(git(&ws.path, &["log", "-1", "--format=%h %s"])?);
         Ok(lines)
     }
