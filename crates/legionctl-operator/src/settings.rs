@@ -354,11 +354,22 @@ impl Operator {
         let setting = settings::setting_of(&input.key)
             .filter(|s| s.key == input.key && s.kind["type"] == "array")
             .with_context(|| format!("{} is not a list setting", input.key))?;
-        // a list for you or this computer does not take a project's entries
-        let resolved = match input.scope {
-            Scope::Project | Scope::UserRepo => config(Some(ctx.folder()?))?,
-            Scope::User | Scope::Computer => config(None)?,
+        // the list as the layers up to the one that changes give it: none of a layer above it goes into it
+        let last = match input.scope {
+            Scope::Computer => "system",
+            Scope::User => "user",
+            Scope::Project => "repo",
+            Scope::UserRepo => "user-repo",
         };
+        let project = match input.scope {
+            Scope::Project | Scope::UserRepo => Some(ctx.folder()?),
+            Scope::User | Scope::Computer => None,
+        };
+        let resolved = legionctl_core::config::resolve_through(
+            &legionctl_core::config::Dirs::from_env(),
+            project,
+            Some(last),
+        )?;
         // a list whose entries add up: the layer's own entries (what legionctl wrote there)
         if setting.union {
             let file = settings::layer_dir(&resolved, input.scope)?

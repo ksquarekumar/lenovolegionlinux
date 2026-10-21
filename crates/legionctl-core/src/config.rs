@@ -737,10 +737,19 @@ pub(crate) fn ask(unapproved: &[Unapproved]) {
     }
 }
 
-/// `file` as in the main checkout of its repository when it is in a worktree, else `file`.
+/// `file` as in the main checkout of its repository when it is in a worktree (whose `.git` file names
+/// `<main>/.git/worktrees/<name>`), else `file`.
 fn main_checkout_path(file: &Path) -> PathBuf {
-    let main = repo_root(file)
-        .and_then(|root| Some(main_checkout_of(&root).join(file.strip_prefix(&root).ok()?)));
+    let main = repo_root(file).and_then(|root| {
+        let link = std::fs::read_to_string(root.join(".git")).ok()?;
+        let gitdir = PathBuf::from(link.strip_prefix("gitdir:")?.trim());
+        let worktrees = gitdir.parent()?;
+        let dot_git = worktrees.parent()?;
+        if worktrees.file_name()? != "worktrees" || dot_git.file_name()? != ".git" {
+            return None;
+        }
+        Some(dot_git.parent()?.join(file.strip_prefix(&root).ok()?))
+    });
     main.unwrap_or_else(|| file.to_path_buf())
 }
 
@@ -774,30 +783,27 @@ pub fn repo_layer_clashes(
         .collect()
 }
 
-/// The main checkout of the repository whose checkout (the main one or a worktree) is `root`: the folder of git's
-/// common dir (`git rev-parse --git-common-dir`), read from git's files: a worktree's `.git` file names its gitdir,
-/// whose `commondir` file leads to the common dir. A checkout that is no worktree is its own main checkout.
-pub(crate) fn main_checkout_of(root: &Path) -> PathBuf {
-    let common = (|| {
-        let link = std::fs::read_to_string(root.join(".git")).ok()?;
-        let gitdir = root.join(link.strip_prefix("gitdir:")?.trim());
-        let common = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
-        Some(gitdir.join(common.trim()))
-    })();
-    // `..` without the file system: the paths stay as the user wrote them
-    let mut folder = PathBuf::new();
-    for part in common.as_deref().unwrap_or(&root.join(".git")).components() {
-        match part {
-            std::path::Component::ParentDir => {
-                folder.pop();
+/// The name of the repository whose checkout (the main one or a worktree) is `root`, as your settings for it are
+/// named: the folder name of the parent of git's common dir (`git rev-parse --git-common-dir`), read from git's files.
+/// A `.git` folder is the common dir; a `.git` file names a gitdir, which is the common dir unless its `commondir`
+/// file leads to another; the path resolves through links as git resolves it.
+pub(crate) fn repo_name(root: &Path) -> Option<std::ffi::OsString> {
+    let dot_git = root.join(".git");
+    let common = match std::fs::read_to_string(&dot_git) {
+        Ok(link) => {
+            let gitdir = root.join(link.strip_prefix("gitdir:")?.trim());
+            match std::fs::read_to_string(gitdir.join("commondir")) {
+                Ok(common) => gitdir.join(common.trim()),
+                Err(_) => gitdir,
             }
-            std::path::Component::CurDir => {}
-            other => folder.push(other),
         }
-    }
-    folder
-        .parent()
-        .map_or_else(|| root.to_path_buf(), Path::to_path_buf)
+        Err(_) => dot_git,
+    };
+    std::fs::canonicalize(common)
+        .ok()?
+        .parent()?
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
 }
 
 /// Use the repository file `file` with the content `value` only after the user allowed that content; the first use asks
@@ -1196,6 +1202,19 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
 /// [`Config`] (the message names the key), or a layer folder or file cannot be read or is not a JSONC object (a typo
 /// must not drop a setting such as a gate in silence).
 pub fn resolve_quiet(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
+    resolve_through(dirs, project, None)
+}
+
+/// As [`resolve_quiet`], with the layers up to `last` only (`config.precedence` names): what a change of that layer
+/// builds on, without the layers above it.
+///
+/// # Errors
+/// As [`resolve_quiet`].
+pub fn resolve_through(
+    dirs: &Dirs,
+    project: Option<&Path>,
+    last: Option<&str>,
+) -> Result<Resolved> {
     let defaults = defaults()?;
     let system_dir = dirs.system.clone();
     let user_dir = dirs.user.clone();
@@ -1255,6 +1274,9 @@ pub fn resolve_quiet(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
             };
             ordered.push((source, trusted, value));
         }
+        if last == Some(name.as_str()) {
+            break;
+        }
     }
     ensure!(
         precedence.first().is_some_and(|l| l == "defaults"),
@@ -1299,9 +1321,7 @@ fn repo_layer_dirs(user_dir: &Path, project: Option<&Path>) -> (Option<PathBuf>,
     let Some(root) = project.and_then(repo_root) else {
         return (None, None);
     };
-    let mine = main_checkout_of(&root)
-        .file_name()
-        .map(|name| user_dir.join("repos").join(name));
+    let mine = repo_name(&root).map(|name| user_dir.join("repos").join(name));
     (Some(root.join(".legionctl")), mine)
 }
 

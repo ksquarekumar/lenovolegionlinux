@@ -1258,6 +1258,64 @@ fn opened_workspace(
     )
 }
 
+/// A change for you in a repository lands in your folder for it, for every checkout, and nowhere else; a key with no
+/// project scope is refused there; a list change of the repository's layer builds on its layer and the ones below.
+fn your_changes_for_a_repository_stay_out_of_git(
+    op: &Operator,
+    home: &Path,
+    (main, worktree, workspace): (&Path, &Path, &Path),
+) {
+    let home = home.to_path_buf();
+    let mine = home.join(".config/legionctl/repos/proj");
+    let row = |cwd: &Path, key: &str| settings_row(op, &home, cwd, key);
+    let set = [
+        "config",
+        "set",
+        "dossier.message_chars",
+        "700",
+        "--scope",
+        "user-repo",
+    ];
+    let (out, ok) = said(op, &home, worktree, &set);
+    assert!(ok, "{out}");
+    assert!(mine.join("managed.jsonc").is_file());
+    assert_eq!(row(workspace, "dossier.message_chars")["value"], 700);
+    assert_eq!(row(&home, "dossier.message_chars")["from"], "defaults");
+    let refused = [
+        "config",
+        "set",
+        "gateway.port",
+        "4998",
+        "--scope",
+        "user-repo",
+    ];
+    let (out, ok) = said(op, &home, worktree, &refused);
+    assert!(
+        !ok && out.contains("is set only for this computer or you"),
+        "{out}"
+    );
+    // a list change of the repository's layer builds on its layer and the ones below: none of yours goes into git
+    let add = [
+        "config",
+        "add",
+        "checks.required",
+        "build",
+        "--scope",
+        "project",
+    ];
+    let (out, ok) = said(op, &home, main, &add);
+    assert!(ok, "{out}");
+    let written: Value = serde_json::from_str(
+        &std::fs::read_to_string(main.join(".legionctl/managed.jsonc"))
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    assert_eq!(written["checks"]["required"], json!(["lint", "build"]));
+}
+
 /// Your settings for one repository can live outside git, in `~/.config/legionctl/repos/<repo>/` (agency-os
 /// feedbacks/0009 and 0010): `<repo>` is the folder name of the repository's main checkout, so a git worktree and a
 /// legionctl workspace of it read the same checks, config and capability sets, `$schema`-named too, with no first-use
@@ -1272,8 +1330,12 @@ fn a_repositorys_settings_of_yours_live_outside_git_for_every_checkout() {
     committed_repo(
         &home,
         &main,
-        Some(r#"{ "workspace": { "nudge": true }, "dossier": { "nudge_turns": 9 } }"#),
+        Some(
+            r#"{ "workspace": { "nudge": true }, "dossier": { "nudge_turns": 9 }, "checks": { "required": ["lint"] } }"#,
+        ),
     );
+    // you allowed the repository's file (its checks keys wait for that answer)
+    trust::allow(&home, &main.join(".legionctl/config.jsonc"));
     let mine = home.join(".config/legionctl/repos/proj");
     write(
         &mine.join("checks.jsonc"),
@@ -1281,7 +1343,7 @@ fn a_repositorys_settings_of_yours_live_outside_git_for_every_checkout() {
     );
     write(
         &mine.join("config.jsonc"),
-        r#"{ "$schema": "./legionctl.schema.json", "workspace": { "nudge": false }, "gateway": { "port": 4999 } }"#,
+        r#"{ "$schema": "./legionctl.schema.json", "workspace": { "nudge": false }, "gateway": { "port": 4999 }, "checks": { "required": ["test"] } }"#,
     );
     write(
         &mine.join("capabilities/mirror.jsonc"),
@@ -1326,33 +1388,66 @@ fn a_repositorys_settings_of_yours_live_outside_git_for_every_checkout() {
     );
     assert_eq!(row(&worktree, "gateway.port")["from"], "defaults");
 
-    // a change for you in this repository lands in that folder, for every checkout, and nowhere else
-    let set = [
-        "config",
-        "set",
-        "dossier.message_chars",
-        "700",
-        "--scope",
-        "user-repo",
-    ];
-    let (out, ok) = said(&op, &home, &worktree, &set);
-    assert!(ok, "{out}");
-    assert!(mine.join("managed.jsonc").is_file());
-    assert_eq!(row(&workspace, "dossier.message_chars")["value"], 700);
-    assert_eq!(row(&home, "dossier.message_chars")["from"], "defaults");
-    let refused = [
-        "config",
-        "set",
-        "gateway.port",
-        "4998",
-        "--scope",
-        "user-repo",
-    ];
-    let (out, ok) = said(&op, &home, &worktree, &refused);
-    assert!(
-        !ok && out.contains("is set only for this computer or you"),
-        "{out}"
+    your_changes_for_a_repository_stay_out_of_git(&op, &home, (&main, &worktree, &workspace));
+}
+
+/// Each checkout finds your settings folder of its repository by the name that git gives: the folder name of the parent
+/// of `git rev-parse --git-common-dir`. Also for a checkout whose git folder is elsewhere (`--separate-git-dir`: its
+/// `.git` file names a gitdir with no `commondir`), its worktrees, and a worktree whose `.git` file reaches its gitdir
+/// through a link.
+#[test]
+fn each_checkout_finds_your_settings_folder_by_the_name_git_gives_its_repository() {
+    let (op, home) = repo_layer_operator("reponame");
+    let main = home.join("code/proj");
+    std::fs::create_dir_all(&main).unwrap();
+    let store = home.join("store/proj.git");
+    std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+    git(
+        &home,
+        &main,
+        &[
+            "init",
+            "--quiet",
+            "--separate-git-dir",
+            store.to_str().unwrap(),
+        ],
     );
+    write(&main.join("README.md"), "repo\n");
+    git(&home, &main, &["add", "."]);
+    git(&home, &main, &["commit", "--quiet", "-m", "start"]);
+    let worktree = home.join("wt");
+    git(
+        &home,
+        &main,
+        &["worktree", "add", "--quiet", worktree.to_str().unwrap()],
+    );
+    let linked = home.join("linked");
+    git(
+        &home,
+        &main,
+        &["worktree", "add", "--quiet", linked.to_str().unwrap()],
+    );
+    std::os::unix::fs::symlink(&store, home.join("g")).unwrap();
+    write(&linked.join(".git"), "gitdir: ../g/worktrees/linked\n");
+    for checkout in [&main, &worktree, &linked] {
+        let common = PathBuf::from(
+            git(
+                &home,
+                checkout,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )
+            .trim(),
+        );
+        let name = common.parent().unwrap().file_name().unwrap().to_owned();
+        let folder = home.join(".config/legionctl/repos").join(&name);
+        let (layers, _) = said(&op, &home, checkout, &["config", "layers"]);
+        assert!(
+            layers.contains(&format!("user-repo {}", folder.display())),
+            "{}: git names {}\n{layers}",
+            checkout.display(),
+            name.to_string_lossy()
+        );
+    }
 }
 
 /// Two repositories whose main checkouts have the same folder name share your settings folder for that name: `config
