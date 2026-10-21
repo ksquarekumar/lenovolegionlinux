@@ -2676,6 +2676,61 @@ fn repository(home: &Path) -> PathBuf {
     repo
 }
 
+/// F9 (feedbacks/0001 item 9): an object field of an operation (`feedback new --about`) takes `key=value`, repeated,
+/// or a JSON object, from the CLI as from MCP; a value keeps its spaces. A token that is neither is refused before the
+/// call, and no feedback is kept.
+#[test]
+fn feedback_about_takes_key_values_and_json_and_refuses_other_tokens() {
+    let (op, home) = operator("feedback-about");
+    let env = [("HOME", home.to_str().unwrap())];
+    assert!(
+        op.run(&home, &env, &["dossier", "create", "fb"], "")
+            .status
+            .success()
+    );
+    let kept = op.run(
+        &home,
+        &env,
+        &[
+            "feedback",
+            "new",
+            "the about map",
+            "fb",
+            "--about",
+            "label=release ",
+            "--about",
+            r#"{"view": "health", "tab": "gpu"}"#,
+        ],
+        "",
+    );
+    assert!(
+        kept.status.success(),
+        "{}",
+        String::from_utf8_lossy(&kept.stderr)
+    );
+    let feedbacks = home.join("agentWorkspaces/fb/feedbacks");
+    let note = std::fs::read_to_string(feedbacks.join("0001-the-about-map/note.md")).unwrap();
+    assert!(
+        ["label: release \n", "view: health\n", "tab: gpu\n"]
+            .iter()
+            .all(|line| note.contains(line)),
+        "{note}"
+    );
+
+    let refused = op.run(
+        &home,
+        &env,
+        &["feedback", "new", "a bad token", "fb", "--about", "release"],
+        "",
+    );
+    let why = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !refused.status.success() && why.contains("expected key=value or a JSON object"),
+        "{why}"
+    );
+    assert_eq!(std::fs::read_dir(&feedbacks).unwrap().count(), 1);
+}
+
 /// F3 (feedbacks/0001 item 3): a repository with no commit cannot have a workspace yet. `workspace open` tells the
 /// agent to make a first commit (not git's "invalid reference: main"), session start tells it the same, and Stop does
 /// not block on the files of the main checkout: the agent cannot open the workspace that Stop would ask for. In a

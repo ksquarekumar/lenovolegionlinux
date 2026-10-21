@@ -41,6 +41,8 @@ enum Kind {
         option: bool,
     },
     Choice(Vec<String>),
+    /// An object: `--name key=value`, repeated, or a JSON object (F9).
+    Map,
 }
 
 /// `Option<T>` is `anyOf [T, null]` or `type: [T, "null"]`; return T's schema and its type name.
@@ -116,6 +118,7 @@ fn fields(input: &Value) -> Vec<Field<'_>> {
                         argv: prop["x-argv"] == true,
                         option: prop["x-option"] == true,
                     },
+                    Some("object") => Kind::Map,
                     _ => Kind::Text,
                 }
             };
@@ -154,7 +157,7 @@ fn argument(field: &Field) -> Arg {
                     .value_parser(clap::builder::PossibleValuesParser::new(values.clone()));
             }
             Kind::Text | Kind::Path => return arg.required(true),
-            Kind::Flag | Kind::List { .. } | Kind::Session | Kind::Stdin => {}
+            Kind::Flag | Kind::List { .. } | Kind::Map | Kind::Session | Kind::Stdin => {}
         }
     }
     argument_named(field, arg)
@@ -199,6 +202,9 @@ fn argument_named(field: &Field, arg: Arg) -> Arg {
             arg = arg.value_parser(clap::builder::PossibleValuesParser::new(values.clone()));
         }
         Kind::Session | Kind::List { .. } => return arg,
+        Kind::Map => {
+            return arg.action(ArgAction::Append).value_name("KEY=VALUE");
+        }
         // free text may start with '-': `--content "- a ledger line"`
         Kind::Stdin => return arg.allow_hyphen_values(true),
         Kind::Text | Kind::Path => {}
@@ -305,7 +311,7 @@ pub fn command(client_only: Vec<Command>) -> Command {
 /// # Errors
 /// A client-filled field cannot be filled (see [`fill_client_fields`]).
 pub fn operation(matches: &ArgMatches, stdin: bool) -> Result<Option<(&'static OpInfo, Value)>> {
-    let Some((op, mut input)) = parse(matches) else {
+    let Some((op, mut input)) = parse(matches)? else {
         return Ok(None);
     };
     fill_client_fields(op, &mut input, stdin)?;
@@ -313,8 +319,10 @@ pub fn operation(matches: &ArgMatches, stdin: bool) -> Result<Option<(&'static O
 }
 
 /// The operation a parsed command line names, and the input that the line gives (no field of the calling process).
-#[must_use]
-pub fn parse(matches: &ArgMatches) -> Option<(&'static OpInfo, Value)> {
+///
+/// # Errors
+/// A token of an object field is neither `key=value` nor a JSON object.
+pub fn parse(matches: &ArgMatches) -> Result<Option<(&'static OpInfo, Value)>> {
     let mut words = Vec::new();
     let mut at = matches;
     while let Some((word, sub)) = at.subcommand() {
@@ -322,7 +330,9 @@ pub fn parse(matches: &ArgMatches) -> Option<(&'static OpInfo, Value)> {
         at = sub;
     }
     let name = words.join(".");
-    let op = OPS.iter().find(|op| op.name == name)?;
+    let Some(op) = OPS.iter().find(|op| op.name == name) else {
+        return Ok(None);
+    };
     let schema = (op.input)();
     let mut input = Map::new();
     for field in fields(&schema) {
@@ -346,6 +356,10 @@ pub fn parse(matches: &ArgMatches) -> Option<(&'static OpInfo, Value)> {
                     .cloned()
                     .collect::<Vec<_>>(),
             )),
+            Kind::Map => at
+                .get_many::<String>(field.key)
+                .map(|tokens| map(field.key, tokens))
+                .transpose()?,
             Kind::Text | Kind::Path | Kind::Choice(_) | Kind::Session | Kind::Stdin => at
                 .get_one::<String>(field.key)
                 .map(|s| Value::from(s.as_str())),
@@ -354,7 +368,24 @@ pub fn parse(matches: &ArgMatches) -> Option<(&'static OpInfo, Value)> {
             input.insert(field.key.to_string(), value);
         }
     }
-    Some((op, Value::Object(input)))
+    Ok(Some((op, Value::Object(input))))
+}
+
+/// The object of `--key` tokens: each a JSON object or `key=value` (the value as given, spaces too).
+fn map<'a>(key: &str, tokens: impl Iterator<Item = &'a String>) -> Result<Value> {
+    let mut object = Map::new();
+    for token in tokens {
+        if token.trim_start().starts_with('{') {
+            let given: Map<String, Value> = serde_json::from_str(token)
+                .with_context(|| format!("--{key} {token}: not a JSON object"))?;
+            object.extend(given);
+        } else if let Some((name, value)) = token.split_once('=') {
+            object.insert(name.to_string(), Value::from(value));
+        } else {
+            anyhow::bail!("--{key} {token}: expected key=value or a JSON object");
+        }
+    }
+    Ok(Value::Object(object))
 }
 
 /// Fill what only the calling process knows: path fields become absolute against its working directory (with path

@@ -135,7 +135,7 @@ pub fn action(
             let matches = crate::cli::command(Vec::new())
                 .try_get_matches_from(std::iter::once("legionctl".to_string()).chain(words))
                 .map_err(|e| anyhow::anyhow!("{}", e.render()))?;
-            crate::cli::parse(&matches)
+            crate::cli::parse(&matches)?
                 .ok_or_else(|| anyhow::anyhow!("not an operation: {command}"))
         });
     match parsed {
