@@ -85,7 +85,9 @@ jobs:
           fi
       # the tests run in a cgroup that the runner user owns, as a user's processes do under systemd (Delegate=yes): the
       # gateway tunnel test puts its sandbox in a session scope below it (run 39142479816 failed with EACCES)
+      # a test that waits forever fails the step, not the 6 h job (run 39631433941: 62 min on one test)
       - name: Lint, format check, profile validation, tests
+        timeout-minutes: 45
         run: |
           sudo mkdir /sys/fs/cgroup/ci && sudo chown -R "$(id -u):$(id -g)" /sys/fs/cgroup/ci
           echo $$ | sudo tee /sys/fs/cgroup/ci/cgroup.procs >/dev/null
@@ -104,7 +106,10 @@ jobs:
           SUMS
           make kmod-checkpatch CHECKPATCH="$HOME/checkpatch/checkpatch.pl"
       # the eBPF sensors need root to load: run their tests with sudo (the binary is built as the runner user)
+      # the Windows VM test starts a VM: its tests may run past the default 15 min a test has (tests/common/scratch.rs)
       - name: eBPF sensors as root
+        env:
+          LEGIONCTL_TEST_MINUTES: "60"
         run: |
           bin=$(cargo test --profile test-fast -p legionctl --test machine --no-run --message-format=json \
             | jq -r 'select(.target.name == "machine" and .executable != null) | .executable')
@@ -130,7 +135,10 @@ jobs:
         with:
           path: ~/virtiofsd-bin
           key: virtiofsd-1.14.0-${{ runner.os }}
+      # the first run builds the disks (a Debian image, DKMS): its tests may run past the default 15 min a test has
       - name: VM sessions
+        env:
+          LEGIONCTL_TEST_MINUTES: "90"
         run: |
           sudo apt-get install -y qemu-system-x86 qemu-utils xorriso acpica-tools libcap-ng-dev libseccomp-dev
           if [ ! -x ~/virtiofsd-bin/virtiofsd ]; then

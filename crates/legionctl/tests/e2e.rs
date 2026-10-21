@@ -10739,13 +10739,19 @@ fn a_codex_run_reaches_legionctls_tools_with_the_cleared_environment_codex_gives
     );
 }
 
-/// `legionctl mcp` with `global` options first (`-C <folder>`), under an agent of its own: a shell that runs it, then
-/// waits, as Claude Code or Codex runs its MCP server. The whole group stops with the [`Mcp`].
-fn mcp_under_agent(operator: &Operator, env: &[(&str, &str)], global: &[&str]) -> Mcp {
+/// `legionctl mcp` in the folder `cwd` (the test's, never the checkout: a bind links the dossier home there) with
+/// `global` options first (`-C <folder>`), under an agent of its own: a shell that runs it, then waits, as Claude Code
+/// or Codex runs its MCP server. The whole group stops with the [`Mcp`].
+fn mcp_under_agent(
+    operator: &Operator,
+    (cwd, env): (&Path, &[(&str, &str)]),
+    global: &[&str],
+) -> Mcp {
     Mcp::over(
         operator,
         env,
         Command::new("/bin/sh")
+            .current_dir(cwd)
             .arg("-c")
             .arg(r#""$0" "$@" mcp; sleep 600"#)
             .arg(env!("CARGO_BIN_EXE_legionctl"))
@@ -10764,14 +10770,21 @@ fn server_ends(mcp: &mut Mcp) {
     assert!(Command::new("kill").arg(server).status().unwrap().success());
 }
 
-/// `legionctl mcp` started by a wrapper that ends when the file `done` is there; the server runs on.
-fn mcp_under_wrapper(operator: &Operator, env: &[(&str, &str)], done: &Path) -> Mcp {
+/// `legionctl mcp` in the folder `cwd`, started by a wrapper that ends when the file `done` is there; the server runs on.
+fn mcp_under_wrapper(
+    operator: &Operator,
+    (cwd, env): (&Path, &[(&str, &str)]),
+    done: &Path,
+) -> Mcp {
     Mcp::over(
         operator,
         env,
+        // a shell gives a job it starts in the background /dev/null as its input before the job's own redirections
+        // (dash, Ubuntu's sh, does; bash keeps it for `0<&0`): the input goes to the job through fd 3
         Command::new("/bin/sh")
+            .current_dir(cwd)
             .arg("-c")
-            .arg(r#""$0" mcp 0<&0 & while [ ! -e "$1" ]; do sleep 0.05; done"#)
+            .arg(r#"exec 3<&0; "$0" mcp <&3 3<&- & exec 3<&-; while [ ! -e "$1" ]; do sleep 0.05; done"#)
             .arg(env!("CARGO_BIN_EXE_legionctl"))
             .arg(done),
     )
@@ -10829,7 +10842,7 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
     let runtime_link = home.join("runtime-link");
     std::os::unix::fs::symlink(&*op.runtime, &runtime_link).unwrap();
     let linked = [env[0], ("XDG_RUNTIME_DIR", runtime_link.to_str().unwrap())];
-    let mut live = mcp_under_agent(&op, &linked, &["-C", home.to_str().unwrap()]);
+    let mut live = mcp_under_agent(&op, (&home, &linked), &["-C", home.to_str().unwrap()]);
     bind(&mut live, "review-live", "codex-review-live");
     std::thread::sleep(std::time::Duration::from_millis(1100));
     sql(
@@ -10839,11 +10852,11 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
          ('old-live', 'mcp', 'review-old-live', strftime('%s', 'now'), strftime('%s', 'now'))",
     );
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    let mut ended = mcp_under_agent(&op, &env, &[]);
-    let mut gone_while_off = mcp_under_agent(&op, &env, &[]);
-    let mut restarted = mcp_under_agent(&op, &env, &[]);
+    let mut ended = mcp_under_agent(&op, (&home, &env), &[]);
+    let mut gone_while_off = mcp_under_agent(&op, (&home, &env), &[]);
+    let mut restarted = mcp_under_agent(&op, (&home, &env), &[]);
     let wrapper_done = home.join("wrapper-done");
-    let mut wrapped = mcp_under_wrapper(&op, &env, &wrapper_done);
+    let mut wrapped = mcp_under_wrapper(&op, (&home, &env), &wrapper_done);
     bind(&mut ended, "review-ended", "codex-review-ended");
     bind(&mut gone_while_off, "review-off", "codex-review-off");
     bind(&mut restarted, "review-restarted", "claude-restarted");

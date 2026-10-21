@@ -108,6 +108,19 @@ stray-tests: ## list legionctl test processes that run for more than STRAY_SECON
 .PHONY: ci
 ci: lint rust-lint js-lint validate test stray-tests ## what CI runs
 
+CI_LOCAL_IMAGE := legionctl-ci-local:ubuntu-24.04
+
+.PHONY: ci-local
+ci-local: ## make ci in a container shaped like the GitHub runner (Ubuntu 24.04, its packages and cgroup, no user systemd); a test that runs past 15 min stops the run
+	docker build -q -t $(CI_LOCAL_IMAGE) --build-arg UID=$$(id -u) --build-arg GID=$$(id -g) tests/ci-local
+	mkdir -p "$$HOME/.cargo/registry" /var/tmp/legionctl-test-cache
+	docker run --rm --privileged --cgroupns=private --user root \
+	  --group-add "$$(stat -c %g /var/run/docker.sock)" -v /var/run/docker.sock:/var/run/docker.sock \
+	  -v "$(CURDIR):$(CURDIR)" -w "$(CURDIR)" -e CARGO_TARGET_DIR="$(CURDIR)/target/ci-local" \
+	  -v "$$HOME/.cargo/registry:/home/runner/.cargo/registry" -v legionctl-ci-local-cache:/home/runner/.cache \
+	  -v /var/tmp/legionctl-test-cache:/var/tmp/legionctl-test-cache \
+	  $(CI_LOCAL_IMAGE) tests/ci-local/run.sh
+
 .PHONY: kmod
 kmod: kmod-checkpatch ## build the legionctl-wmi kernel module against KDIR (this kernel's headers) as a check; it loads nothing
 	$(MAKE) -C $(KMOD) KDIR=$(KDIR)

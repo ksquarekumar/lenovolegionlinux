@@ -2,6 +2,8 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -11,9 +13,14 @@ use crate::common::process::Kill;
 pub struct Mcp {
     /// The process the harness started: the server, or the agent that runs it.
     pub child: Kill,
-    out: BufReader<std::process::ChildStdout>,
+    /// The server's output lines, read on a thread of their own: a reply that never comes fails the test (CI run
+    /// 39631433941 waited 62 min on a server that had read no request).
+    out: Receiver<String>,
     next: u64,
 }
+
+/// How long a test waits for one reply of the server.
+const REPLY_WAIT: Duration = Duration::from_secs(300);
 
 impl Mcp {
     /// `legionctl mcp <args>` started in the folder `cwd` (its calls' folder; none: the test's).
@@ -46,7 +53,15 @@ impl Mcp {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped()),
         );
-        let out = BufReader::new(child.stdout.take().unwrap());
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let (lines, out) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in stdout.lines().map_while(Result::ok) {
+                if lines.send(line).is_err() {
+                    break;
+                }
+            }
+        });
         let mut mcp = Mcp {
             child,
             out,
@@ -89,8 +104,18 @@ impl Mcp {
     pub fn call_raw(&mut self, method: &str, params: &Value) -> Value {
         self.next += 1;
         self.send(&json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params}));
-        let mut line = String::new();
-        self.out.read_line(&mut line).unwrap();
+        let line = match self.out.recv_timeout(REPLY_WAIT) {
+            Ok(line) => line,
+            Err(RecvTimeoutError::Timeout) => {
+                panic!(
+                    "the MCP server gave no answer to {method} in {} s",
+                    REPLY_WAIT.as_secs()
+                )
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("the MCP server ended its output before it answered {method}")
+            }
+        };
         let reply: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(reply["id"], self.next, "{reply}");
         reply
