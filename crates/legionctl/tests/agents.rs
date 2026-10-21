@@ -1844,3 +1844,127 @@ fn setup_apply_gives_codex_the_legionctl_plugin_with_its_mcp_server_hooks_and_sk
     );
     assert_eq!(rows()[0], row("legionctl plugin", "current"));
 }
+
+/// The `sandbox access` rows of `setup check`: (agent, status, path).
+fn sandbox_rows(lab: &Lab) -> Vec<(String, String, String)> {
+    let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();
+    check["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"] == "sandbox access")
+        .map(|i| {
+            let [agent, status, path] =
+                ["agent", "status", "path"].map(|k| i[k].as_str().unwrap().to_string());
+            (agent, status, path)
+        })
+        .collect()
+}
+
+/// A host agent with its sandbox on reaches legionctl (plan#todo-227 AOS-5): Claude Code's Bash sandbox blocks the
+/// operator's socket on Linux and agency-os's project settings block ~/.gitconfig; Codex's sandbox denies every
+/// connect when its network is off. `setup apply` runs `legionctl` outside both sandboxes (Claude Code's
+/// sandbox.excludedCommands, a Codex rule) and lets git read ~/.gitconfig (sandbox.filesystem.allowRead), keeping the
+/// user's own entries; check and doctor show each row until then. A settings file that is not JSON is never
+/// overwritten.
+#[test]
+fn setup_apply_lets_sandboxed_agents_run_legionctl_and_keeps_the_users_own_sandbox_entries() {
+    let lab = Lab::new("sandbox", &shipped_plugin());
+    lab.stand_in_ctx();
+    let settings = lab.home.join(".claude/settings.json");
+    let rules = lab.home.join(".codex/rules/legionctl.rules");
+    let own = json!({
+        "sandbox": {
+            "enabled": true,
+            "excludedCommands": ["git status *"],
+            "filesystem": {"denyRead": ["~/.*"], "allowRead": ["~/.cargo"]}
+        },
+        "permissions": {"allow": ["Bash(ls *)"]}
+    });
+    write(&settings, &serde_json::to_string_pretty(&own).unwrap());
+    let rows = || sandbox_rows(&lab);
+    let want = |claude: &str, codex: &str| {
+        vec![
+            (
+                "claude-code".to_string(),
+                claude.to_string(),
+                settings.display().to_string(),
+            ),
+            ("codex".into(), codex.into(), rules.display().to_string()),
+        ]
+    };
+    assert_eq!(rows(), want("missing", "missing"));
+    let doctor = String::from_utf8_lossy(&lab.op.cli(&["doctor"]).stdout).into_owned();
+    assert!(
+        doctor.contains(
+            "setup: sandbox access for claude-code is missing (fix: legionctl setup apply)"
+        ) && doctor
+            .contains("setup: sandbox access for codex is missing (fix: legionctl setup apply)"),
+        "{doctor}"
+    );
+
+    let apply = || {
+        let out = lab.op.cli_in(&lab.home, &["setup", "apply"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let done = apply();
+    assert!(
+        done.contains(&format!(
+            "sandbox access: legionctl runs outside Claude Code's sandbox ({})",
+            settings.display()
+        )) && done.contains(&format!(
+            "sandbox access: legionctl runs outside Codex's sandbox ({})",
+            rules.display()
+        )),
+        "{done}"
+    );
+    let mut merged = own.clone();
+    merged["sandbox"]["excludedCommands"] = json!(["git status *", "legionctl *"]);
+    merged["sandbox"]["filesystem"]["allowRead"] = json!(["~/.cargo", "~/.gitconfig"]);
+    assert_eq!(
+        serde_json::from_str::<Value>(&std::fs::read_to_string(&settings).unwrap()).unwrap(),
+        merged
+    );
+    assert_eq!(
+        std::fs::read_to_string(&rules).unwrap(),
+        "# Written by `legionctl setup apply`: legionctl runs outside Codex's sandbox (its operator decides what an agent may do)\n\
+         prefix_rule(pattern = [\"legionctl\"], decision = \"allow\")\n"
+    );
+    assert_eq!(rows(), want("current", "current"));
+    assert!(!apply().contains("sandbox access"), "written once");
+
+    // settings that are not JSON: the row names the file, apply fails and changes nothing
+    write(&settings, "{ \"sandbox\": ");
+    let row = rows()[0].1.clone();
+    assert!(
+        row.starts_with(&format!(
+            "{} is not valid JSON; fix it before setup: EOF while parsing",
+            settings.display()
+        )),
+        "{row}"
+    );
+    let doctor = String::from_utf8_lossy(&lab.op.cli(&["doctor"]).stdout).into_owned();
+    assert!(
+        doctor.contains("is not valid JSON; fix it before setup")
+            && !doctor
+                .contains("before setup: EOF while parsing a value at line 1 column 13 (fix:"),
+        "a file apply cannot mend gets no fix: {doctor}"
+    );
+    let out = lab.op.cli_in(&lab.home, &["setup", "apply"]);
+    assert!(
+        !out.status.success()
+            && String::from_utf8_lossy(&out.stderr)
+                .contains("is not valid JSON; fix it before setup"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        "{ \"sandbox\": "
+    );
+}

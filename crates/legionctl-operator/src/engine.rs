@@ -1277,9 +1277,11 @@ fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
                 )));
             }
             let text = format!("setup: {} for {} is {}", i.what, i.agent, i.status);
-            // no setup step mends an extension that GNOME Shell refused, nor gives Codex the user's trust
+            // no setup step mends an extension that GNOME Shell refused, gives Codex the user's trust, or mends a
+            // settings file that is not JSON
             if i.status == legionctl_machine::system::OSD_BROKEN
                 || i.status == legionctl_core::plugin::CODEX_HOOKS_UNTRUSTED
+                || (i.what == setup::SANDBOX_ACCESS && i.status.contains("fix it before setup"))
             {
                 return Ok(state(text));
             }

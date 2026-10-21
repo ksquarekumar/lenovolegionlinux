@@ -541,6 +541,7 @@ pub fn check(agents: &Sources, session: &SessionConfig) -> Result<Report> {
     items.push(path_item(&folders));
     items.extend(acp_items(session, &session_path()?));
     items.extend(claude_plugin_item());
+    items.extend(sandbox_items());
     items.extend(osd_item());
     items.extend(SERVICES.map(service_item));
     items.extend(clauth_items());
@@ -597,6 +598,7 @@ pub fn apply(
     done.extend(write_codex_agents(&codex_agents)?);
     done.extend(install_acp_adapters(session)?);
     done.extend(install_claude_plugin()?);
+    done.extend(let_sandboxes_run_legionctl()?);
     done.extend(remove_codex_skill_links()?);
     done.extend(enable_osd()?);
     done.extend(set_up_clauth()?);
@@ -779,6 +781,119 @@ fn claude_plugin_item() -> Option<Item> {
         status: status.into(),
         path: crate::plugin::package_marketplace().display().to_string(),
     })
+}
+
+/// The setup row of legionctl in the agents' sandboxes (plan#todo-227 AOS-5).
+pub const SANDBOX_ACCESS: &str = "sandbox access";
+
+/// Claude Code's Bash sandbox: `legionctl` runs outside it (on Linux it blocks every Unix socket, the operator's too,
+/// unless all are allowed), and git reads ~/.gitconfig in it (a project may deny reads of `~/.*`). Lists merge with the
+/// project's.
+const CLAUDE_SANDBOX: [(&str, &str); 2] = [
+    ("sandbox.excludedCommands", "legionctl *"),
+    ("sandbox.filesystem.allowRead", "~/.gitconfig"),
+];
+
+/// Codex's command rule: `legionctl` runs outside its sandbox, which denies every connection when its network is off.
+const CODEX_SANDBOX_RULE: &str = "# Written by `legionctl setup apply`: legionctl runs outside Codex's sandbox (its operator decides what an agent may do)\n\
+prefix_rule(pattern = [\"legionctl\"], decision = \"allow\")\n";
+
+fn claude_settings() -> PathBuf {
+    home().join(".claude/settings.json")
+}
+
+fn codex_sandbox_rule() -> PathBuf {
+    home().join(".codex/rules/legionctl.rules")
+}
+
+/// The entries of [`CLAUDE_SANDBOX`] that ~/.claude/settings.json lacks.
+///
+/// # Errors
+/// The file cannot be read or is not JSON.
+fn claude_sandbox_missing() -> Result<Vec<(&'static str, Vec<serde_json::Value>)>> {
+    let path = claude_settings();
+    let text = legionctl_machine::sysroot::read_file(&path)?.unwrap_or_else(|| "{}".into());
+    let settings: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("{} is not valid JSON; fix it before setup", path.display()))?;
+    Ok(CLAUDE_SANDBOX
+        .iter()
+        .filter_map(|(key, entry)| {
+            let pointer = format!("/{}", key.replace('.', "/"));
+            let mut list = settings
+                .pointer(&pointer)
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            (!list.iter().any(|v| v == entry)).then(|| {
+                list.push((*entry).into());
+                (*key, list)
+            })
+        })
+        .collect())
+}
+
+/// The sandbox rows: Claude Code's and Codex's, for each one that is installed.
+fn sandbox_items() -> Vec<Item> {
+    let mut items = Vec::new();
+    if claude_bin().is_some() {
+        items.push(Item {
+            what: SANDBOX_ACCESS.into(),
+            agent: "claude-code".into(),
+            status: match claude_sandbox_missing() {
+                Ok(missing) if missing.is_empty() => "current".into(),
+                Ok(_) => "missing".into(),
+                Err(e) => format!("{e:#}"),
+            },
+            path: claude_settings().display().to_string(),
+        });
+    }
+    if codex_bin().is_some() {
+        items.push(Item {
+            what: SANDBOX_ACCESS.into(),
+            agent: "codex".into(),
+            status: match legionctl_machine::sysroot::read_file(&codex_sandbox_rule()) {
+                Ok(Some(text)) if text == CODEX_SANDBOX_RULE => "current".into(),
+                Ok(Some(_)) => "outdated".into(),
+                Ok(None) => "missing".into(),
+                Err(e) => format!("{e:#}"),
+            },
+            path: codex_sandbox_rule().display().to_string(),
+        });
+    }
+    items
+}
+
+/// Bring the sandbox rows to current: the missing entries into Claude Code's settings (a backup of the file first),
+/// the rule file of Codex.
+///
+/// # Errors
+/// A settings file cannot be read, is not JSON, or cannot be written.
+fn let_sandboxes_run_legionctl() -> Result<Vec<String>> {
+    let mut done = Vec::new();
+    if claude_bin().is_some() {
+        let missing = claude_sandbox_missing()?;
+        for (key, list) in &missing {
+            crate::agents::set(&claude_settings(), key, list.clone().into(), false)?;
+        }
+        if !missing.is_empty() {
+            done.push(format!(
+                "{SANDBOX_ACCESS}: legionctl runs outside Claude Code's sandbox ({})",
+                claude_settings().display()
+            ));
+        }
+    }
+    let rule = codex_sandbox_rule();
+    if codex_bin().is_some()
+        && legionctl_machine::sysroot::read_file(&rule)?.as_deref() != Some(CODEX_SANDBOX_RULE)
+    {
+        std::fs::create_dir_all(rule.parent().context("the rule file has no folder")?)?;
+        std::fs::write(&rule, CODEX_SANDBOX_RULE)?;
+        done.push(format!(
+            "{SANDBOX_ACCESS}: legionctl runs outside Codex's sandbox ({})",
+            rule.display()
+        ));
+    }
+    Ok(done)
 }
 
 /// `claude <args>`, which must succeed.
