@@ -5704,6 +5704,109 @@ fn a_chat_goes_on_when_the_agent_lost_its_session() {
     op.held.push(home);
 }
 
+/// F12 (plan#todo-223, agency-os EVIDENCE/06): an agent keeps its conversations in its own home (claude-code-acp in
+/// ~/.claude), which is the session's private layer. `session run --acp <id>` started a new session with a new layer,
+/// so the agent did not find the conversation ("Session not found"). Now the run goes on in the session whose run made
+/// that ACP session, in its layers: the agent loads it, and the run has that session's id; a run on another dossier is
+/// refused with the dossier to give. An ACP session that no run of legionctl made is the agent's to load, in a new
+/// session, as before.
+#[test]
+fn a_run_with_acp_goes_on_in_the_session_that_made_it() {
+    let home = home("acp-layers");
+    let sessions = home.join(".claude/fake-acp-sessions.json");
+    let mut op = operator_with(
+        "acp-layers",
+        &home,
+        &[("FAKE_ACP_SESSIONS", sessions.clone().into())],
+    );
+    let repo = repository(&home);
+    let agent =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {"fake": ["python3", agent]}, "scope": false,
+                            "writable": ["~/.claude"], "caches": []}})
+        .to_string(),
+    );
+    let env = [("HOME", home.to_str().unwrap())];
+    let run = |args: &[&str]| -> Value {
+        let out = op.run(
+            &repo,
+            &env,
+            &[
+                &["session", "run", "fake"][..],
+                args,
+                &["--dossier", "port", "--json"],
+            ]
+            .concat(),
+            "",
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let first = run(&["first"]);
+    let acp = first["acp"].as_str().unwrap();
+    assert!(
+        !sessions.exists(),
+        "the conversation is in the session's layer, not in the home"
+    );
+
+    let second = run(&["second", "--acp", acp]);
+    let text = second["text"].as_str().unwrap();
+    assert!(text.contains(&format!("acp: loaded {acp}")), "{text}");
+    assert_eq!(
+        second["id"], first["id"],
+        "the run went on in the session that made it"
+    );
+    let elsewhere = op.run(
+        &repo,
+        &env,
+        &[
+            "session",
+            "run",
+            "fake",
+            "more",
+            "--dossier",
+            "other",
+            "--acp",
+            acp,
+        ],
+        "",
+    );
+    let why = String::from_utf8_lossy(&elsewhere.stderr);
+    assert!(
+        !elsewhere.status.success() && why.contains("run it with that agent and --dossier port"),
+        "{why}"
+    );
+
+    let other = op.run(
+        &repo,
+        &env,
+        &[
+            "session",
+            "run",
+            "fake",
+            "third",
+            "--dossier",
+            "port",
+            "--acp",
+            "fake-unknown",
+        ],
+        "",
+    );
+    let why = String::from_utf8_lossy(&other.stderr);
+    assert!(
+        !other.status.success() && why.contains("Session not found"),
+        "{why}"
+    );
+    op.held.push(home);
+}
+
 /// SIGTERM ends the operator within the stop time (todo-125: on 2026-10-16 systemd killed it after
 /// `TimeoutStopSec=10`): while a headless run holds its ACP agent (a running job) and `trace` follows the event
 /// stream, a stop as systemd makes it (SIGTERM to the unit's processes) ends the operator and its agent within half of

@@ -5898,7 +5898,33 @@ impl Operator {
                 &serde_json::json!({"tag": tag, "text": text, "note": true}),
             );
         })?;
-        let launch = store.start_session(&start, &resolved.config)?;
+        // the ACP session of an earlier run goes on in that run's session: the agent keeps the conversation in its
+        // home, which is that session's layer (F12)
+        let made = match input.acp.as_deref() {
+            Some(acp) => db.acp_session(acp)?,
+            None => None,
+        };
+        let launch = match made {
+            Some(id) => {
+                let record = store.session(&id)?;
+                anyhow::ensure!(
+                    record.agent == agent && record.dossier == dossier,
+                    "ACP session {} is of session {id} (agent {}, dossier {}): run it with that agent and --dossier {}",
+                    input.acp.as_deref().unwrap_or_default(),
+                    record.agent,
+                    record.dossier,
+                    record.dossier
+                );
+                store.resume_session(
+                    &id,
+                    &resolved.config,
+                    start.account,
+                    &token,
+                    (true, start.tools),
+                )?
+            }
+            None => store.start_session(&start, &resolved.config)?,
+        };
         db.issue_token(&launch.id, &token)?;
         // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run; `history`: the
         // prompt of a new ACP session when the agent does not know a chat's `acp`; `tools`: a resume binds the run again

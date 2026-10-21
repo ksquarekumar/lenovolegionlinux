@@ -487,6 +487,22 @@ impl Db {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// The session of the headless run that made ACP session `acp` (the first run that has it; F12).
+    ///
+    /// # Errors
+    /// The read fails.
+    pub fn acp_session(&self, acp: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT json_extract(input, '$.session') FROM jobs
+                 WHERE kind = 'session.run' AND json_extract(input, '$.acp') = ?1 ORDER BY id LIMIT 1",
+                [acp],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// One job.
     ///
     /// # Errors

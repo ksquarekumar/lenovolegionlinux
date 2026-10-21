@@ -7,7 +7,7 @@ servers from session/new, the permission outcome, whether the commit and the pus
 line by line, 0.1 s apart; a prompt that starts with WAIT holds after the first line until a file `release` is in the
 working folder, or the file $FAKE_ACP_RELEASE when that is set (at most 30 s), and one that starts with SLOW waits 30 s first (a long run, for the test that stops the
 operator in the middle of one), one that starts with SILENT ends its turn with no words, and one that starts with
-MCPLOAD starts legionctl's MCP server as Codex does (a cleared environment) and answers with its load tool's text. It can load its sessions (kept in `.fake-acp-sessions` in the working folder, so a
+MCPLOAD starts legionctl's MCP server as Codex does (a cleared environment) and answers with its load tool's text. It can load its sessions (kept in `.fake-acp-sessions` in the working folder, or in the file $FAKE_ACP_SESSIONS, so a
 new adapter process finds them): session/load replays the earlier prompts and a REPLAYED line before it answers.
 After session/new and session/load it offers two commands (available_commands_update): /plan <what to plan> and
 /status. In a thread member's session (LEGIONCTL_MEMBER=<thread>/<member>), a prompt runs the script
@@ -31,7 +31,7 @@ import threading
 import time
 import uuid
 
-SESSIONS = ".fake-acp-sessions"
+SESSIONS = os.environ.get("FAKE_ACP_SESSIONS", ".fake-acp-sessions")
 model = None
 mcp_servers = []
 meta = None

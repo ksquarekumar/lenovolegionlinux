@@ -1185,8 +1185,8 @@ pub struct SessionRunIn {
     /// run` sets one.
     #[serde(default)]
     pub tag: Option<String>,
-    /// The ACP session of an earlier run (its `acp`) to go on in: the agent loads it, so it keeps the conversation.
-    /// The run fails when the agent cannot load sessions.
+    /// The ACP session of an earlier run (its `acp`) to go on in: the run goes on in that run's session (its layers
+    /// hold the agent's conversation), and the agent loads it. The run fails when the agent cannot load sessions.
     #[serde(default)]
     pub acp: Option<String>,
     /// The agent's model for this run (ACP `session/set_model`: `haiku`); none: the account's default; the run

@@ -15,8 +15,8 @@ user-invocable: true
    answer in this turn. A subagent that changes code still uses its own topic workspace (skill workspace-practice).
 4. `session run <agent> "<prompt>"` runs the agent headless through its ACP adapter and returns its answer. It is a job.
    bun runs the adapter (config `session.acp`); a run on the host installs a missing adapter first, by itself.
-   `--acp <id>` goes on in the ACP session of an earlier run (its `acp`); the run fails when the agent cannot load
-   sessions. `session commands <session>` lists the commands that the agent offered in that run; a prompt that
+   `--acp <id>` goes on in the ACP session of an earlier run (its `acp`), in that run's session and its layers; the
+   run fails when the agent cannot load sessions. `session commands <session>` lists the commands that the agent offered in that run; a prompt that
    starts with `/<name>` runs one.
 5. `session start <agent>` prepares an interactive session; the client then runs it in your terminal. It takes the
    options of `run` except `--tag`.
