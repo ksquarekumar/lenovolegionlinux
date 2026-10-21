@@ -656,7 +656,7 @@ impl Dossiers {
     }
 
     fn live(&self, session: &str, updated: i64, now: i64) -> Result<bool> {
-        let scoped: Option<(bool, String)> = self
+        let started: Option<(bool, String)> = self
             .db
             .conn()
             .query_row(
@@ -684,7 +684,7 @@ impl Dossiers {
             )
             .optional()?
             .unwrap_or(Holder::Unknown);
-        live(self.stale_after(), (session, updated, scoped), holder, now)
+        live(self.stale_after(), (session, updated, started), holder, now)
     }
 
     /// Record the MCP server `pid` and its parent (the agent: Claude Code, Codex, or a wrapper) as the holders of
@@ -1847,34 +1847,40 @@ pub enum Holder {
 }
 
 /// Whether the session that holds a binding last refreshed at `updated` is still live: active within `stale_after`
-/// seconds (each hook call and dossier write refreshes it); for a session legionctl started in a scope (`scoped`: the
-/// session row's scoped and inside), that scope still runs; else its `holder` processes still run. A minute of grace after
-/// the last refresh covers the time between the bind and the client's `systemd-run`; ten minutes cover an agent whose
-/// recorded processes all went while it runs on (a resumed agent, or a wrapper that ended and a server that started
-/// again): its next prompt or dossier write refreshes the binding.
+/// seconds (each hook call and dossier write refreshes it); for a session legionctl started (`started`: the session
+/// row's scoped and inside), not ended ([`crate::session::liveness`]: its session lock); else its `holder` processes
+/// still run. A minute of grace after the last refresh covers the time between the bind and the launch's lock; ten
+/// minutes cover an agent that legionctl did not start whose recorded processes all went while it runs on (a resumed
+/// agent, or a wrapper that ended and a server that started again): its next prompt or dossier write refreshes the
+/// binding.
 ///
 /// # Errors
-/// The scope's state, or the processes, cannot be read: the session may run, so it is not taken as gone.
+/// The session's lock, scope or container, or the processes, cannot be read: the session may run, so it is not taken
+/// as gone.
 pub(crate) fn live(
     stale_after: i64,
-    (session, updated, scoped): (&str, i64, Option<(bool, String)>),
+    (session, updated, started): (&str, i64, Option<(bool, String)>),
     holder: Holder,
     now: i64,
 ) -> Result<bool> {
     if now - updated > stale_after {
         return Ok(false);
     }
-    if let Some((true, inside)) = scoped {
+    if let Some((scoped, inside)) = started {
         return Ok(now - updated <= 60
-            || crate::session::active(session, crate::session::Inside::from_db(&inside))?);
+            || crate::session::liveness(
+                session,
+                crate::session::Inside::from_db(&inside),
+                scoped,
+            )? != crate::session::Liveness::Ended);
     }
     Ok(match holder {
         Holder::Processes(server, parent) => {
             let runs = |(pid, started): (u32, i64)| -> Result<bool> {
                 Ok(process_started(pid)? == Some(started))
             };
-            // shortcut: the recorded processes stand for the agent, which a chain of wrappers can hide; the session lock
-            // of topic overlay-liveness (EVIDENCE/review/17 T0) replaces this
+            // shortcut: the recorded processes stand for an agent that legionctl did not start (no session lock), which
+            // a chain of wrappers can hide; upgrade when such an agent's own process is known
             now - updated <= 600 || runs(server)? || parent.map(runs).transpose()? == Some(true)
         }
         Holder::McpBefore(acquired) => {

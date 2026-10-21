@@ -515,20 +515,36 @@ pub(crate) struct Presence {
     bound: Vec<(String, String)>,
     /// (session, thread, name) of each active member of an open thread.
     members: Vec<(String, i64, String)>,
-    /// The agent and account of each session that legionctl started.
-    started: BTreeMap<String, (String, Option<String>)>,
+    /// The agent and account of each session that legionctl started, and its row's scoped and inside.
+    started: BTreeMap<String, Started>,
 }
 
-/// running, idle, ended or unknown: from the session's last hook call, tool call or release.
-pub(crate) fn live_state(p: &Presence, session: &str) -> &'static str {
-    match p.seen.get(session) {
+/// A session that legionctl started: its agent, account, scoped and inside.
+type Started = (String, Option<String>, bool, String);
+
+/// running, idle, ended or unknown: ended when the sandbox of a session that legionctl started ended
+/// ([`crate::session::liveness`]), else from the session's last hook call, tool call or release.
+///
+/// # Errors
+/// The session's lock, scope or container cannot be read.
+pub(crate) fn live_state(p: &Presence, session: &str) -> Result<&'static str> {
+    if let Some((_, _, scoped, inside)) = p.started.get(session_of(session))
+        && crate::session::liveness(
+            session_of(session),
+            crate::session::Inside::from_db(inside),
+            *scoped,
+        )? == crate::session::Liveness::Ended
+    {
+        return Ok("ended");
+    }
+    Ok(match p.seen.get(session) {
         Some(e) => match (e.kind.as_str(), e.payload["input"]["event"].as_str()) {
             ("dossier.release", _) => "ended",
             ("internal.agent.tool", _) | (_, Some("prompt")) => "running",
             _ => "idle",
         },
         None => "unknown",
-    }
+    })
 }
 
 impl Presence {
@@ -1726,8 +1742,10 @@ impl Dossiers {
                 .collect::<Result<_, _>>()?,
             started: self
                 .db()
-                .prepare("SELECT id, agent, account FROM sessions")?
-                .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?
+                .prepare("SELECT id, agent, account, scoped, inside FROM sessions")?
+                .query_map([], |r| {
+                    Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+                })?
                 .collect::<Result<_, _>>()?,
         })
     }
@@ -1815,7 +1833,7 @@ impl Dossiers {
             .and_then(|e| e.payload["folder"].as_str())
             .map(PathBuf::from);
         let workspace = project.as_deref().and_then(|dir| p.workspace_of(dir));
-        let (state, seen) = (live_state(p, session), p.seen.get(session).map(|e| e.ts));
+        let (state, seen) = (live_state(p, session)?, p.seen.get(session).map(|e| e.ts));
         let tool = |field: &str| {
             p.tools
                 .get(session)
@@ -1833,11 +1851,10 @@ impl Dossiers {
             .optional()?;
         // a session that legionctl did not start is seen only through `legionctl hook`, Claude Code's hook adapter
         // (Codex has no hooks): it is a Claude Code session
-        let (agent, account) = p
-            .started
-            .get(session_of(session))
-            .cloned()
-            .unwrap_or_else(|| ("claude".into(), None));
+        let (agent, account) = p.started.get(session_of(session)).map_or_else(
+            || ("claude".into(), None),
+            |(a, acc, _, _)| (a.clone(), acc.clone()),
+        );
         let mut channels = vec!["outbox".to_string()];
         if agent == "claude" {
             channels.push("claude-inbox".into());

@@ -196,7 +196,8 @@ pub struct Start<'a> {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Launch {
     pub id: String,
-    /// `systemd-run --user --scope ...`: the session's cgroup, for `session stop` and limits.
+    /// `flock ... <session lock>` (the session's liveness), then `systemd-run --user --scope ...`: the session's
+    /// cgroup, for `session stop` and limits.
     pub scope: Vec<String>,
     /// `bwrap ...` (the caller adds the git gate: its own legionctl over `/usr/bin/git`), `docker run ...` of the
     /// agent image, whose `/usr/bin/git` is the gate already, or `vm <spec> --`, which the caller runs with its own
@@ -294,6 +295,175 @@ pub fn active(id: &str, inside: Inside) -> Result<bool> {
         state(id, inside)?.as_str(),
         "active" | "frozen" | "activating" | "reloading"
     ))
+}
+
+/// Whether a session that legionctl started still runs: the one test for its binding, its token, its peer state, its
+/// resume and the cleanup of its overlay folders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    Live,
+    Ended,
+    /// A session of a build before the session lock, with no scope to ask: the caller keeps its own rule.
+    Unknown,
+}
+
+/// How long a launch (`flock -w`) and a resume wait for the session lock that a cleanup holds for a moment.
+const LOCK_WAIT_SECONDS: u64 = 10;
+
+/// The session lock (`<session home>/lock`): `flock` in front of the sandbox takes it before the mounts, every process
+/// of the sandbox inherits it, and the kernel frees it when the last of them ends, also after a crash. A session of a
+/// build before it has none.
+fn lock_file(id: &str) -> PathBuf {
+    session_home(id).join("lock")
+}
+
+/// The session lock of `id`, taken by this process within `wait` (`flock` exclusive, as `flock(1)` takes it); none
+/// while a process of the session (or a cleanup) holds it. The file is made when it is not there.
+fn take_lock(id: &str, wait: std::time::Duration) -> Result<Option<std::fs::File>> {
+    let path = lock_file(id);
+    std::fs::create_dir_all(session_home(id))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(e).with_context(|| format!("locking {}", path.display()));
+            }
+        }
+    }
+}
+
+/// Whether session `id` (where it runs, and whether it has a scope or container: its row's `inside` and `scoped`)
+/// still runs: its lock is held, or its container still runs (it outlives a killed docker client). A session of a
+/// build before the lock: its scope or container tells, else [`Liveness::Unknown`].
+///
+/// # Errors
+/// The lock cannot be opened, or the state of a scope or container cannot be read: the session may run.
+pub fn liveness(id: &str, inside: Inside, scoped: bool) -> Result<Liveness> {
+    liveness_within(id, inside, scoped, std::time::Duration::ZERO)
+}
+
+fn liveness_within(
+    id: &str,
+    inside: Inside,
+    scoped: bool,
+    wait: std::time::Duration,
+) -> Result<Liveness> {
+    if !lock_file(id).exists() {
+        return Ok(match scoped {
+            false => Liveness::Unknown,
+            true if active(id, inside)? => Liveness::Live,
+            true => Liveness::Ended,
+        });
+    }
+    if take_lock(id, wait)?.is_none() || (inside == Inside::Container && active(id, inside)?) {
+        return Ok(Liveness::Live);
+    }
+    Ok(Liveness::Ended)
+}
+
+/// The commands in front of session `id`'s sandbox: `flock` of its lock (made here), held from before the mounts by
+/// every process of the sandbox (the outer bwrap, QEMU and its helpers, the docker client; a cleanup holds it for a
+/// moment), then its systemd scope when it has one.
+fn lock_and_scope(id: &str, scope: bool) -> Result<Vec<String>> {
+    let lock = lock_file(id);
+    std::fs::create_dir_all(session_home(id))?;
+    std::fs::File::create(&lock).with_context(|| format!("making {}", lock.display()))?;
+    let mut argv: Vec<String> = vec![
+        "flock".into(),
+        "--no-fork".into(),
+        "-w".into(),
+        LOCK_WAIT_SECONDS.to_string(),
+        lock.to_string_lossy().into_owned(),
+    ];
+    if scope {
+        let unit = format!("--unit=legionctl-session-{id}");
+        argv.extend(["systemd-run", "--user", "--scope", "--quiet", &unit, "--"].map(String::from));
+    }
+    Ok(argv)
+}
+
+/// Remove the overlay work folders of ended session `id` (`work/work`, which the kernel makes with mode 000: a scan of
+/// the home fails on it), under its lock: no process of the session runs and no resume mounts meanwhile. `upper` and
+/// `work` stay for a resume, and nothing below `upper` (the agent's files) is entered. A session of a build before
+/// the lock only when its scope ended. Returns how many it removed.
+fn clear_overlay_work(id: &str, scoped: bool, wait: std::time::Duration) -> Result<usize> {
+    let found = overlay_work(id);
+    if found.is_empty() {
+        return Ok(0);
+    }
+    // a session of a build before the lock: only when its scope ended
+    if !lock_file(id).exists() && (!scoped || active(id, Inside::Host)?) {
+        return Ok(0);
+    }
+    let Some(_lock) = take_lock(id, wait)? else {
+        return Ok(0);
+    };
+    for dir in &found {
+        crate::folder::remove_layer(dir)?;
+    }
+    Ok(found.len())
+}
+
+/// The `work/work` folders of host session `id`'s overlays: each layer (a folder with `upper` and `work`) among its
+/// home and storage layers, and its member overlay.
+fn overlay_work(id: &str) -> Vec<PathBuf> {
+    let folder = |p: &Path| p.symlink_metadata().is_ok_and(|m| m.is_dir());
+    let mut found = Vec::new();
+    let mut todo = vec![
+        session_home(id).join("home"),
+        session_home(id).join("storage"),
+        overlay_layer(id),
+    ];
+    while let Some(dir) = todo.pop() {
+        if folder(&dir.join("upper")) && folder(&dir.join("work")) {
+            let work = dir.join("work/work");
+            if folder(&work) {
+                found.push(work);
+            }
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                todo.push(entry.path());
+            }
+        }
+    }
+    found
+}
+
+/// Remove the throwaway layers of the commands sandboxes ([`Jail`], `session-home/*/run-*`) that a stopped operator
+/// left: a jail dies with the operator, so at its start none runs. Returns how many it removed.
+///
+/// # Errors
+/// A layer cannot be removed.
+pub fn clear_jail_layers() -> Result<usize> {
+    let root = crate::db::default_path().with_file_name("session-home");
+    let mut n = 0;
+    for session in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+        for entry in std::fs::read_dir(session.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if entry.file_name().to_string_lossy().starts_with("run-")
+                && entry.file_type().is_ok_and(|t| t.is_dir())
+            {
+                crate::folder::remove_layer(&entry.path())?;
+                n += 1;
+            }
+        }
+    }
+    Ok(n)
 }
 
 /// What `control` does to a running session.
@@ -567,14 +737,19 @@ fn overlay_layer(id: &str) -> PathBuf {
     crate::db::default_path().with_file_name("overlay").join(id)
 }
 
-/// Remove a member's overlay layer after its wake: the next wake sees main's folder as it is then.
+/// Remove a member's overlay layer after its wake, under its session lock: the next wake sees main's folder as it is
+/// then.
 ///
 /// # Errors
-/// The layer cannot be removed.
+/// A process of the session still runs, or the layer cannot be removed.
 pub fn drop_overlay(id: &str) -> Result<()> {
+    let _lock = take_lock(id, std::time::Duration::from_secs(LOCK_WAIT_SECONDS))?
+        .with_context(|| format!("session {id} still runs, so its overlay stays"))?;
     let layer = overlay_layer(id);
-    crate::folder::clear(&layer)?;
-    Ok(std::fs::remove_dir(&layer)?)
+    if layer.exists() {
+        crate::folder::remove_layer(&layer)?;
+    }
+    Ok(())
 }
 
 /// What a session's agent sees besides the host's root (read-only) or its image, in order: later mounts go over
@@ -1692,10 +1867,8 @@ impl Jail {
 
 impl Drop for Jail {
     fn drop(&mut self) {
-        // shortcut: a layer that cannot be removed stays in session-home/<id>/run-*; doctor does not list them yet
-        if crate::folder::clear(&self.layer).is_ok() {
-            let _ = std::fs::remove_dir(&self.layer);
-        }
+        // a layer that cannot be removed now goes at the next operator start (clear_jail_layers)
+        let _ = crate::folder::remove_layer(&self.layer);
     }
 }
 
@@ -1728,6 +1901,7 @@ impl Dossiers {
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
         let runs = runs(start.inside, start.dir);
+        self.clear_overlays(None, std::time::Duration::ZERO)?;
         let id = new_id()?;
         // a refused set stops the session before anything is bound (DESIGN-13: at start, not at the first call)
         let mut grant = crate::runnables::grant(
@@ -1794,6 +1968,18 @@ impl Dossiers {
         (headless, tools): (bool, &[String]),
     ) -> Result<Launch> {
         let mut record = self.session(id)?;
+        let scoped: bool =
+            self.db()
+                .query_row("SELECT scoped FROM sessions WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })?;
+        // a cleanup holds the lock for a moment; a running session holds it
+        let wait = std::time::Duration::from_secs(3);
+        anyhow::ensure!(
+            liveness_within(id, record.inside, scoped, wait)? != Liveness::Live,
+            "session {id} still runs: end it (`legionctl session stop {id}`) before you resume it"
+        );
+        self.clear_overlays(None, std::time::Duration::ZERO)?;
         // a headless session goes on through its agent's ACP adapter, an interactive one through its resume command
         let (commands, key) = if headless {
             (&config.session.acp, "session.acp")
@@ -1958,14 +2144,10 @@ impl Dossiers {
             )?,
         };
         Ok(Launch {
-            scope: if config.session.scope && !matches!(runs, Runs::Container(_)) {
-                let unit = format!("--unit=legionctl-session-{id}");
-                ["systemd-run", "--user", "--scope", "--quiet", &unit, "--"]
-                    .map(String::from)
-                    .to_vec()
-            } else {
-                Vec::new()
-            },
+            scope: lock_and_scope(
+                &id,
+                config.session.scope && !matches!(runs, Runs::Container(_)),
+            )?,
             sandbox,
             inside: match runs {
                 Runs::Host => Inside::Host,
@@ -2013,6 +2195,26 @@ impl Dossiers {
         }
         home_mounts(&mut mounts, config, (layer, account), host)?;
         Ok(mounts)
+    }
+
+    /// Remove the overlay work folders of ended host sessions ([`clear_overlay_work`]): of session `id`, else of
+    /// all; each waits up to `wait` for its lock. Returns how many it removed.
+    ///
+    /// # Errors
+    /// The database read fails, or a folder cannot be removed.
+    pub fn clear_overlays(&self, id: Option<&str>, wait: std::time::Duration) -> Result<usize> {
+        let sessions: Vec<(String, bool)> = self
+            .db()
+            .prepare(
+                "SELECT id, scoped FROM sessions WHERE inside = 'host' AND (?1 IS NULL OR id = ?1)",
+            )?
+            .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut n = 0;
+        for (id, scoped) in sessions {
+            n += clear_overlay_work(&id, scoped, wait)?;
+        }
+        Ok(n)
     }
 
     /// The sandbox of session `id` for the commands legionctl runs for it ([`Jail`]).

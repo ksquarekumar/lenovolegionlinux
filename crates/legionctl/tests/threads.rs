@@ -2274,6 +2274,23 @@ fn a_backlog_larger_than_the_wake_budget_goes_through_in_wakes_that_fit() {
 #[test]
 fn the_observer_backfills_only_while_main_is_idle_and_the_flow_gates_done() {
     let Pool { lab, main, ws } = pool("backfill", "fake");
+    // main0's sandbox runs (its launch was not run): a stand-in holds its session lock, so main0 is live
+    let lock = lab
+        .home
+        .join(".local/state/legionctl/session-home")
+        .join(&main)
+        .join("lock");
+    let _sandbox =
+        common::process::Kill::spawn(Command::new("flock").arg(&lock).args(["sleep", "600"]));
+    until("main0's session lock is held", || {
+        !Command::new("flock")
+            .arg("-n")
+            .arg(&lock)
+            .arg("true")
+            .status()
+            .unwrap()
+            .success()
+    });
     lab.ok(
         &main,
         &ws,

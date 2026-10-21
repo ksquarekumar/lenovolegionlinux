@@ -1019,7 +1019,7 @@ impl Dossiers {
         let main = main.context("main0 has no session")?;
         // the check and the write under one write lock: no hook call of main0 lands between them
         let tx = self.begin()?;
-        let state = live_state(&self.presence(events)?, &main);
+        let state = live_state(&self.presence(events)?, &main)?;
         if state != "idle" {
             bail!(
                 "main0 is {state}: a backfill waits for its idle window. Send a nudge now (`legionctl thread send \

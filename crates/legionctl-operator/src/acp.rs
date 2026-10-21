@@ -91,6 +91,11 @@ pub async fn run_within(
         Ok(false) => {}
         Err(e) => eprintln!("operator: session {id}: not stopped after its run: {e:#}"),
     }
+    // its sandbox ends with its client: the lock is free a moment later
+    let wait = std::time::Duration::from_secs(10);
+    if let Err(e) = dossiers.clear_overlays(Some(&id), wait) {
+        eprintln!("operator: session {id}: its overlay work folders stay after its run: {e:#}");
+    }
     if let Err(e) = Db::open_default().and_then(|db| db.revoke_token(&id)) {
         eprintln!("operator: session {id}: cannot take its token away after its run: {e:#}");
     }

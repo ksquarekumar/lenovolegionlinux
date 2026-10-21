@@ -23,9 +23,9 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
   design 23 P9), and the 18
   ledger sections in `plan.md`. Search is literal text (no regular expressions).
 - Liveness of a binding: each hook call (session start, prompt, stop) and each dossier write refreshes it. A binding
-  not refreshed for `dossier.stale_hours` (12) is stale. A session that legionctl started in a scope is stale as
-  soon as its scope has ended (after one minute of grace for the client's `systemd-run`), so the next session takes
-  its dossier without `--steal`. The end of a session releases its binding (`hook session-end`).
+  not refreshed for `dossier.stale_hours` (12) is stale. A session that legionctl started is stale as soon as it
+  ended (`session::liveness`: its session lock is free; after one minute of grace for the launch), so the next
+  session takes its dossier without `--steal`. The end of a session releases its binding (`hook session-end`).
 - Dossier nudges (decided 2026-10-13): agents own their dossier, and legionctl tells them to keep it current. At the
   end of each reply the stop hook hashes the workspace (HEAD, status, diff, untracked sizes and times); a reply that
   changed it counts. At `dossier.nudge_turns` (5) counted replies without a dossier write the agent is told on the

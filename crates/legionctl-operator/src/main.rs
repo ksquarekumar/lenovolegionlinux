@@ -115,6 +115,23 @@ const RETENTION: &str = "old log rows are not removed (events.keep_days)";
 /// The fault of a job that a restart cut off and that does not go on (its row stays `running`).
 pub(crate) const JOBS: &str = "jobs that a restart cut off are not resumed";
 
+/// The fault of the start's cleanup of the overlay folders that did not run.
+const OVERLAYS: &str =
+    "the overlay work folders of ended sessions stay (mode 000: a scan of the home fails on them)";
+
+/// What sessions and commands sandboxes left before this start (a crash, a killed sandbox): the overlay work folders
+/// of ended sessions and the commands sandboxes' layers.
+fn clear_overlays(store: &legionctl_core::dossier::Dossiers) -> Result<()> {
+    let jails = legionctl_core::session::clear_jail_layers()?;
+    let works = store.clear_overlays(None, std::time::Duration::ZERO)?;
+    if jails + works > 0 {
+        eprintln!(
+            "operator: {works} overlay work folders of ended sessions and {jails} commands sandbox layers removed"
+        );
+    }
+    Ok(())
+}
+
 /// The operator until SIGTERM, or until a module fails.
 async fn run() -> Result<()> {
     // while it runs: no process of another build steps the schema of a database it reads (todo-122)
@@ -153,10 +170,16 @@ async fn run() -> Result<()> {
                         for kept in legionctl_core::settings::upgrade(&r, &store)? {
                             eprintln!("operator: {kept}");
                         }
-                        Ok(())
+                        Ok(store)
                     });
             match settled {
-                Ok(()) => faults::works("registry"),
+                Ok(store) => {
+                    faults::works("registry");
+                    match clear_overlays(&store) {
+                        Ok(()) => faults::works("overlays"),
+                        Err(e) => faults::failed("overlays", OVERLAYS, &e),
+                    }
+                }
                 Err(e) => faults::failed("registry", "the dossier registry is not settled", &e),
             }
             // the dossier locks of agents that ended, and the workspaces of merged topics whose folders went, while the

@@ -116,7 +116,18 @@ the first line before the run ends and a cut-off run that goes on in its loaded 
 Built (2026-10-13, S4): `session pause|unpause <id>` freeze and thaw the session's scope (cgroup freezer;
 `systemctl --user freeze|thaw`), `session stop <id>` stops it, `session resume <id>` prepares an ended session
 again (same id, dossier binding and workspace; the sandbox anew) with the agent's resume command (`session.resume`:
-`claude --resume {id} ...`; Codex has none by id). The e2e test resumes a session and sees the same id and folder,
+`claude --resume {id} ...`; Codex has none by id). A resume of a session that still runs is refused.
+
+Liveness (one test, `session::liveness`, AOS-2): `flock --no-fork -w 10 <session home>/lock` comes first in front of
+the sandbox (`Launch.scope`), so the session lock is taken before the mounts and every process of the sandbox holds it
+(the outer bwrap and its PID namespace, `legionctl vm` with QEMU and virtiofsd, the docker client); the kernel frees
+it when the last one ends, also after a crash. Live: the lock is held, or a container still runs (it outlives a killed
+docker client). A session of a build before the lock: its scope or container tells; with neither, unknown. Bindings,
+tokens, peer states and resumes use it. The overlay work folders (`work/work`, mode 000 from the kernel: a scan of the
+home fails on it) of an ended host session go under its lock, never below `upper`: at the end of a headless run, at
+each session start or resume (every ended session), and at the operator start (which also removes the commands
+sandboxes' `run-*` layers that a stopped operator left). An interactive session's folders stay until the next of
+those. The e2e test resumes a session and sees the same id and folder,
 and a refusal for an agent without a resume command; pause and thaw were checked live (active, frozen, running,
 inactive), as CI has no user systemd. Not yet: the idle and memory-pressure policies that pause and offload on
 their own.
@@ -139,7 +150,8 @@ Hardened (2026-10-16, EV-review-08, user decision "approve all, do it first"):
 - S-2: `legionctl/` of the runtime folder is read-only, and of `sessions/` only the session's own folder is there.
 - S-3: `session.writable` (`~/.claude`, `~/.claude.json`, `~/.codex`) and `session.caches` (`~/.cache`) are never
   the real files: on the host each folder is an overlay whose writes stay in
-  `~/.local/state/legionctl/session-home/<id>/home` (kept for a resume, also on another account), each file the
+  `~/.local/state/legionctl/session-home/<id>/home` (kept for a resume, also on another account; its overlay work
+  folders go when it ended, see Liveness), each file the
   session's copy; a container or VM gets copies of `writable` and no caches. The login files (`~/.claude/.credentials.json`,
   `~/.codex/auth.json`) are the real files over the layer (DESIGN-12 wall 1: a refresh rotates the refresh token);
   a login that is a link (clauth links `.credentials.json` to its active profile's file) is the link's target at

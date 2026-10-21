@@ -1555,10 +1555,11 @@ fn dossier_write_guard_and_takeover_work_through_the_claude_code_hooks() {
     );
 }
 
-/// The agent has ended, and its scope with it (the test session ran without one, so its record is marked as
-/// scoped): after the minute of grace, the next session takes the dossier without --steal. Before that, a state that
-/// cannot be read (systemd or Docker does not answer: todo-142 F-8) refuses the bind with the reason and leaves the
-/// dossier to the session that may still run.
+/// The agent has ended (the test session never ran, so its lock is free): after the minute of grace, the next session
+/// takes the dossier without --steal, by the session lock alone (systemd is not asked). Before that, a state that
+/// cannot be read refuses the bind with the reason and leaves the dossier to the session that may still run (todo-142
+/// F-8): a container's (it outlives its killed docker client: Docker is asked), and the scope of a session from a build
+/// before the session lock (no lock file).
 fn ended_scope_frees_the_dossier(op: &Operator, home: &Path, notes: &Path, id: &str) {
     sql(home, "UPDATE sessions SET scoped = 1");
     sql(home, "UPDATE bindings SET updated = updated - 120");
@@ -1578,6 +1579,11 @@ fn ended_scope_frees_the_dossier(op: &Operator, home: &Path, notes: &Path, id: &
         "systemctl",
         "#!/bin/sh\necho 'Failed to connect to user scope bus via local transport' >&2\nexit 1\n",
     );
+    let lock = home
+        .join(".local/state/legionctl/session-home")
+        .join(id)
+        .join("lock");
+    std::fs::remove_file(&lock).unwrap();
     let held = take();
     let why = String::from_utf8_lossy(&held.stderr);
     assert!(
@@ -1586,6 +1592,7 @@ fn ended_scope_frees_the_dossier(op: &Operator, home: &Path, notes: &Path, id: &
             && why.contains("Failed to connect to user scope bus"),
         "{why}"
     );
+    write(&lock, "");
     sql(home, "UPDATE sessions SET inside = 'container'");
     stand_in(
         home,
@@ -1599,18 +1606,9 @@ fn ended_scope_frees_the_dossier(op: &Operator, home: &Path, notes: &Path, id: &
             && why.contains("docker inspect: Cannot connect to the Docker daemon"),
         "{why}"
     );
-    // the scope is gone: systemd says so
+    // a host session's free lock: ended, while systemd still cannot answer
     sql(home, "UPDATE sessions SET inside = 'host'");
-    stand_in(home, "systemctl", "#!/bin/sh\necho inactive\nexit 3\n");
-    let next = op.run(
-        notes,
-        &[
-            ("HOME", home.to_str().unwrap()),
-            ("LEGIONCTL_SESSION", "next"),
-        ],
-        &["dossier", "use", "notes"],
-        "",
-    );
+    let next = take();
     let said = String::from_utf8_lossy(&next.stdout);
     assert!(
         said.contains(&format!("was held by session {id} (stale)")),
@@ -4488,6 +4486,387 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
     );
 }
 
+/// The overlay layers of a test session: the session's config (a stand-in ACP agent, interactive and resume commands
+/// that wait, no scope, `~/.claude` as its one home layer), and the place of its `~/.claude` layer under session-home.
+fn overlay_lab(home: &Path) -> impl Fn(&str) -> PathBuf {
+    let agent =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {"fake": ["python3", agent]}, "agents": {"fake": ["sleep", "300"]},
+                            "resume": {"fake": ["sleep", "300"]},
+                            "scope": false, "writable": ["~/.claude"], "caches": []}})
+        .to_string(),
+    );
+    let home = home.to_path_buf();
+    move |id: &str| {
+        home.join(".local/state/legionctl/session-home")
+            .join(id)
+            .join("home")
+            .join(home.strip_prefix("/").unwrap())
+            .join(".claude")
+    }
+}
+
+/// The id of the newest session, once the overlay `work/work` of its `~/.claude` layer is there (its sandbox runs).
+fn running_session(
+    op: &Operator,
+    repo: &Path,
+    home: &Path,
+    layer: &dyn Fn(&str) -> PathBuf,
+) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let listed = op.run(
+            repo,
+            &[("HOME", home.to_str().unwrap())],
+            &["session", "list", "--json"],
+            "",
+        );
+        let sessions: Value = serde_json::from_slice(&listed.stdout).unwrap_or(Value::Null);
+        if let Some(id) = sessions[0]["id"].as_str()
+            && layer(id).join("work/work").is_dir()
+        {
+            return id.to_string();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no running session: {sessions}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// The client of `args` in `repo`, beside the test (a session that holds).
+fn held_client(op: &Operator, repo: &Path, home: &Path, args: &[&str]) -> Kill {
+    Kill::spawn(
+        Command::new(env!("CARGO_BIN_EXE_legionctl"))
+            .args(args)
+            .current_dir(repo)
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", home)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()),
+    )
+}
+
+/// AOS-2 (feedbacks/0003, EVIDENCE/review/17 T0 and T2): the kernel makes each overlay's `work/work` with mode 000, and
+/// a scan of the home (`rg`, Codex's AGENTS.md loader) fails on it. While a headless run holds, its session is live by
+/// its lock: a resume of it is refused in one sentence, and another session's start (which clears the folders of ended
+/// sessions) keeps its folders. When the run ends, its `work/work` goes and its `upper` stays; a scan of the whole HOME
+/// reads every folder; a resume starts again.
+#[test]
+fn an_ended_session_leaves_no_overlay_work_folder_and_a_running_one_keeps_its_own() {
+    let (op, home) = operator("overlay-end");
+    let repo = repository(&home);
+    let layer = overlay_lab(&home);
+    let env = [("HOME", home.to_str().unwrap())];
+    let mut client = held_client(
+        &op,
+        &repo,
+        &home,
+        &["session", "run", "fake", "WAIT hold", "--dossier", "port"],
+    );
+    let id = running_session(&op, &repo, &home, &layer);
+    let work = layer(&id).join("work/work");
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&work.metadata().unwrap().permissions()) & 0o777,
+        0,
+        "the kernel's mode, which a scan cannot read"
+    );
+    write(&layer(&id).join("upper/sentinel"), "the agent's own");
+
+    let refused = op.run(&repo, &env, &["session", "resume", &id, "--json"], "");
+    let why = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !refused.status.success() && why.contains(&format!("session {id} still runs")),
+        "{why}"
+    );
+    plain::assert_plain("the refusal", why.trim().trim_start_matches("Error: "));
+    let other = op.run(
+        &repo,
+        &env,
+        &["session", "start", "fake", "--dossier", "other", "--json"],
+        "",
+    );
+    assert!(
+        other.status.success(),
+        "{}",
+        String::from_utf8_lossy(&other.stderr)
+    );
+    assert!(work.is_dir(), "a running session keeps its work folder");
+
+    write(&home.join("worktrees/repo/port/release"), "");
+    assert!(client.wait().unwrap().success(), "the run ends");
+    assert!(!work.exists(), "the ended session's work/work is gone");
+    assert!(
+        layer(&id).join("work").is_dir()
+            && std::fs::read_to_string(layer(&id).join("upper/sentinel")).unwrap()
+                == "the agent's own",
+        "its layer stays for a resume"
+    );
+    let scan = Command::new("rg")
+        .args(["--files", "--hidden", "--no-ignore"])
+        .arg(&home)
+        .output()
+        .unwrap();
+    assert!(
+        scan.status.success() && scan.stderr.is_empty(),
+        "a scan of the home reads every folder: {}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
+    let resumed = op.run(&repo, &env, &["session", "resume", &id, "--json"], "");
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+}
+
+/// A session whose sandbox was killed (a crash, a closed terminal: no cleanup ran) and the home of a session from
+/// before the session lock (its scope ended) are cleared at the next operator start: each host layer loses its
+/// `work/work` and keeps `upper`; a container's home copy (the agent's own files, which may hold `upper` and `work`) and
+/// nothing below `upper` is entered; a commands sandbox's throwaway layer goes. While the interactive session runs, its
+/// binding is live by its lock, with no scope and after the minute of grace; once it is killed, the binding is stale. A
+/// resume while the lock is held (as a cleanup holds it) waits for it, then runs, and a cleanup keeps its folders.
+#[test]
+fn a_session_killed_before_its_cleanup_is_cleared_at_the_next_operator_start() {
+    let home = home("overlay-crash");
+    let op = operator_in("overlay-crash", &home);
+    let repo = repository(&home);
+    let layer = overlay_lab(&home);
+    let env = [("HOME", home.to_str().unwrap())];
+    let mut session = held_client(
+        &op,
+        &repo,
+        &home,
+        &["session", "start", "fake", "--dossier", "port"],
+    );
+    let id = running_session(&op, &repo, &home, &layer);
+    sql(&home, "UPDATE bindings SET updated = updated - 120");
+    let (stale, peer) = port_binding(&op, &repo, &home, &id);
+    assert!(
+        stale == json!(false) && peer != json!("ended"),
+        "a running session holds its dossier and is no ended peer: {stale} {peer}"
+    );
+    session.stop();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while port_binding(&op, &repo, &home, &id).0 != json!(true) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the killed session still holds its dossier"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert_eq!(
+        port_binding(&op, &repo, &home, &id),
+        (json!(true), json!("ended")),
+        "its binding and its peer state change together"
+    );
+    assert!(
+        layer(&id).join("work/work").is_dir(),
+        "no cleanup ran at the kill"
+    );
+
+    let [legacy, legacy_runs, boxed, jail] = homes_left_before_the_start(&home, &repo, &id);
+    stand_in(
+        &home,
+        "systemctl",
+        "#!/bin/sh\ncase \"$*\" in *still-runs*) echo active;; *) echo inactive; exit 3;; esac\n",
+    );
+    drop(op);
+
+    let op = operator_in("overlay-crash2", &home);
+    op.run(&repo, &env, &["session", "list", "--json"], "");
+    for at in [layer(&id), legacy.clone()] {
+        assert!(!at.join("work/work").exists(), "{}", at.display());
+        assert!(
+            at.join("work").is_dir() && at.join("upper").is_dir(),
+            "{}",
+            at.display()
+        );
+    }
+    assert!(
+        legacy.join("upper/keep").is_file() && legacy.join("upper/inner/work/work").exists(),
+        "nothing below upper is entered"
+    );
+    assert!(
+        boxed.join("work/work").exists(),
+        "a container's home copy is not entered"
+    );
+    assert!(
+        legacy_runs.join("work/work").exists(),
+        "a session from before the lock whose scope runs keeps its folders"
+    );
+    assert!(
+        !home
+            .join(".local/state/legionctl/session-home")
+            .join(&id)
+            .join("run-crashed")
+            .exists(),
+        "a commands sandbox's layer goes: {}",
+        jail.display()
+    );
+
+    a_resume_waits_for_the_lock(&op, &repo, &home, &layer(&id), &id);
+}
+
+/// Dossier port's binding: stale or not, and the state of session `id` as a peer (`thread peers`).
+fn port_binding(op: &Operator, repo: &Path, home: &Path, id: &str) -> (Value, Value) {
+    let json = |args: &[&str]| -> Value {
+        let env = [
+            ("HOME", home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "watcher"),
+        ];
+        serde_json::from_slice(&op.run(repo, &env, args, "").stdout).unwrap_or(Value::Null)
+    };
+    let field = |list: Value, key: &str, value: &str, field: &str| {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .find(|l| l[key] == value)
+            .map_or(Value::Null, |l| l[field].clone())
+    };
+    (
+        field(
+            json(&["dossier", "locks", "--json"]),
+            "dossier",
+            "port",
+            "stale",
+        ),
+        field(
+            json(&["thread", "peers", "--dossier", "port", "--json"]),
+            "session",
+            id,
+            "state",
+        ),
+    )
+}
+
+/// Homes that sessions left before an operator start, beside the killed session `id`: two host sessions from before
+/// the session lock (the scope of one ended, of the other runs), a container session's home copy, and a commands
+/// sandbox layer of `id`. Each has a `work/work` and, below `upper`, a folder that looks like a layer. Returns their
+/// `~/.claude` layers.
+fn homes_left_before_the_start(home: &Path, repo: &Path, id: &str) -> [PathBuf; 4] {
+    let made = |id: &str, root: &str| {
+        let at = home
+            .join(".local/state/legionctl/session-home")
+            .join(id)
+            .join(root)
+            .join(home.strip_prefix("/").unwrap())
+            .join(".claude");
+        write(&at.join("upper/keep"), "kept");
+        std::fs::create_dir_all(at.join("upper/inner/upper")).unwrap();
+        std::fs::create_dir_all(at.join("upper/inner/work/work")).unwrap();
+        std::fs::create_dir_all(at.join("work/work")).unwrap();
+        for dir in [at.join("work/work"), at.join("upper/inner/work/work")] {
+            std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o000))
+                .unwrap();
+        }
+        at
+    };
+    let insert = |id: &str, inside: &str| {
+        sql(
+            home,
+            &format!(
+                "INSERT INTO sessions (id, agent, dossier, workdir, started, scoped, inside) \
+                 VALUES ('{id}', 'fake', 'old', '{}', 0, 1, '{inside}')",
+                repo.display()
+            ),
+        );
+    };
+    insert("before-the-lock", "host");
+    insert("before-the-lock-still-runs", "host");
+    insert("in-a-box", "container");
+    [
+        made("before-the-lock", "home"),
+        made("before-the-lock-still-runs", "home"),
+        made("in-a-box", "home"),
+        made(id, "run-crashed"),
+    ]
+}
+
+/// A resume of session `id` (its `~/.claude` layer `layer`) while its lock is held, as a cleanup holds it: it waits
+/// for the lock, then runs; a cleanup meanwhile keeps its folders.
+fn a_resume_waits_for_the_lock(op: &Operator, repo: &Path, home: &Path, layer: &Path, id: &str) {
+    let env = [("HOME", home.to_str().unwrap())];
+    let lock = home
+        .join(".local/state/legionctl/session-home")
+        .join(id)
+        .join("lock");
+    let mut holder = Kill::spawn(Command::new("flock").arg(&lock).args(["sleep", "2"]));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let mut resumed = held_client(op, repo, home, &["session", "resume", id]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !layer.join("work/work").is_dir() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the resume did not run: {:?}",
+            resumed.try_wait()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(
+        holder.try_wait().unwrap().is_some(),
+        "the resume mounted before the lock was free"
+    );
+    let other = op.run(
+        repo,
+        &env,
+        &["session", "start", "fake", "--dossier", "other", "--json"],
+        "",
+    );
+    assert!(
+        other.status.success(),
+        "{}",
+        String::from_utf8_lossy(&other.stderr)
+    );
+    assert!(
+        layer.join("work/work").is_dir(),
+        "the resumed session keeps its work folder"
+    );
+    assert_eq!(
+        resumed.try_wait().unwrap(),
+        None,
+        "the resumed session runs"
+    );
+    resumed.stop();
+
+    // the launch itself waits too: a cleanup that takes the lock after the resume's check
+    let out = op.run(repo, &env, &["session", "resume", id, "--json"], "");
+    let launch: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+    assert!(
+        !layer.join("work/work").exists(),
+        "the resume's start cleared the killed run"
+    );
+    let mut holder = Kill::spawn(Command::new("flock").arg(&lock).args(["sleep", "2"]));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let argv: Vec<String> = ["scope", "sandbox", "agent"]
+        .iter()
+        .flat_map(|part| launch[part].as_array().unwrap().clone())
+        .map(|a| a.as_str().unwrap().to_string())
+        .collect();
+    let mut sandbox = Kill::spawn(Command::new(&argv[0]).args(&argv[1..]).env("HOME", home));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !layer.join("work/work").is_dir() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the launch did not run: {:?}",
+            sandbox.try_wait()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        holder.try_wait().unwrap().is_some(),
+        "the launch mounted before the lock was free"
+    );
+    sandbox.stop();
+}
+
 /// A chat or run whose adapter is not installed (the move from ~/.cache/.bun to ~/.bun): legionctl installs it with
 /// bun from config `session.acp_packages`, then starts it, and the run's first output line says so (a stand-in bun).
 /// A failed install fails the run with its cause; the next run installs again; an installed adapter stays.
@@ -5552,9 +5931,9 @@ fn a_control_state_commit_syncs_the_database() {
     );
 }
 
-/// A session's token works only while its session runs (EV-review-16 C3): after `session stop` (its scope still
-/// answers active), after its scope or container ended (the state at the call), and after a headless run, the token is
-/// refused; a scope that ended takes the token away, so the next call finds no such token.
+/// A session's token works only while its session runs (EV-review-16 C3): after `session stop` (its sandbox still
+/// holds its lock), after its sandbox ended (its lock free at the call), and after a headless run, the token is
+/// refused; a session that ended loses its token, so the next call finds no such token.
 #[test]
 fn a_session_token_works_only_while_its_session_runs() {
     let (op, home) = operator("tokenlife");
@@ -5585,16 +5964,26 @@ fn a_session_token_works_only_while_its_session_runs() {
         );
     };
     let start = |dossier: &str| started_session(&op, &repo, &home, dossier);
-    // the scope answers: active while the file `scope-ended` is not there
-    stand_in(
-        &home,
-        "systemctl",
-        &format!(
-            "#!/bin/sh\ncase \"$*\" in *is-active*) [ -e {ended} ] && echo inactive && exit 3; echo active;; \
-             *FreezerState*) echo running;; esac; exit 0\n",
-            ended = home.join("scope-ended").display()
-        ),
-    );
+    // a running sandbox holds its session lock: here a stand-in holds it; `session stop` asks systemd
+    let hold = |id: &str| {
+        let lock = home
+            .join(".local/state/legionctl/session-home")
+            .join(id)
+            .join("lock");
+        let holder = Kill::spawn(Command::new("flock").arg(&lock).args(["sleep", "300"]));
+        while Command::new("flock")
+            .args(["-n"])
+            .arg(&lock)
+            .arg("true")
+            .status()
+            .unwrap()
+            .success()
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        holder
+    };
+    stand_in(&home, "systemctl", "#!/bin/sh\nexit 0\n");
 
     let (stopped, token) = start("one");
     assert!(
@@ -5606,7 +5995,8 @@ fn a_session_token_works_only_while_its_session_runs() {
         &home,
         &format!("UPDATE sessions SET scoped = 1 WHERE id = '{stopped}'"),
     );
-    assert!(call(&token).status.success(), "a scope that runs");
+    let _running = hold(&stopped);
+    assert!(call(&token).status.success(), "a sandbox that runs");
     op.ok(&["session", "stop", &stopped]);
     refused(&token, "the token is not valid");
 
@@ -5615,13 +6005,13 @@ fn a_session_token_works_only_while_its_session_runs() {
         &home,
         &format!("UPDATE sessions SET scoped = 1 WHERE id = '{ended}'"),
     );
+    let mut running = hold(&ended);
     assert!(call(&token).status.success());
-    write(&home.join("scope-ended"), "");
+    running.stop();
     refused(
         &token,
         &format!("session {ended} ended, so its token is not valid now"),
     );
-    std::fs::remove_file(home.join("scope-ended")).unwrap();
     refused(&token, "the token is not valid");
 
     let run = op.run(

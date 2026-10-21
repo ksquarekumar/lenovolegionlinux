@@ -98,10 +98,13 @@ fn principal(headers: &HeaderMap) -> Result<Principal, ApiError> {
             return Ok(None);
         };
         let runs = match &inside {
-            Some(inside) => legionctl_core::session::active(
-                &session,
-                legionctl_core::session::Inside::from_db(inside),
-            )?,
+            Some(inside) => {
+                legionctl_core::session::liveness(
+                    &session,
+                    legionctl_core::session::Inside::from_db(inside),
+                    true,
+                )? != legionctl_core::session::Liveness::Ended
+            }
             None => true,
         };
         if !runs {

@@ -133,10 +133,15 @@ pub(crate) fn clear(dir: &Path) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
-    walk_dirs(dir);
-    std::fs::remove_dir_all(dir)?;
+    remove_layer(dir)?;
     std::fs::create_dir_all(dir)?;
     Ok(())
+}
+
+/// Remove a folder the overlay wrote, also its folders with mode 000.
+pub(crate) fn remove_layer(dir: &Path) -> Result<()> {
+    walk_dirs(dir);
+    std::fs::remove_dir_all(dir).with_context(|| format!("removing {}", dir.display()))
 }
 
 /// Make every folder under `dir` accessible (the overlay leaves `work/work` with mode 000).
