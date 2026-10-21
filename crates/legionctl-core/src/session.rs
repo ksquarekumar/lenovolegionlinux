@@ -415,6 +415,8 @@ fn clear_overlay_work(id: &str, scoped: bool, wait: std::time::Duration) -> Resu
     let Some(_lock) = take_lock(id, wait)? else {
         return Ok(0);
     };
+    // the folders as they are under the lock
+    let found = overlay_work(id);
     for dir in &found {
         crate::folder::remove_layer(dir)?;
     }
@@ -1982,11 +1984,18 @@ impl Dossiers {
                 })?;
         // a cleanup holds the lock for a moment; a running session holds it
         let wait = std::time::Duration::from_secs(3);
+        let still_runs = || {
+            format!(
+                "session {id} still runs: end it (`legionctl session stop {id}`) before you resume it"
+            )
+        };
         anyhow::ensure!(
             liveness_within(id, record.inside, scoped, wait)? != Liveness::Live,
-            "session {id} still runs: end it (`legionctl session stop {id}`) before you resume it"
+            still_runs()
         );
         self.clear_overlays(None, std::time::Duration::ZERO)?;
+        // held while its files and layers are prepared: no other resume or cleanup changes them meanwhile
+        let _held = take_lock(id, wait)?.with_context(still_runs)?;
         // a headless session goes on through its agent's ACP adapter, an interactive one through its resume command
         let (commands, key) = if headless {
             (&config.session.acp, "session.acp")
