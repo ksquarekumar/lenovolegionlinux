@@ -4718,6 +4718,11 @@ fn a_session_killed_before_its_cleanup_is_cleared_at_the_next_operator_start() {
         legacy.join("upper/keep").is_file() && legacy.join("upper/inner/work/work").exists(),
         "nothing below upper is entered"
     );
+    let nest = legacy.parent().unwrap().join("nest/work/work");
+    assert!(
+        nest.join("upper/keep").is_file() && !nest.join("work/work").exists(),
+        "a layer named like a layer's part keeps its files and loses only the kernel's folder"
+    );
     assert!(
         boxed.join("work/work").exists(),
         "a container's home copy is not entered"
@@ -4784,9 +4789,9 @@ fn port_binding(op: &Operator, repo: &Path, home: &Path, id: &str) -> (Value, Va
 }
 
 /// Homes that sessions left before an operator start, beside the killed session `id`: two host sessions from before
-/// the session lock (the scope of one ended, of the other runs), a container session's home copy, and a commands
-/// sandbox layer of `id`. Each has a `work/work` and, below `upper`, a folder that looks like a layer. Returns their
-/// `~/.claude` layers.
+/// the session lock (the scope of one ended, of the other runs; the ended one also has layers ~/nest/upper and
+/// ~/nest/work/work), a container session's home copy, and a commands sandbox layer of `id`. Each has a `work/work`
+/// with the kernel's mode 000 and, below `upper`, a folder that looks like a layer. Returns their `~/.claude` layers.
 fn homes_left_before_the_start(home: &Path, repo: &Path, id: &str) -> [PathBuf; 4] {
     let made = |id: &str, root: &str| {
         let at = home
@@ -4818,6 +4823,20 @@ fn homes_left_before_the_start(home: &Path, repo: &Path, id: &str) -> [PathBuf; 
     insert("before-the-lock", "host");
     insert("before-the-lock-still-runs", "host");
     insert("in-a-box", "container");
+    // its configured folders ~/nest/upper and ~/nest/work/work are layers whose names look like a layer's parts
+    let nest = home
+        .join(".local/state/legionctl/session-home/before-the-lock/home")
+        .join(home.strip_prefix("/").unwrap())
+        .join("nest");
+    for layer in [nest.join("upper"), nest.join("work/work")] {
+        write(&layer.join("upper/keep"), "kept");
+        std::fs::create_dir_all(layer.join("work/work")).unwrap();
+        std::fs::set_permissions(
+            layer.join("work/work"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o000),
+        )
+        .unwrap();
+    }
     [
         made("before-the-lock", "home"),
         made("before-the-lock-still-runs", "home"),

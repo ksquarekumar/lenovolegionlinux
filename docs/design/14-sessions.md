@@ -128,11 +128,12 @@ the sandbox, so an agent cannot unlock its session; `legionctl vm` with QEMU and
 kernel frees it when the last holder ends, also after a crash. Live: the lock is held, or a container still runs (it
 outlives a killed docker client). A session of a build before the lock: its scope or container tells; with neither,
 unknown. Bindings, tokens, peer states and resumes use it. The overlay work folders (`work/work`, mode 000 from the
-kernel: a scan of the home fails on it) of an ended host session go under its lock, never below `upper`. Each layer's
-folder has the mark `.legionctl-layer` beside `upper` and `work` (a configured folder may itself be named `upper` or
-`work`), and a home of an earlier build is read by its shape. They go at the end of a headless run, at each session
-start or resume (every ended session), and at the operator start (which also removes the commands sandboxes' `run-*`
-layers that a stopped operator left). An interactive session's folders stay until the next of those.
+kernel: a scan of the home fails on it) of an ended host session go under its lock, and only a folder with the
+kernel's mode 000. Each launch adds its layers to the record `<session home>/layers`, and the cleanup takes them from
+it, never from folder names (a configured folder may itself be named `upper` or `work`); a home of an earlier build is
+read by its shape, never below `upper`. They go at the end of a headless run, at each session start or resume (every
+ended session), and at the operator start (which also removes the commands sandboxes' `run-*` layers that a stopped
+operator left). An interactive session's folders stay until the next of those.
 
 Fixed (2026-10-13): the sandbox bound the whole `$XDG_RUNTIME_DIR`, and `--ro-bind / /` does not stop a connect to a
 socket. The agent could reach the session bus and systemd's user manager (`systemd-run --user` runs outside the

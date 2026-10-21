@@ -400,38 +400,89 @@ fn lock_and_scope(id: &str, scope: bool) -> Result<Vec<String>> {
 }
 
 /// Remove the overlay work folders of ended session `id` (`work/work`, which the kernel makes with mode 000: a scan of
-/// the home fails on it), under its lock: no process of the session runs and no resume mounts meanwhile. `upper` and
-/// `work` stay for a resume, and nothing below `upper` (the agent's files) is entered. A session of a build before
-/// the lock only when its scope ended. Returns how many it removed.
+/// the home fails on it), under its lock: no process of the session runs and no resume mounts meanwhile. Only a
+/// folder with the kernel's mode 000 goes; `upper` and `work` stay for a resume. A session of a build before the lock
+/// only when its scope ended. Returns how many it removed.
 fn clear_overlay_work(id: &str, scoped: bool, wait: std::time::Duration) -> Result<usize> {
-    let marked = lock_file(id).exists();
-    let found = overlay_work(id, marked);
-    if found.is_empty() {
+    if overlay_work(id)?.is_empty() {
         return Ok(0);
     }
     // a session of a build before the lock: only when its scope ended
-    if !marked && (!scoped || active(id, Inside::Host)?) {
+    if !lock_file(id).exists() && (!scoped || active(id, Inside::Host)?) {
         return Ok(0);
     }
     let Some(_lock) = take_lock(id, wait)? else {
         return Ok(0);
     };
     // the folders as they are under the lock
-    let found = overlay_work(id, marked);
+    let found = overlay_work(id)?;
     for dir in &found {
         crate::folder::remove_layer(dir)?;
     }
     Ok(found.len())
 }
 
-/// The mark of an overlay layer's folder (beside its `upper` and `work`): which folders of a session's home are layers,
-/// also when a configured path itself is named `upper` or `work`.
-const LAYER_MARK: &str = ".legionctl-layer";
+/// The record of session `id`'s overlay work folders (`<session home>/layers`, a JSON list), which each launch adds
+/// to: the cleanup takes the folders from it, never from the names of folders (a configured folder may itself be
+/// named `upper` or `work`).
+fn layers_file(id: &str) -> PathBuf {
+    session_home(id).join("layers")
+}
 
-/// The `work/work` folders of host session `id`'s overlays: each layer among its home and storage layers, and its
-/// member overlay. A layer has its mark (`marked`: a session of this build); a home of an earlier build is read by
-/// its shape, a folder with `upper` and `work`.
-fn overlay_work(id: &str, marked: bool) -> Vec<PathBuf> {
+/// Add the overlay work folders of `mounts` that are session `id`'s own (its home and storage layers, its member
+/// overlay; not a plain folder's workspace) to its record.
+fn record_layers(id: &str, mounts: &[Mount]) -> Result<()> {
+    let path = layers_file(id);
+    let mut works: std::collections::BTreeSet<PathBuf> = match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            serde_json::from_str(&text).with_context(|| format!("reading {}", path.display()))?
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::collections::BTreeSet::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    works.extend(mounts.iter().filter_map(|m| match m {
+        Mount::Overlay { work, .. } if own_layer(id, work) => Some(work.clone()),
+        _ => None,
+    }));
+    std::fs::create_dir_all(session_home(id))?;
+    std::fs::write(&path, serde_json::to_string(&works)?)
+        .with_context(|| format!("writing {}", path.display()))
+}
+
+/// `path` is in session `id`'s own layers: its session home or its member overlay.
+fn own_layer(id: &str, path: &Path) -> bool {
+    path.starts_with(session_home(id)) || path.starts_with(overlay_layer(id))
+}
+
+/// The `work/work` folders of host session `id`'s overlays that the kernel made (mode 000): from its record; for a
+/// session of a build before the record, each folder with `upper` and `work` among its home and storage layers and
+/// its member overlay, never below `upper`.
+///
+/// # Errors
+/// The record cannot be read.
+fn overlay_work(id: &str) -> Result<Vec<PathBuf>> {
+    let kernel_made = |p: &Path| {
+        p.symlink_metadata().is_ok_and(|m| {
+            // mode 000: none of the nine permission bits
+            m.is_dir()
+                && std::os::unix::fs::PermissionsExt::mode(&m.permissions()).trailing_zeros() >= 9
+        })
+    };
+    let path = layers_file(id);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let works: Vec<PathBuf> = serde_json::from_str(&text)
+                .with_context(|| format!("reading {}", path.display()))?;
+            return Ok(works
+                .into_iter()
+                .filter(|w| own_layer(id, w))
+                .map(|w| w.join("work"))
+                .filter(|w| kernel_made(w))
+                .collect());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    }
     let folder = |p: &Path| p.symlink_metadata().is_ok_and(|m| m.is_dir());
     let mut found = Vec::new();
     let mut todo = vec![
@@ -440,27 +491,19 @@ fn overlay_work(id: &str, marked: bool) -> Vec<PathBuf> {
         overlay_layer(id),
     ];
     while let Some(dir) = todo.pop() {
-        let layer = if marked {
-            dir.join(LAYER_MARK)
-                .symlink_metadata()
-                .is_ok_and(|m| m.is_file())
-        } else {
-            folder(&dir.join("upper")) && folder(&dir.join("work"))
-        };
-        if layer {
-            let work = dir.join("work/work");
-            if folder(&work) {
-                found.push(work);
-            }
-            continue;
+        let layer = folder(&dir.join("upper")) && folder(&dir.join("work"));
+        if layer && kernel_made(&dir.join("work/work")) {
+            found.push(dir.join("work/work"));
         }
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            if entry.file_type().is_ok_and(|t| t.is_dir())
+                && !(layer && entry.file_name() == "upper")
+            {
                 todo.push(entry.path());
             }
         }
     }
-    found
+    Ok(found)
 }
 
 /// Remove the throwaway layers of the commands sandboxes ([`Jail`], `session-home/*/run-*`) that a stopped operator
@@ -739,7 +782,6 @@ fn team_role(
             for part in ["upper", "work"] {
                 std::fs::create_dir_all(layer.join(part))?;
             }
-            std::fs::write(layer.join(LAYER_MARK), "")?;
             mounts.push(Mount::Overlay {
                 folder: main.to_path_buf(),
                 upper: layer.join("upper"),
@@ -1682,7 +1724,6 @@ fn layered(
         for part in ["upper", "work"] {
             std::fs::create_dir_all(own.join(part))?;
         }
-        std::fs::write(own.join(LAYER_MARK), "")?;
         mounts.push(Mount::Overlay {
             folder: path.to_path_buf(),
             upper: own.join("upper"),
@@ -2148,6 +2189,7 @@ impl Dossiers {
             })
             .chain(harness_args)
             .collect();
+        record_layers(&id, &mounts)?;
         let sandbox = match runs {
             Runs::Host => {
                 headless_path(&mut env, config, who)?;
