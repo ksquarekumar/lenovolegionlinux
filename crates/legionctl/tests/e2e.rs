@@ -4487,12 +4487,15 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
 }
 
 /// The overlay layers of a test session: the session's config (a stand-in ACP agent, interactive and resume commands
-/// that try to unlock their session and wait, no scope, `~/.claude` as its one home layer), and the place of its
-/// `~/.claude` layer under session-home.
+/// that try to unlock their session and wait, no scope, home layers `~/.claude`, `~/nest/upper` and
+/// `~/nest/work/work`), and the place of a session's `~/.claude` layer under session-home.
 fn overlay_lab(home: &Path) -> impl Fn(&str) -> PathBuf {
     let agent =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
-    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    // a configured folder may itself be named upper or work: ~/nest/upper and ~/nest/work/work are layers too
+    for dir in [".claude", "nest/upper", "nest/work/work"] {
+        std::fs::create_dir_all(home.join(dir)).unwrap();
+    }
     // the interactive agent tries to unlock its session (each descriptor a lock could have), then waits
     let waits = json!([
         "sh",
@@ -4503,7 +4506,8 @@ fn overlay_lab(home: &Path) -> impl Fn(&str) -> PathBuf {
         &home.join(".config/legionctl/run.jsonc"),
         &json!({"session": {"acp": {"fake": ["python3", agent]}, "agents": {"fake": waits.clone()},
                             "resume": {"fake": waits},
-                            "scope": false, "writable": ["~/.claude"], "caches": []}})
+                            "scope": false, "writable": ["~/.claude", "~/nest/upper", "~/nest/work/work"],
+                            "caches": []}})
         .to_string(),
     );
     let home = home.to_path_buf();
@@ -4585,6 +4589,8 @@ fn an_ended_session_leaves_no_overlay_work_folder_and_a_running_one_keeps_its_ow
         "the kernel's mode, which a scan cannot read"
     );
     write(&layer(&id).join("upper/sentinel"), "the agent's own");
+    let nest = layer(&id).parent().unwrap().join("nest");
+    write(&nest.join("work/work/upper/sentinel"), "the agent's own");
 
     let refused = op.run(&repo, &env, &["session", "resume", &id, "--json"], "");
     let why = String::from_utf8_lossy(&refused.stderr);
@@ -4609,6 +4615,18 @@ fn an_ended_session_leaves_no_overlay_work_folder_and_a_running_one_keeps_its_ow
     write(&home.join("worktrees/repo/port/release"), "");
     assert!(client.wait().unwrap().success(), "the run ends");
     assert!(!work.exists(), "the ended session's work/work is gone");
+    for at in [nest.join("upper"), nest.join("work/work")] {
+        assert!(
+            !at.join("work/work").exists() && at.join("upper").is_dir(),
+            "a layer named upper or work is a layer too: {}",
+            at.display()
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(nest.join("work/work/upper/sentinel")).unwrap(),
+        "the agent's own",
+        "the layer ~/nest/work/work keeps its files"
+    );
     assert!(
         layer(&id).join("work").is_dir()
             && std::fs::read_to_string(layer(&id).join("upper/sentinel")).unwrap()
@@ -4707,6 +4725,18 @@ fn a_session_killed_before_its_cleanup_is_cleared_at_the_next_operator_start() {
     assert!(
         legacy_runs.join("work/work").exists(),
         "a session from before the lock whose scope runs keeps its folders"
+    );
+    let refused = op.run(
+        &repo,
+        &env,
+        &["session", "resume", "before-the-lock-still-runs", "--json"],
+        "",
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("session before-the-lock-still-runs still runs"),
+        "its scope runs, so a resume is refused: {}",
+        String::from_utf8_lossy(&refused.stderr)
     );
     assert!(
         !home
@@ -5939,8 +5969,8 @@ fn a_control_state_commit_syncs_the_database() {
 }
 
 /// A session's token works only while its session runs (EV-review-16 C3): after `session stop` (its sandbox still
-/// holds its lock), after its sandbox ended (its lock free at the call), and after a headless run, the token is
-/// refused; a session that ended loses its token, so the next call finds no such token.
+/// holds its lock), after its sandbox ended (its lock free at the call; also with no scope), and after a headless run,
+/// the token is refused; a session that ended loses its token, so the next call finds no such token.
 #[test]
 fn a_session_token_works_only_while_its_session_runs() {
     let (op, home) = operator("tokenlife");
@@ -5993,25 +6023,21 @@ fn a_session_token_works_only_while_its_session_runs() {
     stand_in(&home, "systemctl", "#!/bin/sh\nexit 0\n");
 
     let (stopped, token) = start("one");
-    assert!(
-        call(&token).status.success(),
-        "{}",
-        String::from_utf8_lossy(&call(&token).stderr)
-    );
     sql(
         &home,
         &format!("UPDATE sessions SET scoped = 1 WHERE id = '{stopped}'"),
     );
     let _running = hold(&stopped);
-    assert!(call(&token).status.success(), "a sandbox that runs");
+    assert!(
+        call(&token).status.success(),
+        "a sandbox that runs: {}",
+        String::from_utf8_lossy(&call(&token).stderr)
+    );
     op.ok(&["session", "stop", &stopped]);
     refused(&token, "the token is not valid");
 
+    // a session with no scope (session.scope false) too
     let (ended, token) = start("two");
-    sql(
-        &home,
-        &format!("UPDATE sessions SET scoped = 1 WHERE id = '{ended}'"),
-    );
     let mut running = hold(&ended);
     assert!(call(&token).status.success());
     running.stop();
@@ -7355,8 +7381,8 @@ fn images_run_of_a_compose_project_overrides_only_the_built_tags() {
         .output();
 }
 
-/// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the
-/// sandbox, this binary bound over git as the gate, then the agent.
+/// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the session
+/// lock, the sandbox, this binary bound over git as the gate, then the agent.
 fn run_launch(op: &Operator, home: &Path, launch: &Value) -> std::process::Output {
     let strings = |v: &Value| -> Vec<String> {
         v.as_array()
@@ -7374,7 +7400,13 @@ fn run_launch(op: &Operator, home: &Path, launch: &Value) -> std::process::Outpu
         launch["real_git"].as_str().unwrap(),
     ]
     .map(String::from);
+    // the session lock, without the systemd scope (CI has no user systemd)
+    let lock: Vec<String> = strings(&launch["scope"])
+        .into_iter()
+        .take_while(|a| a != "systemd-run")
+        .collect();
     let argv = [
+        lock,
         strings(&launch["sandbox"]),
         gate.to_vec(),
         strings(&launch["agent"]),

@@ -92,21 +92,16 @@ fn principal(headers: &HeaderMap) -> Result<Principal, ApiError> {
             },
         );
     }
-    // a session in a scope or a container: its token is valid while it runs
+    // a session's token is valid while it runs
     let checked = Db::open_default().and_then(|db| {
-        let Some((session, inside)) = db.token_session(token)? else {
+        let Some((session, scoped, inside)) = db.token_session(token)? else {
             return Ok(None);
         };
-        let runs = match &inside {
-            Some(inside) => {
-                legionctl_core::session::liveness(
-                    &session,
-                    legionctl_core::session::Inside::from_db(inside),
-                    true,
-                )? != legionctl_core::session::Liveness::Ended
-            }
-            None => true,
-        };
+        let runs = legionctl_core::session::liveness(
+            &session,
+            legionctl_core::session::Inside::from_db(&inside),
+            scoped,
+        )? != legionctl_core::session::Liveness::Ended;
         if !runs {
             db.revoke_token(&session)?;
         }

@@ -404,28 +404,34 @@ fn lock_and_scope(id: &str, scope: bool) -> Result<Vec<String>> {
 /// `work` stay for a resume, and nothing below `upper` (the agent's files) is entered. A session of a build before
 /// the lock only when its scope ended. Returns how many it removed.
 fn clear_overlay_work(id: &str, scoped: bool, wait: std::time::Duration) -> Result<usize> {
-    let found = overlay_work(id);
+    let marked = lock_file(id).exists();
+    let found = overlay_work(id, marked);
     if found.is_empty() {
         return Ok(0);
     }
     // a session of a build before the lock: only when its scope ended
-    if !lock_file(id).exists() && (!scoped || active(id, Inside::Host)?) {
+    if !marked && (!scoped || active(id, Inside::Host)?) {
         return Ok(0);
     }
     let Some(_lock) = take_lock(id, wait)? else {
         return Ok(0);
     };
     // the folders as they are under the lock
-    let found = overlay_work(id);
+    let found = overlay_work(id, marked);
     for dir in &found {
         crate::folder::remove_layer(dir)?;
     }
     Ok(found.len())
 }
 
-/// The `work/work` folders of host session `id`'s overlays: each layer (a folder with `upper` and `work`) among its
-/// home and storage layers, and its member overlay.
-fn overlay_work(id: &str) -> Vec<PathBuf> {
+/// The mark of an overlay layer's folder (beside its `upper` and `work`): which folders of a session's home are layers,
+/// also when a configured path itself is named `upper` or `work`.
+const LAYER_MARK: &str = ".legionctl-layer";
+
+/// The `work/work` folders of host session `id`'s overlays: each layer among its home and storage layers, and its
+/// member overlay. A layer has its mark (`marked`: a session of this build); a home of an earlier build is read by
+/// its shape, a folder with `upper` and `work`.
+fn overlay_work(id: &str, marked: bool) -> Vec<PathBuf> {
     let folder = |p: &Path| p.symlink_metadata().is_ok_and(|m| m.is_dir());
     let mut found = Vec::new();
     let mut todo = vec![
@@ -434,7 +440,14 @@ fn overlay_work(id: &str) -> Vec<PathBuf> {
         overlay_layer(id),
     ];
     while let Some(dir) = todo.pop() {
-        if folder(&dir.join("upper")) && folder(&dir.join("work")) {
+        let layer = if marked {
+            dir.join(LAYER_MARK)
+                .symlink_metadata()
+                .is_ok_and(|m| m.is_file())
+        } else {
+            folder(&dir.join("upper")) && folder(&dir.join("work"))
+        };
+        if layer {
             let work = dir.join("work/work");
             if folder(&work) {
                 found.push(work);
@@ -726,6 +739,7 @@ fn team_role(
             for part in ["upper", "work"] {
                 std::fs::create_dir_all(layer.join(part))?;
             }
+            std::fs::write(layer.join(LAYER_MARK), "")?;
             mounts.push(Mount::Overlay {
                 folder: main.to_path_buf(),
                 upper: layer.join("upper"),
@@ -1668,6 +1682,7 @@ fn layered(
         for part in ["upper", "work"] {
             std::fs::create_dir_all(own.join(part))?;
         }
+        std::fs::write(own.join(LAYER_MARK), "")?;
         mounts.push(Mount::Overlay {
             folder: path.to_path_buf(),
             upper: own.join("upper"),

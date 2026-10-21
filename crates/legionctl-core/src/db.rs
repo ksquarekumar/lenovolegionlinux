@@ -613,19 +613,19 @@ impl Db {
         Ok(())
     }
 
-    /// The session whose sandbox holds `token`, if any, and where it runs when it has a scope or a container
-    /// (`inside`; None: no scope, so only its end takes the token away).
+    /// The session whose sandbox holds `token`, if any, with its row's scoped and inside (for
+    /// [`crate::session::liveness`]).
     ///
     /// # Errors
     /// The database read fails.
-    pub fn token_session(&self, token: &str) -> Result<Option<(String, Option<String>)>> {
+    pub fn token_session(&self, token: &str) -> Result<Option<(String, bool, String)>> {
         Ok(self
             .conn
             .query_row(
                 "SELECT t.session, s.scoped, s.inside FROM tokens t JOIN sessions s ON s.id = t.session \
                  WHERE t.hash = ?1",
                 [token_hash(token)],
-                |r| Ok((r.get(0)?, r.get::<_, bool>(1)?.then(|| r.get(2)).transpose()?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?)
     }

@@ -113,25 +113,26 @@ history that a loaded session sends again is not part of the answer. The stand-i
 line, holds on WAIT until the test lets it go, and keeps its sessions in a file in the workspace; the e2e tests see
 the first line before the run ends and a cut-off run that goes on in its loaded ACP session.
 
-Built (2026-10-13, S4): `session pause|unpause <id>` freeze and thaw the session's scope (cgroup freezer;
-`systemctl --user freeze|thaw`), `session stop <id>` stops it, `session resume <id>` prepares an ended session
-again (same id, dossier binding and workspace; the sandbox anew) with the agent's resume command (`session.resume`:
-`claude --resume {id} ...`; Codex has none by id). A resume of a session that still runs is refused.
+Built (2026-10-13, S4): `session pause|unpause <id>` freeze and thaw the session's scope (cgroup freezer; `systemctl
+--user freeze|thaw`), `session stop <id>` stops it, `session resume <id>` prepares an ended session again (same id,
+dossier binding and workspace; the sandbox anew) with the agent's resume command (`session.resume`: `claude --resume
+{id} ...`; Codex has none by id). A resume of a session that still runs is refused. The e2e test resumes a session and
+sees the same id and folder, and a refusal for an agent without a resume command; pause and thaw were checked live
+(active, frozen, running, inactive), as CI has no user systemd. Not yet: the idle and memory-pressure policies that
+pause and offload on their own.
 
 Liveness (one test, `session::liveness`, AOS-2): `sh -c 'exec 9>>lock && flock -w 10 9 && exec ...'` comes first in
 front of the sandbox (`Launch.scope`), so the session lock (`<session home>/lock`) is taken before the mounts and the
-sandbox holds it on descriptor 9 (bwrap keeps it with `--sync-fd 9` in its own processes and gives it to no process
-in the sandbox, so an agent cannot unlock its session; `legionctl vm` with QEMU and virtiofsd; the docker client);
-the kernel frees it when the last holder ends, also after a crash. Live: the lock is held, or a container still runs (it outlives a killed
-docker client). A session of a build before the lock: its scope or container tells; with neither, unknown. Bindings,
-tokens, peer states and resumes use it. The overlay work folders (`work/work`, mode 000 from the kernel: a scan of the
-home fails on it) of an ended host session go under its lock, never below `upper`: at the end of a headless run, at
-each session start or resume (every ended session), and at the operator start (which also removes the commands
-sandboxes' `run-*` layers that a stopped operator left). An interactive session's folders stay until the next of
-those. The e2e test resumes a session and sees the same id and folder,
-and a refusal for an agent without a resume command; pause and thaw were checked live (active, frozen, running,
-inactive), as CI has no user systemd. Not yet: the idle and memory-pressure policies that pause and offload on
-their own.
+sandbox holds it on descriptor 9 (bwrap keeps it with `--sync-fd 9` in its own processes and gives it to no process in
+the sandbox, so an agent cannot unlock its session; `legionctl vm` with QEMU and virtiofsd; the docker client); the
+kernel frees it when the last holder ends, also after a crash. Live: the lock is held, or a container still runs (it
+outlives a killed docker client). A session of a build before the lock: its scope or container tells; with neither,
+unknown. Bindings, tokens, peer states and resumes use it. The overlay work folders (`work/work`, mode 000 from the
+kernel: a scan of the home fails on it) of an ended host session go under its lock, never below `upper`. Each layer's
+folder has the mark `.legionctl-layer` beside `upper` and `work` (a configured folder may itself be named `upper` or
+`work`), and a home of an earlier build is read by its shape. They go at the end of a headless run, at each session
+start or resume (every ended session), and at the operator start (which also removes the commands sandboxes' `run-*`
+layers that a stopped operator left). An interactive session's folders stay until the next of those.
 
 Fixed (2026-10-13): the sandbox bound the whole `$XDG_RUNTIME_DIR`, and `--ro-bind / /` does not stop a connect to a
 socket. The agent could reach the session bus and systemd's user manager (`systemd-run --user` runs outside the
