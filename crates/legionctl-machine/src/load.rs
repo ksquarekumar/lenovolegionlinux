@@ -464,10 +464,7 @@ mod tests {
             full_avg10: None,
         };
         let defaults: serde_json::Value =
-            serde_json::from_reader(json_comments::StripComments::new(
-                include_str!("../../../config/defaults.jsonc").as_bytes(),
-            ))
-            .unwrap();
+            crate::profile::parse_jsonc(include_str!("../../../config/defaults.jsonc")).unwrap();
         let thresholds: Thresholds = serde_json::from_value(defaults["load"].clone()).unwrap();
         let level = |load1, disks_busy| {
             let sample = Sample {

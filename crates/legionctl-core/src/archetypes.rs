@@ -1036,9 +1036,8 @@ impl Sources {
             Some((_, path)) => {
                 let text = std::fs::read_to_string(path)
                     .with_context(|| format!("reading {}", path.display()))?;
-                let team: Team =
-                    serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
-                        .with_context(|| format!("{} is not a valid team file", path.display()))?;
+                let team: Team = legionctl_machine::profile::parse_jsonc(&text)
+                    .with_context(|| format!("{} is not a valid team file", path.display()))?;
                 (team.members, team.flow)
             }
             None => (

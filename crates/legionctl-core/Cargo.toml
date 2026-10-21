@@ -13,7 +13,6 @@ serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
 toml.workspace = true
-json_comments = "0.2.2"
 blake2 = "0.10.6"
 base64 = "0.22.1"
 # the key (and so the file) of a config value that does not fit

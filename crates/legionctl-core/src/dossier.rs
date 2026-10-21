@@ -1797,7 +1797,7 @@ fn dossier_json(dir: &Path) -> Result<Option<serde_json::Value>> {
     let Some(text) = legionctl_machine::sysroot::read_file(&path)? else {
         return Ok(None);
     };
-    serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
+    legionctl_machine::profile::parse_jsonc(&text)
         .with_context(|| format!("reading {}", path.display()))
         .map(Some)
 }
@@ -2060,11 +2060,7 @@ pub(crate) fn write_id(dir: &Path, id: &str, name: &str) -> Result<()> {
         return atomic_write(dir, &path, &jsonc(id, name)?);
     };
     // the comments become spaces of the same length, so a position in the stripped text is one in the file
-    let mut stripped = String::new();
-    std::io::Read::read_to_string(
-        &mut json_comments::StripComments::new(text.as_bytes()),
-        &mut stripped,
-    )?;
+    let stripped = legionctl_machine::profile::strip_jsonc(text.as_bytes())?;
     let value: serde_json::Value =
         serde_json::from_str(&stripped).with_context(|| format!("reading {}", path.display()))?;
     let open = stripped

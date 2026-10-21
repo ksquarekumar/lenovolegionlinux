@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 pub const DEFAULT_PATH: &str =
@@ -93,14 +94,55 @@ pub fn text(value: &Value) -> String {
     }
 }
 
-/// A JSONC file (JSON with comments) as JSON.
+/// A JSONC file (JSON with comments and trailing commas) as JSON.
 ///
 /// # Errors
-/// The file cannot be opened or is not valid JSONC.
+/// The file cannot be read or is not valid JSONC.
 pub fn read_jsonc(path: &Path) -> Result<Value> {
-    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    serde_json::from_reader(json_comments::StripComments::new(file))
-        .with_context(|| format!("parsing {}", path.display()))
+    let bytes = std::fs::read(path).with_context(|| format!("opening {}", path.display()))?;
+    parse_jsonc(&bytes).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// A JSONC text (JSON with comments and trailing commas, as editors and formatters such as oxfmt write it) as `T`.
+///
+/// # Errors
+/// The text is not UTF-8, not valid JSONC (an unfinished comment too), or not a `T`.
+pub fn parse_jsonc<T: DeserializeOwned>(text: impl AsRef<[u8]>) -> serde_json::Result<T> {
+    serde_json::from_str(&strip_jsonc(text.as_ref()).map_err(serde_json::Error::io)?)
+}
+
+/// A JSONC text as plain JSON: each comment and each trailing comma (one that only blanks separate from the `]` or
+/// `}` after it) becomes spaces, so a position in the result is the same in the text (F6, feedbacks/0001 item 6).
+///
+/// # Errors
+/// The text is not UTF-8 or has an unfinished comment.
+pub fn strip_jsonc(text: &[u8]) -> std::io::Result<String> {
+    let mut plain = String::with_capacity(text.len());
+    std::io::Read::read_to_string(&mut json_comments::StripComments::new(text), &mut plain)?;
+    let (mut trailing, mut comma) = (Vec::new(), None);
+    let (mut in_string, mut escaped) = (false, false);
+    for (at, c) in plain.char_indices() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => (in_string, comma) = (true, None),
+            ',' => comma = Some(at),
+            ']' | '}' => trailing.extend(comma.take()),
+            c if c.is_whitespace() => {}
+            _ => comma = None,
+        }
+    }
+    for at in trailing {
+        plain.replace_range(at..=at, " ");
+    }
+    Ok(plain)
 }
 
 /// The installed profile, under the sysroot like every machine path (tests use a recorded machine).

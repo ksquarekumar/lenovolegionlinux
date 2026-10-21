@@ -348,6 +348,62 @@ fn two_languages_an_unknown_one_and_the_written_proposal(lab: &Lab, rust_text: &
     );
 }
 
+/// F6 (feedbacks/0001 item 6): JSONC allows trailing commas, and formatters (oxfmt) write them. A repository's
+/// `.legionctl/checks.jsonc` and a dossier's `dossier.jsonc` with trailing commas (and `, }` in a string) work end to
+/// end: the check runs, the dossier gets its id written (at a registry read) and keeps its title. A layer file with an unfinished comment
+/// fails the call with one line that names the file.
+#[test]
+fn jsonc_files_with_trailing_commas_work_and_an_unfinished_comment_names_its_file() {
+    let lab = Lab::new("jsonc");
+    let repo = lab.repo(
+        "repo",
+        &[
+            (".gitignore", "/agentWorkspaces\n"),
+            (
+                ".legionctl/checks.jsonc",
+                "// as oxfmt writes it\n{\n  \"checks\": {\n    \"lint\": {\n      \"kind\": \"lint\",\n      \
+                 \"run\": \"printf 'a, ]' | grep -q ,\",\n      \"profiles\": [\"report.txt\",],\n    },\n  },\n}\n",
+            ),
+        ],
+    );
+    let ws = lab.workspace(&repo, "jsonc");
+    let ran = lab.ok(&ws, &["code", "checks", "run", "lint"]);
+    assert!(ran.starts_with("lint: exit 0 in "), "{ran}");
+
+    let dossier = lab.home.join("agentWorkspaces/jsonc/dossier.jsonc");
+    write(
+        &dossier,
+        "// written by hand\n{\n  \"title\": \"kept \\\", }\",\n  \"entities\": [],\n}\n",
+    );
+    // doctor reads the registry from the folders: a folder with no id gets one
+    lab.findings(&ws, &["doctor"]);
+    let written: Value = serde_json::from_str(
+        &std::fs::read_to_string(&dossier)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<String>()
+            .replace(",}", "}"),
+    )
+    .unwrap();
+    assert!(
+        written["id"].as_str().unwrap().starts_with("dsr-") && written["title"] == "kept \", }",
+        "{written}"
+    );
+
+    let layer = lab.home.join(".config/legionctl/mine.jsonc");
+    write(&layer, "{ \"session\": {} /* not closed\n");
+    let out = lab.run(&ws, &["config", "show"]);
+    let (_, err) = text(&out);
+    assert!(
+        !out.status.success()
+            && err.lines().count() == 1
+            && err.contains(&layer.display().to_string())
+            && !err.contains("panicked"),
+        "{err}"
+    );
+}
+
 /// The checkpoint gate (E2 rule 4): a failing `gate: checkpoint` check refuses the checkpoint with the check's exit
 /// code, log path and output, and commits nothing; a passing run at the tree being committed is not run again; a new
 /// tree runs it again. Each run keeps its log, profile and `profiles` files in the dossier home, and `keep_runs`

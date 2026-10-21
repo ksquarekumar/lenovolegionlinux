@@ -253,8 +253,7 @@ pub fn registry() -> Result<&'static [Setting]> {
     let defaults = crate::config::defaults()?;
     let text = include_str!("../../../config/settings.jsonc");
     let mut declared: BTreeMap<String, Declared> =
-        serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
-            .context("config/settings.jsonc")?;
+        legionctl_machine::profile::parse_jsonc(text).context("config/settings.jsonc")?;
     // a map keeps the last of two declarations of one key: each key once
     let twice: Vec<&String> = declared
         .keys()

@@ -559,9 +559,7 @@ impl View {
     /// The text is not a view: not JSON, a field or widget outside the format, a bad name, a widget without what it
     /// needs, or a `{param}` that the view does not declare.
     pub fn parse(text: &str) -> Result<View> {
-        let view: View =
-            serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
-                .context("not a view")?;
+        let view: View = legionctl_machine::profile::parse_jsonc(text).context("not a view")?;
         view.check()?;
         Ok(view)
     }

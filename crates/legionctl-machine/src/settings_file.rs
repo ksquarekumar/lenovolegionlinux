@@ -29,7 +29,7 @@ pub fn edit(
     let path = dir.join(MANAGED);
     update(&path, |bytes| {
         let mut managed = match bytes {
-            Some(bytes) => match serde_json::from_reader(json_comments::StripComments::new(bytes))
+            Some(bytes) => match crate::profile::parse_jsonc(bytes)
                 .with_context(|| format!("parsing {}", path.display()))?
             {
                 Value::Object(map) => map,

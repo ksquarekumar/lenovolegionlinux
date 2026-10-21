@@ -223,7 +223,7 @@ pub fn languages() -> Result<Vec<Language>> {
     LANGUAGES
         .iter()
         .map(|text| {
-            serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
+            legionctl_machine::profile::parse_jsonc(text)
                 .context("a shipped language file does not parse")
         })
         .collect()

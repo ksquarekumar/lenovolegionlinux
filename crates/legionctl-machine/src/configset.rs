@@ -426,10 +426,8 @@ pub fn parse(
     file: &str,
     text: Result<String, String>,
 ) -> Layer {
-    let parsed = text.and_then(|t| {
-        serde_json::from_reader::<_, File>(json_comments::StripComments::new(t.as_bytes()))
-            .map_err(|e| e.to_string())
-    });
+    let parsed =
+        text.and_then(|t| crate::profile::parse_jsonc::<File>(&t).map_err(|e| e.to_string()));
     let (content, off) = match parsed {
         Ok(content) => {
             let off = check(root, profile, folder, name, &content);

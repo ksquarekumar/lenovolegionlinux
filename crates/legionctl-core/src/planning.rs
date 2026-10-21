@@ -171,8 +171,7 @@ struct Plan {
 fn parse<T: DeserializeOwned>(dir: &Path, tree: &str, path: &str) -> Result<T, String> {
     let bytes = crate::git::bytes(dir, &["cat-file", "blob", &format!("{tree}:{path}")])
         .map_err(|e| format!("{path}: {e:#}"))?;
-    serde_json::from_reader(json_comments::StripComments::new(&bytes[..]))
-        .map_err(|e| format!("{path}: {e}"))
+    legionctl_machine::profile::parse_jsonc(&bytes).map_err(|e| format!("{path}: {e}"))
 }
 
 fn load(dir: &Path, tree: &str) -> Result<Plan> {
@@ -245,8 +244,9 @@ impl Facts {
             None => BTreeSet::new(),
         };
         let config = match blob("config/defaults.jsonc")? {
-            Some(b) => serde_json::from_reader(json_comments::StripComments::new(&b[..]))
-                .context("config/defaults.jsonc")?,
+            Some(b) => {
+                legionctl_machine::profile::parse_jsonc(&b).context("config/defaults.jsonc")?
+            }
             None => Value::Null,
         };
         Ok(Facts {

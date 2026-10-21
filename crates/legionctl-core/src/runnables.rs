@@ -341,9 +341,8 @@ pub(crate) fn load(
         }
     };
     for text in SHIPPED {
-        let set: Manifest =
-            serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
-                .context("a shipped capability set does not parse")?;
+        let set: Manifest = legionctl_machine::profile::parse_jsonc(text)
+            .context("a shipped capability set does not parse")?;
         let source = Source {
             layer: "defaults".into(),
             file: format!("built in {}", set.name),

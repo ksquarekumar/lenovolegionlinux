@@ -1091,8 +1091,7 @@ fn merge_layers(
 /// # Errors
 /// They do not parse.
 pub fn defaults() -> Result<Value> {
-    serde_json::from_reader(json_comments::StripComments::new(DEFAULTS.as_bytes()))
-        .context("parsing the built-in defaults")
+    legionctl_machine::profile::parse_jsonc(DEFAULTS).context("parsing the built-in defaults")
 }
 
 /// One file of a layer as legionctl reads and approves it: a JSONC object without its top-level `$schema` (an

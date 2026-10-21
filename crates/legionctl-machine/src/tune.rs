@@ -366,17 +366,15 @@ fn tuned(root: &SysRoot, attribute: &str, value: u32, kernel: Option<&str>) -> R
     // a layer that cannot be read or parsed is not written over: it can hold the values of earlier sweeps
     let mut set = match crate::sysroot::read_file(&file)? {
         None => serde_json::Map::new(),
-        Some(text) => serde_json::from_reader::<_, serde_json::Value>(
-            json_comments::StripComments::new(text.as_bytes()),
-        )
-        .ok()
-        .and_then(|layer| layer.get("set")?.as_object().cloned())
-        .with_context(|| {
-            format!(
-                "{} is not a configset layer: it stays as it is",
-                file.display()
-            )
-        })?,
+        Some(text) => crate::profile::parse_jsonc::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|layer| layer.get("set")?.as_object().cloned())
+            .with_context(|| {
+                format!(
+                    "{} is not a configset layer: it stays as it is",
+                    file.display()
+                )
+            })?,
     };
     set.insert(format!("firmware.{attribute}"), value.into());
     let mut when = serde_json::json!({ "power": "ac" });
