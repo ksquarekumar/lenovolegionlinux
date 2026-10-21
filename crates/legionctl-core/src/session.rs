@@ -445,7 +445,10 @@ fn record_layers(id: &str, mounts: &[Mount]) -> Result<()> {
         _ => None,
     }));
     std::fs::create_dir_all(session_home(id))?;
-    std::fs::write(&path, serde_json::to_string(&works)?)
+    // a write that fails keeps the record as it was: a cut-off record would stop every later cleanup
+    let new = path.with_extension("new");
+    std::fs::write(&new, serde_json::to_string(&works)?)
+        .and_then(|()| std::fs::rename(&new, &path))
         .with_context(|| format!("writing {}", path.display()))
 }
 
