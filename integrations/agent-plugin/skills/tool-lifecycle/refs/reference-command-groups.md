@@ -21,7 +21,7 @@ W workspace, M machine (polkit). "client" runs in the client only, with no opera
 | `dossier`, `hooks`, `hook` (client) | R, S, W | operator | `dossier check`, `dossier nudges`, `hooks list` | dossier-practice |
 | `code graph` (`refresh`, `refs`, `query`, `impact`, `changes`, `annotate`, `annotations`, `prune`, `hook`) | R, S, W (`hook`) | operator, ctx | `code graph refs`, `code graph changes` | workspace-practice |
 | `code tests` (`run`, `list`, `show`, `review`, `mutant record`, `mutant run`) | R, S | operator, the repository's `test` checks, cargo-mutants; `run` and `mutant run` are jobs | `code tests review`, `jobs` | verify-and-ship |
-| `code checks` (`detect`, `list`, `run`, `show`) | R, S (`run`) | operator, `<repo>/.legionctl/checks.jsonc`, the language files; `run` is a job | `code checks list`, `code checks show` | verify-and-ship |
+| `code checks` (`detect`, `list`, `run`, `show`) | R, S (`run`) | operator, `<repo>/.legionctl/checks.jsonc` or `~/.config/legionctl/repos/<repo>/checks.jsonc`, the language files; `run` is a job | `code checks list`, `code checks show` | verify-and-ship |
 | `code plan` (`check`, `status`) | R | operator, ctx, tokei | `code plan status` | workspace-practice |
 | `workspace` | R, S, W | operator, git; `pack`: docker or QEMU, a job | `workspace status`, `workspace list` | workspace-practice |
 | `thread` (`start`, `list`, `show`, `join`, `leave`, `send`, `inbox`, `ack`, `declare`, `pace`, `rules`, `peers`, `observe`, `import`, `branch`, `compensate`) | R, S, W (`start`, `join`, `leave`, `import`, `branch`, `compensate`) | operator; delivery through the hooks; team members wake as operator sessions | `thread show`, `thread peers`, `trace` | sessions-and-agents |

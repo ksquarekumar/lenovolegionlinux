@@ -1312,6 +1312,25 @@ fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
 }
 
 /// A finding that legionctl cannot change: its text only.
+/// The lines of your per-repository settings folders that two known repositories of one name share: the repositories
+/// of legionctl's workspaces, and the one of `here`.
+fn repo_layer_clashes(resolved: &Resolved, here: Option<&Path>) -> Result<Vec<String>> {
+    let mut repos: Vec<PathBuf> = dossiers()?
+        .workspaces(None)?
+        .into_iter()
+        .map(|w| w.repo)
+        .collect();
+    repos.extend(
+        here.map(legionctl_core::workspace::repo_of)
+            .transpose()?
+            .flatten(),
+    );
+    Ok(legionctl_core::config::repo_layer_clashes(
+        resolved.user_dir(),
+        repos,
+    ))
+}
+
 fn state(text: String) -> legionctl_api::Finding {
     legionctl_api::Finding {
         text,
@@ -2141,7 +2160,7 @@ impl Engine for Operator {
         .into_wire())
     }
 
-    fn doctor(&self, _: &Ctx, input: ProfileIn) -> Result<Findings> {
+    fn doctor(&self, ctx: &Ctx, input: ProfileIn) -> Result<Findings> {
         // a machine that cannot be planned is a finding; the other checks still run
         let mut findings: Vec<legionctl_api::Finding> =
             match Plan::load(path(input.profile.as_ref())?) {
@@ -2200,6 +2219,10 @@ impl Engine for Operator {
         match crate::settings::findings() {
             Ok(found) => findings.extend(found),
             Err(e) => findings.push(not_run("settings", &e)),
+        }
+        match config(None).and_then(|r| repo_layer_clashes(&r, ctx.folder().ok())) {
+            Ok(lines) => findings.extend(lines.into_iter().map(state)),
+            Err(e) => findings.push(not_run("settings for repositories", &e)),
         }
         // nothing moves in silence: the user logs in to each old profile in clauth (user decision 2026-10-17)
         if let Some((folder, names)) = legionctl_core::accounts::old_profiles() {
@@ -5720,10 +5743,12 @@ impl Engine for Operator {
     fn config_layers(&self, ctx: &Ctx, _: Empty) -> Result<LayerList> {
         let resolved = config(Some(ctx.folder()?))?;
         let locked = resolved.locks().to_vec();
+        let mut problems = resolved.problems.clone();
+        problems.extend(repo_layer_clashes(&resolved, Some(ctx.folder()?))?);
         Ok(LayerList {
             layers: resolved.layers.into_wire(),
             locked,
-            problems: resolved.problems,
+            problems,
         })
     }
 }

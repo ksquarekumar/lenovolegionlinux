@@ -14224,6 +14224,11 @@
                       "description": "The repository's `.legionctl`.",
                       "type": "string",
                       "const": "project"
+                    },
+                    {
+                      "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set.",
+                      "type": "string",
+                      "const": "user-repo"
                     }
                   ]
                 }
@@ -14445,6 +14450,11 @@
               "type": "string",
               "const": "project",
               "description": "The repository's `.legionctl`."
+            },
+            {
+              "type": "string",
+              "const": "user-repo",
+              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
             }
           ],
           "description": "For whom: user (you), project (the repository's settings, for everybody who works in it) or computer (every\nuser of this computer; the system asks for an administrator's password).",
@@ -14493,6 +14503,11 @@
                   "type": "string",
                   "const": "project",
                   "description": "The repository's `.legionctl`."
+                },
+                {
+                  "type": "string",
+                  "const": "user-repo",
+                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
                 }
               ],
               "description": "A layer that a setting may be set in."
@@ -14564,6 +14579,11 @@
               "type": "string",
               "const": "project",
               "description": "The repository's `.legionctl`."
+            },
+            {
+              "type": "string",
+              "const": "user-repo",
+              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
             }
           ],
           "description": "The layer to remove it from: user, project or computer.",
@@ -14611,6 +14631,11 @@
                   "type": "string",
                   "const": "project",
                   "description": "The repository's `.legionctl`."
+                },
+                {
+                  "type": "string",
+                  "const": "user-repo",
+                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
                 }
               ],
               "description": "A layer that a setting may be set in."
@@ -14701,6 +14726,11 @@
               "type": "string",
               "const": "project",
               "description": "The repository's `.legionctl`."
+            },
+            {
+              "type": "string",
+              "const": "user-repo",
+              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
             }
           ],
           "description": "For whom: user, project or computer.",
@@ -14749,6 +14779,11 @@
                   "type": "string",
                   "const": "project",
                   "description": "The repository's `.legionctl`."
+                },
+                {
+                  "type": "string",
+                  "const": "user-repo",
+                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
                 }
               ],
               "description": "A layer that a setting may be set in."
@@ -14839,6 +14874,11 @@
               "type": "string",
               "const": "project",
               "description": "The repository's `.legionctl`."
+            },
+            {
+              "type": "string",
+              "const": "user-repo",
+              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
             }
           ],
           "description": "For whom: user, project or computer.",
@@ -14887,6 +14927,11 @@
                   "type": "string",
                   "const": "project",
                   "description": "The repository's `.legionctl`."
+                },
+                {
+                  "type": "string",
+                  "const": "user-repo",
+                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
                 }
               ],
               "description": "A layer that a setting may be set in."
@@ -14985,6 +15030,11 @@
                   "type": "string",
                   "const": "project",
                   "description": "The repository's `.legionctl`."
+                },
+                {
+                  "type": "string",
+                  "const": "user-repo",
+                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
                 }
               ],
               "description": "A layer that a setting may be set in."
@@ -15093,6 +15143,11 @@
                     "description": "The repository's `.legionctl`.",
                     "type": "string",
                     "const": "project"
+                  },
+                  {
+                    "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set.",
+                    "type": "string",
+                    "const": "user-repo"
                   }
                 ]
               },

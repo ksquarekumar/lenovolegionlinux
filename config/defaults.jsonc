@@ -1,15 +1,18 @@
 // legionctl defaults: the lowest config layer, compiled into every legionctl binary.
 //
 // Layers, lowest first: these defaults, /etc/legionctl/*.jsonc (system), ~/.config/legionctl/*.jsonc (user),
-// <repo>/.legionctl/*.jsonc (repository). Files in a layer merge in name order; managed.jsonc (written by `legionctl
-// config set` and the operations that change settings) merges last. config/settings.jsonc declares each setting.
+// <repo>/.legionctl/*.jsonc (repository, in git), ~/.config/legionctl/repos/<repo>/*.jsonc (user-repo: your own settings
+// for one repository, outside git; <repo> is the folder name of its main checkout, the same for each worktree; it sets
+// what a project may set, with no first-use question). Files in a layer merge in name order; managed.jsonc
+// (written by `legionctl config set` and the operations that change settings) merges last. config/settings.jsonc
+// declares each setting.
 //
 // Merge: objects merge per key; any other value replaces the lower one; `null` removes the key; "name+": [...]
 // appends to the array "name". `legionctl config explain <key>` shows which file set a value.
 {
   "config": {
     // Only these defaults and /etc/legionctl may set "config". Lowest first.
-    "precedence": ["defaults", "system", "user", "repo"],
+    "precedence": ["defaults", "system", "user", "repo", "user-repo"],
     // This computer's own scope or class of settings over config/settings.jsonc (each /etc/legionctl file's entries
     // over these): a key, a prefix, or a pattern with "*" for one key part -> {"scope": [...], "class": ...}.
     // Scope ["computer"] locks a setting for everybody else; a scope without "project" keeps it out of every

@@ -32,6 +32,10 @@ pub enum Scope {
     User,
     /// The repository's `.legionctl`.
     Project,
+    /// Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a
+    /// setting that a project may set.
+    #[serde(rename = "user-repo")]
+    UserRepo,
 }
 
 impl Scope {
@@ -42,6 +46,7 @@ impl Scope {
             "system" => Some(Scope::Computer),
             "user" => Some(Scope::User),
             "repo" => Some(Scope::Project),
+            "user-repo" => Some(Scope::UserRepo),
             _ => None,
         }
     }
@@ -52,6 +57,7 @@ impl Scope {
             Scope::Computer => "computer",
             Scope::User => "user",
             Scope::Project => "project",
+            Scope::UserRepo => "user-repo",
         }
     }
 
@@ -60,6 +66,7 @@ impl Scope {
             Scope::Computer => "this computer",
             Scope::User => "you",
             Scope::Project => "a project",
+            Scope::UserRepo => "you in this repository",
         }
     }
 }
@@ -621,7 +628,12 @@ pub fn validate(resolved: &Resolved, edit: &Edit) -> Result<&'static Setting> {
     let (scope, _) = resolved
         .declared(key)
         .unwrap_or_else(|| (setting.scope.clone(), setting.class));
-    if !scope.contains(&edit.scope) {
+    // your layer for a repository takes what may differ per repository: what a project may set
+    let fits = match edit.scope {
+        Scope::UserRepo => scope.contains(&Scope::Project),
+        other => scope.contains(&other),
+    };
+    if !fits {
         bail!(
             "{} ({key}) is set only for {}",
             setting.label,
@@ -727,6 +739,9 @@ pub fn layer_dir(resolved: &Resolved, scope: Scope) -> Result<PathBuf> {
             "this folder is in no git repository, so it has no project settings; set it for you instead",
         ),
         Scope::Computer => Ok(crate::config::Dirs::from_env().system),
+        Scope::UserRepo => resolved.user_repo_dir().map(Path::to_path_buf).context(
+            "this folder is in no git repository, so it has no settings of yours for a repository; set it for you instead",
+        ),
     }
 }
 
@@ -821,6 +836,7 @@ pub fn write(resolved: &Resolved, edit: &Edit, entry: Option<&Entry>) -> Result<
             edit.key,
             match edit.scope {
                 Scope::Project => "for this project",
+                Scope::UserRepo => "for you in this repository",
                 Scope::User | Scope::Computer => "for you",
             }
         )

@@ -68,7 +68,8 @@ flowchart LR
 
 State is in `/var/lib/legionctl/system.db` (machine), `~/.local/state/legionctl/operator.db` (events, threads)
 and `~/agentWorkspaces/<dossier>/` (each with `.state/dossier.db`). Configuration is JSONC files only:
-`config/defaults.jsonc`, then `/etc/legionctl`, `~/.config/legionctl`, `<repo>/.legionctl`. Machine policy:
+`config/defaults.jsonc`, then `/etc/legionctl`, `~/.config/legionctl`, `<repo>/.legionctl`, and your own settings for
+one repository outside git, `~/.config/legionctl/repos/<repo>` (`<repo>`: its main checkout's folder name). Machine policy:
 `profiles/lenovo-82wq-legion-pro-7-16irx8h.json` and its configset layers.
 
 ## State (2026-10-16)

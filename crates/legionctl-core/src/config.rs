@@ -655,6 +655,7 @@ pub struct Resolved {
     pub held: BTreeMap<String, String>,
     user_dir: PathBuf,
     repo_dir: Option<PathBuf>,
+    user_repo_dir: Option<PathBuf>,
     /// Only the defaults and /etc/legionctl set these keys: the settings of the computer scope only.
     locks: Vec<String>,
     overrides: BTreeMap<String, crate::settings::Override>,
@@ -736,20 +737,67 @@ pub(crate) fn ask(unapproved: &[Unapproved]) {
     }
 }
 
-/// `file` as in the main checkout of its repository when it is in a worktree (whose `.git` file names
-/// `<main>/.git/worktrees/<name>`), else `file`.
+/// `file` as in the main checkout of its repository when it is in a worktree, else `file`.
 fn main_checkout_path(file: &Path) -> PathBuf {
-    let main = repo_root(file).and_then(|root| {
-        let link = std::fs::read_to_string(root.join(".git")).ok()?;
-        let gitdir = PathBuf::from(link.strip_prefix("gitdir:")?.trim());
-        let worktrees = gitdir.parent()?;
-        let dot_git = worktrees.parent()?;
-        if worktrees.file_name()? != "worktrees" || dot_git.file_name()? != ".git" {
-            return None;
-        }
-        Some(dot_git.parent()?.join(file.strip_prefix(&root).ok()?))
-    });
+    let main = repo_root(file)
+        .and_then(|root| Some(main_checkout_of(&root).join(file.strip_prefix(&root).ok()?)));
     main.unwrap_or_else(|| file.to_path_buf())
+}
+
+/// Your settings folders for a repository (`<user_dir>/repos/<name>`) that more than one of `repos` (main checkouts)
+/// use, because their folders have the same name: one line each that names them.
+#[must_use]
+pub fn repo_layer_clashes(
+    user_dir: &Path,
+    repos: impl IntoIterator<Item = PathBuf>,
+) -> Vec<String> {
+    let mut by_name: BTreeMap<std::ffi::OsString, std::collections::BTreeSet<PathBuf>> =
+        BTreeMap::new();
+    for repo in repos {
+        if let Some(name) = repo.file_name() {
+            by_name.entry(name.to_os_string()).or_default().insert(repo);
+        }
+    }
+    by_name
+        .into_iter()
+        .filter(|(name, repos)| repos.len() > 1 && user_dir.join("repos").join(name).is_dir())
+        .map(|(name, repos)| {
+            let paths: Vec<String> = repos.iter().map(|r| r.display().to_string()).collect();
+            format!(
+                "{}: your settings for the repositories named {} apply to each of {}; rename one checkout's folder to \
+                 keep them apart",
+                user_dir.join("repos").join(&name).display(),
+                name.to_string_lossy(),
+                paths.join(" and ")
+            )
+        })
+        .collect()
+}
+
+/// The main checkout of the repository whose checkout (the main one or a worktree) is `root`: the folder of git's
+/// common dir (`git rev-parse --git-common-dir`), read from git's files: a worktree's `.git` file names its gitdir,
+/// whose `commondir` file leads to the common dir. A checkout that is no worktree is its own main checkout.
+pub(crate) fn main_checkout_of(root: &Path) -> PathBuf {
+    let common = (|| {
+        let link = std::fs::read_to_string(root.join(".git")).ok()?;
+        let gitdir = root.join(link.strip_prefix("gitdir:")?.trim());
+        let common = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
+        Some(gitdir.join(common.trim()))
+    })();
+    // `..` without the file system: the paths stay as the user wrote them
+    let mut folder = PathBuf::new();
+    for part in common.as_deref().unwrap_or(&root.join(".git")).components() {
+        match part {
+            std::path::Component::ParentDir => {
+                folder.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => folder.push(other),
+        }
+    }
+    folder
+        .parent()
+        .map_or_else(|| root.to_path_buf(), Path::to_path_buf)
 }
 
 /// Use the repository file `file` with the content `value` only after the user allowed that content; the first use asks
@@ -884,16 +932,20 @@ impl Merge<'_> {
                 continue;
             }
             if removes(self.never) {
-                self.problems.push(if self.approve.is_some() {
-                    format!(
+                self.problems.push(match self.source.layer.as_str() {
+                    "repo" => format!(
                         "{}: {path} is not a project setting; ignored",
                         self.source.file
-                    )
-                } else {
-                    format!(
-                        "{}: {path} is set only in a project's .legionctl; ignored",
+                    ),
+                    "user-repo" => format!(
+                        "{}: {path} is not a setting for one repository (set it for you); ignored",
                         self.source.file
-                    )
+                    ),
+                    _ => format!(
+                        "{}: {path} is set only for a project (its .legionctl, or ~/.config/legionctl/repos/<repo>); \
+                         ignored",
+                        self.source.file
+                    ),
                 });
                 continue;
             }
@@ -1003,8 +1055,9 @@ fn merge_layers(
                 source: &source,
                 trusted,
                 locks: &lists.locks,
+                // your layer for a repository sets what may differ per repository: what a project may set
                 never: match source.layer.as_str() {
-                    "repo" => &lists.repo_never,
+                    "repo" | "user-repo" => &lists.repo_never,
                     "defaults" => &[],
                     _ => &lists.project_only,
                 },
@@ -1146,21 +1199,13 @@ pub fn resolve_quiet(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
     let defaults = defaults()?;
     let system_dir = dirs.system.clone();
     let user_dir = dirs.user.clone();
-    let repo_dir = project.and_then(repo_root).map(|r| r.join(".legionctl"));
+    let (repo_dir, user_repo_dir) = repo_layer_dirs(&user_dir, project);
 
     let mut problems = Vec::new();
-    let read = |dir: &Path| -> Result<Vec<(PathBuf, Value)>> {
-        layer_files(dir)?
-            .into_iter()
-            .map(|file| Ok((file.clone(), read_layer_file(&file)?)))
-            .collect()
-    };
-    let system = read(&system_dir)?;
-    let user = read(&user_dir)?;
-    let repo = match repo_dir.as_deref() {
-        Some(dir) => read(dir)?,
-        None => Vec::new(),
-    };
+    let system = read_layer(Some(&system_dir))?;
+    let user = read_layer(Some(&user_dir))?;
+    let repo = read_layer(repo_dir.as_deref())?;
+    let user_repo = read_layer(user_repo_dir.as_deref())?;
 
     // order and locks come only from the defaults and /etc/legionctl
     let trusted_meta = |key: &str| {
@@ -1193,8 +1238,9 @@ pub fn resolve_quiet(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
             "system" => (Some(&system_dir), system.clone(), true),
             "user" => (Some(&user_dir), user.clone(), false),
             "repo" => (repo_dir.as_ref(), repo.clone(), false),
+            "user-repo" => (user_repo_dir.as_ref(), user_repo.clone(), false),
             other => bail!(
-                "config.precedence names an unknown layer {other} (known: defaults, system, user, repo)"
+                "config.precedence names an unknown layer {other} (known: defaults, system, user, repo, user-repo)"
             ),
         };
         layers.push(Layer {
@@ -1226,6 +1272,7 @@ pub fn resolve_quiet(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
     let mut unapproved = unapproved;
     let mut set_layers = vec![("system", system_dir.clone()), ("user", user_dir.clone())];
     set_layers.extend(repo_dir.iter().map(|d| ("repo", d.clone())));
+    set_layers.extend(user_repo_dir.iter().map(|d| ("user-repo", d.clone())));
     config.capabilities =
         crate::runnables::load(&set_layers, &approvals, &mut problems, &mut unapproved)?;
     config.gateway.check()?;
@@ -1240,9 +1287,33 @@ pub fn resolve_quiet(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         held,
         user_dir,
         repo_dir,
+        user_repo_dir,
         locks: lists.locks,
         overrides,
     })
+}
+
+/// The repository's layer folder (`<checkout>/.legionctl`) and yours for it (`<user_dir>/repos/<repo>`, the same for
+/// its main checkout and each worktree: by the main checkout's folder name), when `project` is in a repository.
+fn repo_layer_dirs(user_dir: &Path, project: Option<&Path>) -> (Option<PathBuf>, Option<PathBuf>) {
+    let Some(root) = project.and_then(repo_root) else {
+        return (None, None);
+    };
+    let mine = main_checkout_of(&root)
+        .file_name()
+        .map(|name| user_dir.join("repos").join(name));
+    (Some(root.join(".legionctl")), mine)
+}
+
+/// The files of the layer folder `dir` (none: no folder), each as legionctl reads it.
+fn read_layer(dir: Option<&Path>) -> Result<Vec<(PathBuf, Value)>> {
+    let Some(dir) = dir else {
+        return Ok(Vec::new());
+    };
+    layer_files(dir)?
+        .into_iter()
+        .map(|file| Ok((file.clone(), read_layer_file(&file)?)))
+        .collect()
 }
 
 /// The merged `value` as a [`Config`]; a value that does not fit names its key and the file that set it.
@@ -1405,6 +1476,12 @@ impl Resolved {
     #[must_use]
     pub fn repo_dir(&self) -> Option<&Path> {
         self.repo_dir.as_deref()
+    }
+
+    /// Your layer for this repository (`~/.config/legionctl/repos/<repo>`), when a repository applies.
+    #[must_use]
+    pub fn user_repo_dir(&self) -> Option<&Path> {
+        self.user_repo_dir.as_deref()
     }
 
     /// The scope and class of `key` on this computer (its declaration with `config.overrides`).

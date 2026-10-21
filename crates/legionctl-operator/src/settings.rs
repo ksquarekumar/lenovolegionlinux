@@ -22,13 +22,13 @@ fn layer_word(layer: &str) -> &str {
     }
 }
 
-fn rank(layer: &str) -> u8 {
-    match layer {
-        "system" => 1,
-        "user" => 2,
-        "repo" => 3,
-        _ => 0,
-    }
+/// The place of `layer` in the merge order (`config.precedence`): a later layer wins.
+fn rank(resolved: &Resolved, layer: &str) -> usize {
+    resolved
+        .layers
+        .iter()
+        .position(|l| l.name == layer)
+        .unwrap_or_default()
 }
 
 /// Plain text as it is, other values as JSON.
@@ -73,7 +73,7 @@ fn value_and_source(resolved: &Resolved, key: &str) -> (Value, String) {
                     .any(|n| k.starts_with(&format!("{section}.{n}")))
             })
             .map(|(_, s)| s.source.layer.as_str())
-            .max_by_key(|l| rank(l))
+            .max_by_key(|l| rank(resolved, l))
             .unwrap_or("defaults");
         return (Value::Object(entries), layer_word(from).to_string());
     }
@@ -82,7 +82,7 @@ fn value_and_source(resolved: &Resolved, key: &str) -> (Value, String) {
         .settings
         .iter()
         .map(|(_, s)| s.source.layer.as_str())
-        .max_by_key(|l| rank(l))
+        .max_by_key(|l| rank(resolved, l))
         .unwrap_or("defaults");
     (explained.value, layer_word(from).to_string())
 }
@@ -118,7 +118,7 @@ fn entries(resolved: &Resolved, setting: &Setting, value: &Value) -> Vec<Value> 
                     .iter()
                     .filter(|(k, _)| **k == at || k.starts_with(&format!("{at}.")))
                     .flat_map(|(_, sets)| sets.iter().map(|s| s.source.layer.as_str()))
-                    .max_by_key(|l| rank(l))
+                    .max_by_key(|l| rank(resolved, l))
                     .unwrap_or("defaults");
                 json!({ "name": name, "key": at, "text": short(v), "edit": v, "from": layer_word(from) })
             })
@@ -238,6 +238,7 @@ fn lines(setting: &Setting, resolved_after: &Resolved, edit: &Edit) -> Vec<Strin
     let whom = match edit.scope {
         Scope::User => "for you",
         Scope::Project => "for this project",
+        Scope::UserRepo => "for you in this repository",
         Scope::Computer => "for this computer",
     };
     let (value, _) = value_and_source(resolved_after, &setting.key);
@@ -355,7 +356,7 @@ impl Operator {
             .with_context(|| format!("{} is not a list setting", input.key))?;
         // a list for you or this computer does not take a project's entries
         let resolved = match input.scope {
-            Scope::Project => config(Some(ctx.folder()?))?,
+            Scope::Project | Scope::UserRepo => config(Some(ctx.folder()?))?,
             Scope::User | Scope::Computer => config(None)?,
         };
         // a list whose entries add up: the layer's own entries (what legionctl wrote there)
@@ -476,6 +477,7 @@ impl Operator {
                 match input.scope {
                     Scope::User => "for you",
                     Scope::Project => "of this project",
+                    Scope::UserRepo => "of yours for this repository",
                     Scope::Computer => "of this computer",
                 }
             );
@@ -523,6 +525,19 @@ impl Operator {
                 .and_then(std::path::Path::parent)
                 .map(std::path::Path::to_path_buf)
                 .context("the change's project folder")?,
+            // your layer for a repository is found from a checkout of that repository: the caller's
+            Scope::UserRepo => {
+                let here = ctx.folder()?.to_path_buf();
+                let file = settings::layer_dir(&config(Some(&here))?, Scope::UserRepo)?
+                    .join(legionctl_machine::settings_file::MANAGED);
+                anyhow::ensure!(
+                    file.display().to_string() == change.file,
+                    "change {} is in {}: undo it in a checkout of that repository",
+                    input.id,
+                    change.file
+                );
+                here
+            }
             Scope::User | Scope::Computer => std::path::PathBuf::from("/"),
         };
         let by = crate::calls::principal_key(&ctx.principal);

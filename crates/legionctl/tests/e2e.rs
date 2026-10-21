@@ -1178,6 +1178,211 @@ fn a_project_that_owns_an_area_gets_no_reminders_or_nudges_of_it() {
     );
 }
 
+/// An operator for the tests of your settings for one repository: git knows the test's user.
+fn repo_layer_operator(tag: &str) -> (Operator, PathBuf) {
+    let (op, home) = operator(tag);
+    write(
+        &home.join(".gitconfig"),
+        "[user]\n  name = Test\n  email = test@example.com\n[init]\n  defaultBranch = main\n",
+    );
+    (op, home)
+}
+
+/// A repository at `repo` with one commit, and its tracked `.legionctl/config.jsonc` when `tracked` gives one.
+fn committed_repo(home: &Path, repo: &Path, tracked: Option<&str>) {
+    std::fs::create_dir_all(repo).unwrap();
+    git(home, repo, &["init", "--quiet"]);
+    write(&repo.join("README.md"), "repo\n");
+    if let Some(text) = tracked {
+        write(&repo.join(".legionctl/config.jsonc"), text);
+    }
+    git(home, repo, &["add", "."]);
+    git(home, repo, &["commit", "--quiet", "-m", "start"]);
+}
+
+/// `legionctl <args>` in `cwd` as the user: its output, and whether it succeeded.
+fn said(op: &Operator, home: &Path, cwd: &Path, args: &[&str]) -> (String, bool) {
+    let out = op.run(cwd, &[("HOME", home.to_str().unwrap())], args, "");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr),
+        out.status.success(),
+    )
+}
+
+/// The `config settings` row of `key` in `cwd`.
+fn settings_row(op: &Operator, home: &Path, cwd: &Path, key: &str) -> Value {
+    let (out, ok) = said(
+        op,
+        home,
+        cwd,
+        &["config", "settings", "--key", key, "--json"],
+    );
+    assert!(ok, "{out}");
+    let rows: Value = serde_json::from_str(&out).unwrap();
+    rows["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["key"] == key)
+        .cloned()
+        .unwrap_or_else(|| panic!("{rows:#}"))
+}
+
+/// The workspace that legionctl opens in `repo` for the dossier `dossier` of the session `session`.
+fn opened_workspace(
+    op: &Operator,
+    home: &Path,
+    repo: &Path,
+    (session, dossier): (&str, &str),
+) -> PathBuf {
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", session),
+    ];
+    let used = op.run(repo, &env, &["dossier", "use", dossier], "");
+    assert!(
+        used.status.success(),
+        "{}",
+        String::from_utf8_lossy(&used.stderr)
+    );
+    let opened = op.run(repo, &env, &["workspace", "open", "--json"], "");
+    assert!(
+        opened.status.success(),
+        "{}",
+        String::from_utf8_lossy(&opened.stderr)
+    );
+    PathBuf::from(
+        serde_json::from_slice::<Value>(&opened.stdout).unwrap()["path"]
+            .as_str()
+            .unwrap(),
+    )
+}
+
+/// Your settings for one repository can live outside git, in `~/.config/legionctl/repos/<repo>/` (agency-os
+/// feedbacks/0009 and 0010): `<repo>` is the folder name of the repository's main checkout, so a git worktree and a
+/// legionctl workspace of it read the same checks, config and capability sets, `$schema`-named too, with no first-use
+/// question. Over the repository's own `.legionctl` in git, your file wins; the repository's other keys still apply; a
+/// setting that is no project setting (one for you everywhere) is ignored there with a plain line. `config set --scope
+/// user-repo` writes there; `config layers`, `config settings` and `runnables check` name the layer.
+#[test]
+fn a_repositorys_settings_of_yours_live_outside_git_for_every_checkout() {
+    let (op, home) = repo_layer_operator("userrepo");
+    let main = home.join("code/proj");
+    // the repository's own file in git: a key that yours changes, and one that it keeps
+    committed_repo(
+        &home,
+        &main,
+        Some(r#"{ "workspace": { "nudge": true }, "dossier": { "nudge_turns": 9 } }"#),
+    );
+    let mine = home.join(".config/legionctl/repos/proj");
+    write(
+        &mine.join("checks.jsonc"),
+        r#"{ "$schema": "./legionctl.schema.json", "checks": { "probe": { "kind": "lint", "run": "true" } } }"#,
+    );
+    write(
+        &mine.join("config.jsonc"),
+        r#"{ "$schema": "./legionctl.schema.json", "workspace": { "nudge": false }, "gateway": { "port": 4999 } }"#,
+    );
+    write(
+        &mine.join("capabilities/mirror.jsonc"),
+        r#"{ "$schema": "./capability.schema.json", "name": "mirror", "version": 1, "connections": { "out": [{ "host": "mirror.example.com" }] } }"#,
+    );
+    // a git worktree, and the workspace that legionctl opens for a dossier: folders of other names
+    let worktree = home.join("elsewhere/feature");
+    git(
+        &home,
+        &main,
+        &["worktree", "add", "--quiet", worktree.to_str().unwrap()],
+    );
+    let workspace = opened_workspace(&op, &home, &main, ("s1", "repolayer"));
+    let row = |cwd: &Path, key: &str| settings_row(&op, &home, cwd, key);
+    for checkout in [&main, &worktree, &workspace] {
+        let (checks, _) = said(&op, &home, checkout, &["code", "checks", "list"]);
+        assert!(
+            checks.contains("probe (lint): true")
+                && checks.contains(&mine.join("checks.jsonc").display().to_string()),
+            "{}: {checks}",
+            checkout.display()
+        );
+        let nudge = row(checkout, "workspace.nudge");
+        assert_eq!(
+            (nudge["value"].clone(), nudge["from"].clone()),
+            (json!(false), json!("user-repo")),
+            "yours wins over the repository's file"
+        );
+        assert_eq!(row(checkout, "dossier.nudge_turns")["value"], 9);
+        let (sets, _) = said(&op, &home, checkout, &["runnables", "check"]);
+        assert!(sets.contains("mirror@1 [user-repo] layer"), "{sets}");
+    }
+    // what may differ per repository is what a project may set: a setting for you everywhere is ignored there
+    let (layers, _) = said(&op, &home, &worktree, &["config", "layers"]);
+    assert!(
+        layers.contains(&format!("user-repo {}", mine.display()))
+            && layers.contains(&format!(
+                "{}: gateway.port is not a setting for one repository (set it for you); ignored",
+                mine.join("config.jsonc").display()
+            )),
+        "{layers}"
+    );
+    assert_eq!(row(&worktree, "gateway.port")["from"], "defaults");
+
+    // a change for you in this repository lands in that folder, for every checkout, and nowhere else
+    let set = [
+        "config",
+        "set",
+        "dossier.message_chars",
+        "700",
+        "--scope",
+        "user-repo",
+    ];
+    let (out, ok) = said(&op, &home, &worktree, &set);
+    assert!(ok, "{out}");
+    assert!(mine.join("managed.jsonc").is_file());
+    assert_eq!(row(&workspace, "dossier.message_chars")["value"], 700);
+    assert_eq!(row(&home, "dossier.message_chars")["from"], "defaults");
+    let refused = [
+        "config",
+        "set",
+        "gateway.port",
+        "4998",
+        "--scope",
+        "user-repo",
+    ];
+    let (out, ok) = said(&op, &home, &worktree, &refused);
+    assert!(
+        !ok && out.contains("is set only for this computer or you"),
+        "{out}"
+    );
+}
+
+/// Two repositories whose main checkouts have the same folder name share your settings folder for that name: `config
+/// layers` and `doctor` say so in one plain line that names both.
+#[test]
+fn two_repositories_of_one_name_sharing_your_settings_is_one_plain_line() {
+    let (op, home) = repo_layer_operator("repoclash");
+    let main = home.join("code/proj");
+    committed_repo(&home, &main, None);
+    let mine = home.join(".config/legionctl/repos/proj");
+    write(
+        &mine.join("config.jsonc"),
+        r#"{ "workspace": { "nudge": false } }"#,
+    );
+    // legionctl knows the first from its workspace, the second from the folder of the call
+    opened_workspace(&op, &home, &main, ("s1", "clash"));
+    let other = home.join("forks/proj");
+    committed_repo(&home, &other, None);
+    let clash = format!(
+        "{}: your settings for the repositories named proj apply to each of {} and {}",
+        mine.display(),
+        main.display(),
+        other.display()
+    );
+    for args in [&["config", "layers"][..], &["doctor"]] {
+        let (out, _) = said(&op, &home, &other, args);
+        assert_eq!(out.matches(&clash).count(), 1, "{args:?}: {out}");
+    }
+}
+
 #[test]
 fn config_layers_merge_in_order_and_etc_locks_win() {
     let (op, home) = operator("config");
@@ -1253,7 +1458,7 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
         .iter()
         .map(|l| l["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["defaults", "system", "user", "repo"]);
+    assert_eq!(names, ["defaults", "system", "user", "repo", "user-repo"]);
     let problems = layers["problems"].to_string();
     let held = |key| format!("rules.jsonc: {key} is not used until you allow this file");
     for problem in [
