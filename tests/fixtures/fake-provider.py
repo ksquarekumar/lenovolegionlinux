@@ -145,4 +145,9 @@ class Provider(BaseHTTPRequestHandler):
         pass
 
 
-ThreadingHTTPServer(("127.0.0.1", port), Provider).serve_forever()
+class Server(ThreadingHTTPServer):
+    # the gateway flood test opens 208 connections at once; the default queue of 5 drops them under load
+    request_queue_size = 512
+
+
+Server(("127.0.0.1", port), Provider).serve_forever()
