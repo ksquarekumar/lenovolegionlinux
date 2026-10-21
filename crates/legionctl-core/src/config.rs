@@ -783,11 +783,13 @@ pub fn repo_layer_clashes(
         .collect()
 }
 
-/// The name of the repository whose checkout (the main one or a worktree) is `root`, as your settings for it are
-/// named: the folder name of the parent of git's common dir (`git rev-parse --git-common-dir`), read from git's files.
-/// A `.git` folder is the common dir; a `.git` file names a gitdir, which is the common dir unless its `commondir`
-/// file leads to another; the path resolves through links as git resolves it.
-pub(crate) fn repo_name(root: &Path) -> Option<std::ffi::OsString> {
+/// The repository of the folder `dir` as git names it: the parent of git's common dir (`git rev-parse
+/// --git-common-dir`), read from git's files, with no git process. A `.git` folder is the common dir; a `.git` file
+/// names a gitdir, which is the common dir unless its `commondir` file leads to another; the path resolves through
+/// links as git resolves it. Your settings for the repository are named by this folder's name.
+#[must_use]
+pub fn repo_of_folder(dir: &Path) -> Option<PathBuf> {
+    let root = repo_root(dir)?;
     let dot_git = root.join(".git");
     let common = match std::fs::read_to_string(&dot_git) {
         Ok(link) => {
@@ -801,9 +803,8 @@ pub(crate) fn repo_name(root: &Path) -> Option<std::ffi::OsString> {
     };
     std::fs::canonicalize(common)
         .ok()?
-        .parent()?
-        .file_name()
-        .map(std::ffi::OsStr::to_os_string)
+        .parent()
+        .map(Path::to_path_buf)
 }
 
 /// Use the repository file `file` with the content `value` only after the user allowed that content; the first use asks
@@ -1321,7 +1322,8 @@ fn repo_layer_dirs(user_dir: &Path, project: Option<&Path>) -> (Option<PathBuf>,
     let Some(root) = project.and_then(repo_root) else {
         return (None, None);
     };
-    let mine = repo_name(&root).map(|name| user_dir.join("repos").join(name));
+    let mine =
+        repo_of_folder(&root).and_then(|repo| Some(user_dir.join("repos").join(repo.file_name()?)));
     (Some(root.join(".legionctl")), mine)
 }
 

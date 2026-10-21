@@ -1311,7 +1311,6 @@ fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
         .collect()
 }
 
-/// A finding that legionctl cannot change: its text only.
 /// The lines of your per-repository settings folders that two known repositories of one name share: the repositories
 /// of legionctl's workspaces, and the one of `here`.
 fn repo_layer_clashes(resolved: &Resolved, here: Option<&Path>) -> Result<Vec<String>> {
@@ -1320,17 +1319,14 @@ fn repo_layer_clashes(resolved: &Resolved, here: Option<&Path>) -> Result<Vec<St
         .into_iter()
         .map(|w| w.repo)
         .collect();
-    repos.extend(
-        here.map(legionctl_core::workspace::repo_of)
-            .transpose()?
-            .flatten(),
-    );
+    repos.extend(here.and_then(legionctl_core::config::repo_of_folder));
     Ok(legionctl_core::config::repo_layer_clashes(
         resolved.user_dir(),
         repos,
     ))
 }
 
+/// A finding that legionctl cannot change: its text only.
 fn state(text: String) -> legionctl_api::Finding {
     legionctl_api::Finding {
         text,
