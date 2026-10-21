@@ -968,6 +968,26 @@ fn dry_run(steps: &[policy::Step]) -> Changes {
 }
 
 impl Operator {
+    /// The merge of `ws` by the user (`session` `None`) or an agent, or an agent's `request`: the desktop dialog
+    /// confirms a branch that changes `.legionctl/`.
+    fn merged(
+        &self,
+        ctx: &Ctx,
+        store: &legionctl_core::dossier::Dossiers,
+        ws: &legionctl_core::workspace::Workspace,
+        session: Option<&str>,
+        request: bool,
+    ) -> Result<Lines> {
+        let jail = jail(ctx, store, Some(ctx.folder()?))?;
+        let lines = store.merge(ws, (session, jail.as_ref()), request, |what| {
+            self.runtime
+                .block_on(crate::desktop::ask("legionctl: confirm a merge", what))
+                .context("the merge changes .legionctl/ and needs the user's confirmation in a desktop dialog")
+        })?;
+        crate::code::trigger(&ws.repo);
+        Ok(Lines { lines })
+    }
+
     /// Mutter's monitor state, from the desktop session.
     fn mutter_state(&self) -> Result<crate::display::State> {
         Ok(self.runtime.block_on(async {
@@ -2966,14 +2986,21 @@ impl Engine for Operator {
                 Some(input.session.0.as_str()),
             )
         };
-        let jail = jail(ctx, &store, Some(ctx.folder()?))?;
-        let lines = store.merge(&ws, (session, jail.as_ref()), |what| {
-            self.runtime
-                .block_on(crate::desktop::ask("legionctl: confirm a merge", what))
-                .context("the merge changes .legionctl/ and needs the user's confirmation in a desktop dialog")
-        })?;
-        crate::code::trigger(&ws.repo);
-        Ok(Lines { lines })
+        self.merged(ctx, &store, &ws, session, false)
+    }
+
+    fn workspace_merge_request(&self, ctx: &Ctx, input: WorkspaceIn) -> Result<Lines> {
+        anyhow::ensure!(
+            !input.session.0.is_empty(),
+            "workspace merge-request is for agent sessions: the user merges with workspace merge"
+        );
+        let store = dossiers()?;
+        let ws = store.workspace_of(
+            &dossier_of(&input.session)?,
+            ctx.folder()?,
+            input.topic.as_deref(),
+        )?;
+        self.merged(ctx, &store, &ws, Some(&input.session.0), true)
     }
 
     fn workspace_close(&self, ctx: &Ctx, input: CloseIn) -> Result<Lines> {

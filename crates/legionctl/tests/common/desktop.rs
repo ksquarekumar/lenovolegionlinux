@@ -40,6 +40,15 @@ pub async fn answering(
             if call
                 .header()
                 .member()
+                .is_some_and(|m| m.as_str() == "GetCapabilities")
+            {
+                // a desktop like GNOME Shell: it reads markup in the body
+                bus.reply(&call.header(), &(vec!["actions", "body-markup"],))
+                    .await
+                    .unwrap();
+            } else if call
+                .header()
+                .member()
                 .is_some_and(|m| m.as_str() == "CloseNotification")
             {
                 let (id,): (u32,) = call.body().deserialize().unwrap();

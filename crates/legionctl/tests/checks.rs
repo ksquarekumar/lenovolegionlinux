@@ -529,19 +529,7 @@ fn a_merge_refuses_without_passing_build_and_test_runs_at_the_rebased_head() {
 /// Allow fast-forwards it. main stays at its commit until the user allows.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_gate() {
-    let runtime = Scratch::new(format!("/var/tmp/lc-ships-bus-{}", std::process::id()));
-    let bus_path = runtime.join("bus");
-    let _bus = common::process::Kill::spawn(
-        std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--nopidfile"])
-            .arg(format!("--address=unix:path={}", bus_path.display())),
-    );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !bus_path.exists() {
-        assert!(std::time::Instant::now() < deadline, "the private bus");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    let address = format!("unix:path={}", bus_path.display());
+    let (_bus, address) = private_bus("ships");
     let (_desktop, asked) = desktop::answering(&address, &["allow", "deny", "allow"]).await;
     let lab = Lab::with_env("ships", &[("DBUS_SESSION_BUS_ADDRESS", address.into())]);
     let repo = lab.repo(
@@ -579,6 +567,9 @@ async fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_g
     assert!(
         !refused.status.success()
             && text(&refused).1.contains("an agent cannot merge it")
+            && text(&refused)
+                .1
+                .contains("legionctl workspace merge-request")
             && text(&refused).1.contains(&command),
         "{refused:?}"
     );
@@ -610,12 +601,269 @@ async fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_g
         "drop the gate"
     );
     let asked = asked.lock().unwrap().clone();
+    // the user approves what the diff shows, not only the file name
     assert!(
         asked.len() == 3
             && asked[0].contains(".legionctl/checks.jsonc")
-            && asked[1].contains("merge"),
+            && asked[1].contains("merge")
+            && asked[1]
+                .lines()
+                .any(|l| l.starts_with('+') && l.contains("echo run")),
         "{asked:?}"
     );
+}
+
+/// A private session bus for the stand-in desktop: the bus (it ends when dropped) and its address.
+fn private_bus(tag: &str) -> ((common::process::Kill, Scratch), String) {
+    let runtime = Scratch::new(format!("/var/tmp/lc-{tag}-bus-{}", std::process::id()));
+    let bus_path = runtime.join("bus");
+    let bus = common::process::Kill::spawn(
+        std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--nopidfile"])
+            .arg(format!("--address=unix:path={}", bus_path.display())),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !bus_path.exists() {
+        assert!(std::time::Instant::now() < deadline, "the private bus");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let address = format!("unix:path={}", bus_path.display());
+    ((bus, runtime), address)
+}
+
+/// An agent asks the user to merge a branch that rewrites its own gate (`workspace merge-request`, feedbacks/0001
+/// item 1). Only an agent session asks. The gate runs at the rebased head, then the main checkout must be clean and on
+/// the base before any dialog: a dirty main checkout is refused with no question. A workspace switched to another
+/// branch is refused (its commits are not the dossier's branch). The dialog shows the `.legionctl/` diff; Deny keeps
+/// main. A commit that lands on the base while the dialog waits refuses the merge after Allow, and main keeps that
+/// commit. Allow lands the commit that the gate tested.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_merge_request_shows_the_gate_diff_and_lands_only_the_tested_commit() {
+    let (_bus, address) = private_bus("mreq");
+    let (_desktop, asked) = desktop::answering(&address, &["allow", "deny", "wait", "allow"]).await;
+    let lab = Lab::with_env("mreq", &[("DBUS_SESSION_BUS_ADDRESS", address.into())]);
+    let repo = lab.repo(
+        "repo",
+        &[
+            (".gitignore", "/agentWorkspaces\n"),
+            (
+                ".legionctl/checks.jsonc",
+                r#"{ "checks": { "unit": { "kind": "test", "run": "echo run >> \"$HOME/unit-runs\"", "gate": "merge" } } }"#,
+            ),
+        ],
+    );
+    let ws = lab.workspace(&repo, "mreq");
+    // the branch marks its gate binary for git diff, and its command has markup characters for the desktop
+    write(&ws.join(".gitattributes"), ".legionctl/* -diff\n");
+    write(
+        &ws.join(".legionctl/checks.jsonc"),
+        r#"{ "checks": { "unit": { "kind": "test", "run": "echo '<pass>' >> \"$HOME/unit-runs\"", "gate": "merge" } } }"#,
+    );
+    checkpoint_after_the_users_answer(&lab, &ws, "rewrite the gate");
+    let questions = || {
+        asked
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|b| !b.starts_with("closed "))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let main = || lab.git(&repo, &["log", "-1", "--format=%s"]);
+
+    let user = lab.user(&ws, &["workspace", "merge-request"]);
+    assert!(
+        !user.status.success() && text(&user).1.contains("for agent sessions"),
+        "{user:?}"
+    );
+
+    write(&repo.join(".gitignore"), "/agentWorkspaces\nedited\n");
+    let runs = lab.count("unit-runs");
+    let dirty = lab.run(&ws, &["workspace", "merge-request"]);
+    assert!(
+        !dirty.status.success() && text(&dirty).1.contains("has uncommitted changes"),
+        "{dirty:?}"
+    );
+    assert_eq!(lab.count("unit-runs"), runs + 1, "the gate ran first");
+    assert_eq!(questions().len(), 1, "no dialog for a dirty main checkout");
+    lab.git(&repo, &["checkout", "--quiet", "--", ".gitignore"]);
+
+    lab.git(&ws, &["switch", "--quiet", "-c", "elsewhere"]);
+    write(&ws.join("other.txt"), "not the dossier's branch\n");
+    lab.git(&ws, &["add", "other.txt"]);
+    lab.git(&ws, &["commit", "--quiet", "-m", "elsewhere"]);
+    let switched = lab.run(&ws, &["workspace", "merge-request"]);
+    assert!(
+        !switched.status.success() && text(&switched).1.contains("is on 'elsewhere'"),
+        "{switched:?}"
+    );
+    assert_eq!(main(), "start");
+    lab.git(&ws, &["switch", "--quiet", "legionctl/mreq"]);
+
+    let denied = lab.run(&ws, &["workspace", "merge-request"]);
+    assert!(
+        !denied.status.success() && text(&denied).1.contains("did not confirm"),
+        "{denied:?}"
+    );
+    assert_eq!(main(), "start");
+    let body = questions()[1].clone();
+    assert!(
+        body.lines()
+            .any(|l| l.starts_with('+') && l.contains("echo '&lt;pass>'")),
+        "the dialog shows the diff that the user approves, as text and escaped for the desktop's markup: {body}"
+    );
+
+    // a commit lands on the base while the dialog waits; the user then allows
+    let moved = merge_request_while_a_commit_lands(&lab, &repo, &ws, &questions);
+    assert!(
+        !moved.status.success() && text(&moved).1.contains("moved"),
+        "{moved:?}"
+    );
+    assert_eq!(main(), "landed during the dialog");
+
+    let allowed = lab.run(&ws, &["workspace", "merge-request"]);
+    assert!(allowed.status.success(), "{allowed:?}");
+    assert_eq!(
+        lab.git(&repo, &["rev-parse", "main"]),
+        lab.git(&ws, &["rev-parse", "HEAD"]),
+        "main is the tested head, rebased onto the commit that landed"
+    );
+    assert_eq!(main(), "rewrite the gate");
+    assert_eq!(questions().len(), 4);
+}
+
+/// A merge request asks nobody before it refuses a branch that leaves `.legionctl/` as it is: the op has no approval of
+/// its own (class session), so it must not merge what `workspace merge` (class workspace, it asks) merges.
+#[test]
+fn a_merge_request_of_a_branch_that_keeps_the_gates_is_refused_and_merges_nothing() {
+    let lab = Lab::new("mreq-plain");
+    let repo = lab.repo(
+        "repo",
+        &[
+            (".gitignore", "/agentWorkspaces\n"),
+            (".legionctl/checks.jsonc", r#"{ "checks": {} }"#),
+        ],
+    );
+    let ws = lab.workspace(&repo, "plain");
+    write(&ws.join("feature.txt"), "a feature\n");
+    lab.ok(&ws, &["workspace", "checkpoint", "add feature"]);
+    let refused = lab.run(&ws, &["workspace", "merge-request"]);
+    assert!(
+        !refused.status.success()
+            && text(&refused)
+                .1
+                .contains("does not change .legionctl/: merge it with workspace merge"),
+        "{refused:?}"
+    );
+    assert_eq!(lab.git(&repo, &["log", "-1", "--format=%s"]), "start");
+}
+
+/// A submodule under `.legionctl/` is part of the gates even when `.gitmodules` tells git to ignore it
+/// (`ignore = all`): a branch that moves only its commit is a branch that sets its own gates, so the agent's merge
+/// is refused (and a merge request shows the commit in its diff).
+#[test]
+fn a_gate_submodule_that_git_is_told_to_ignore_still_needs_the_users_merge() {
+    let lab = Lab::new("pin");
+    let policy = lab.repo("policy", &[("rules.txt", "v1\n")]);
+    let repo = lab.repo(
+        "repo",
+        &[
+            (".gitignore", "/agentWorkspaces\n"),
+            (".legionctl/checks.jsonc", r#"{ "checks": {} }"#),
+        ],
+    );
+    let add = [
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "--quiet",
+        policy.to_str().unwrap(),
+        ".legionctl/policy",
+    ];
+    lab.git(&repo, &add);
+    lab.git(
+        &repo,
+        &[
+            "config",
+            "-f",
+            ".gitmodules",
+            "submodule..legionctl/policy.ignore",
+            "all",
+        ],
+    );
+    lab.git(&repo, &["add", ".gitmodules"]);
+    lab.git(&repo, &["commit", "--quiet", "-m", "add the policy"]);
+    let ws = lab.workspace(&repo, "pin");
+
+    write(&policy.join("rules.txt"), "v2: anything goes\n");
+    lab.git(&policy, &["commit", "--quiet", "-am", "loosen"]);
+    let loose = lab.git(&policy, &["rev-parse", "HEAD"]);
+    let pin = format!("160000,{loose},.legionctl/policy");
+    lab.git(&ws, &["update-index", "--cacheinfo", &pin]);
+    lab.git(&ws, &["commit", "--quiet", "-m", "move the policy"]);
+    let refused = lab.run(&ws, &["workspace", "merge"]);
+    assert!(
+        !refused.status.success() && text(&refused).1.contains("an agent cannot merge it"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        lab.git(&repo, &["log", "-1", "--format=%s"]),
+        "add the policy"
+    );
+}
+
+/// The agent's merge request while a commit lands on the base: the commit lands once the third question waits, then
+/// the user allows it in a terminal (`approval answer`); the request's output.
+fn merge_request_while_a_commit_lands(
+    lab: &Lab,
+    repo: &Path,
+    ws: &Path,
+    questions: &dyn Fn() -> Vec<String>,
+) -> Output {
+    std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| lab.run(ws, &["workspace", "merge-request"]));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while questions().len() < 3 {
+            assert!(std::time::Instant::now() < deadline, "the third question");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        write(&repo.join("landed.txt"), "landed during the dialog\n");
+        lab.git(repo, &["add", "landed.txt"]);
+        lab.git(
+            repo,
+            &["commit", "--quiet", "-m", "landed during the dialog"],
+        );
+        // the question that waits: asked and not answered (its event comes after the notice)
+        let ask = loop {
+            let events: Value =
+                serde_json::from_str(&text(&lab.user(&lab.home, &["events", "--json"])).0).unwrap();
+            let of = |kind: &str| -> Vec<Value> {
+                events["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|e| e["kind"] == kind)
+                    .map(|e| e["payload"]["ask"].clone())
+                    .collect()
+            };
+            let answered = of("approval.answer");
+            if let Some(ask) = of("approval.ask")
+                .into_iter()
+                .find(|a| !answered.contains(a))
+            {
+                break ask.to_string();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the waiting question's event"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let answer = lab.user(&lab.home, &["approval", "answer", &ask, "allow"]);
+        assert!(answer.status.success(), "{answer:?}");
+        waiting.join().unwrap()
+    })
 }
 
 /// A checkpoint of `ws` whose changed `.legionctl` waits for the user (A-5): refused with the reason, then, once the

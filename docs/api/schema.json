@@ -3701,6 +3701,49 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "workspace.merge-request": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The topic workspace (`workspace open --topic`), from anywhere in the repository.",
+          "default": null
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "description": "Which of this session's workspaces: the topic's, else the one that contains `repo`, else the dossier's own\nworkspace in the repository of `repo`.",
+      "title": "WorkspaceIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "workspace.close": {
     "class": "session",
     "internal": false,

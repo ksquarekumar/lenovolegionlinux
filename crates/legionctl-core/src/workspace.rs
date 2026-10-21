@@ -24,6 +24,82 @@ fn refused(what: &str, e: &anyhow::Error) -> anyhow::Error {
     crate::error::coded(crate::error::code_of(e), format!("{what}: {e:#}"))
 }
 
+/// The first 12 characters of a commit id.
+fn short(oid: &str) -> &str {
+    &oid[..oid.len().min(12)]
+}
+
+/// The `git diff` options and range of a branch's change to `.legionctl/` (`base..tested`): the text of each file and
+/// submodule commit as git stores them, whatever the branch sets (no diff driver, no textconv, no `-diff` attribute,
+/// no submodule `ignore`).
+fn gates_range<'a>(base: &'a str, tested: &'a str) -> [&'a str; 8] {
+    [
+        "--text",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--ignore-submodules=none",
+        base,
+        tested,
+        "--",
+        ".legionctl",
+    ]
+}
+
+/// What the user approves in the merge of a branch that changes `.legionctl/`: the branch, the commits `base..tested`,
+/// the changed files and their diff.
+fn gates_diff(ws: &Workspace, (base, tested): (&str, &str), files: &str) -> Result<String> {
+    let range = gates_range(base, tested);
+    let diff = git(&ws.path, &[&["diff"][..], &range].concat())?;
+    let head = format!(
+        "merge {} into {} in {} ({}..{}): it changes {}, which sets the repository's own gates",
+        ws.branch,
+        ws.base,
+        ws.repo.display(),
+        short(base),
+        short(tested),
+        files.lines().collect::<Vec<_>>().join(", ")
+    );
+    // shortcut: a desktop notice is not a diff viewer; a long diff is named with its command, not shown
+    Ok(if diff.len() > 16 * 1024 {
+        format!(
+            "{head}\nthe diff is {} bytes; read it in the main checkout with: git diff {}",
+            diff.len(),
+            range.join(" ")
+        )
+    } else {
+        format!("{head}\n\n{diff}")
+    })
+}
+
+/// The main checkout can take the fast-forward: on the base branch, clean, and the base still at `base`. Checked
+/// before the user's answer (no dialog for a merge that cannot land) and again after it.
+fn main_ready(ws: &Workspace, base: &str) -> Result<()> {
+    let main_head =
+        git(&ws.repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]).unwrap_or_default();
+    ensure!(
+        main_head == ws.base,
+        "the main checkout {} is on '{main_head}', not the base {}; switch it first",
+        ws.repo.display(),
+        ws.base
+    );
+    let (staged, unstaged, _, conflicted) = changes(&ws.repo)?;
+    ensure!(
+        staged + unstaged + conflicted == 0,
+        "the main checkout {} has uncommitted changes; the fast-forward would touch them",
+        ws.repo.display()
+    );
+    let now = git(&ws.repo, &["rev-parse", &ws.base])?;
+    ensure!(
+        now == base,
+        "{} moved from {} to {} while the merge ran; {} stays there: merge again",
+        ws.base,
+        short(base),
+        short(&now),
+        ws.base
+    );
+    Ok(())
+}
+
 /// The content of a workspace as one hash: for a repository its HEAD, `git status`, the diff against HEAD and the
 /// size and change time of each untracked file; for a plain folder its changes. Equal hashes mean nothing changed.
 ///
@@ -598,55 +674,82 @@ impl Dossiers {
 
     /// Rebase the branch onto the base, then fast-forward the base in the main checkout to the commit that the gate
     /// tested. Conflicts stop the rebase in the workspace, for the agent to resolve. `session` is the agent's; `None`
-    /// is the user (todo-147). A branch that changes `.legionctl/` sets its own gates: an agent cannot merge it, and the
-    /// user's merge runs the same gate, then `confirm` asks the user (a desktop dialog) before the fast-forward.
+    /// is the user (todo-147). A branch that changes `.legionctl/` sets its own gates: an agent cannot merge it, but it
+    /// can `request` the merge (`workspace.merge-request`, feedbacks/0001 item 1). The user's merge and the request run
+    /// the same gate and the main-checkout checks, then `confirm` shows the user the `.legionctl/` diff (a desktop
+    /// dialog) before the fast-forward.
     ///
     /// # Errors
-    /// The workspace has uncommitted or untracked files (the gate would test files that the merge does not ship), the
-    /// rebase stops on conflicts, an agent's branch changes `.legionctl/`, the user does not confirm, or the main
-    /// checkout is not clean or not on the base branch.
+    /// The workspace is not on its branch or has uncommitted or untracked files (the gate would test files that the
+    /// merge does not ship), the rebase stops on conflicts, an agent's branch changes `.legionctl/` (or a request's does
+    /// not), the user does not confirm, the main checkout is not clean or not on the base branch, or the base moves
+    /// while the merge runs.
     pub fn merge(
         &self,
         ws: &Workspace,
         (session, jail): (Option<&str>, Option<&crate::session::Jail>),
+        request: bool,
         confirm: impl FnOnce(&str) -> Result<bool>,
     ) -> Result<Vec<String>> {
         if ws.is_folder() {
+            ensure!(
+                !request,
+                "a plain folder's workspace has no gates of its own: merge it with workspace merge"
+            );
             return crate::folder::merge(&ws.path, &ws.repo);
         }
+        let on = git(&ws.path, &["symbolic-ref", "--quiet", "--short", "HEAD"]).unwrap_or_default();
+        ensure!(
+            on == ws.branch,
+            "the workspace {} is on '{on}', not on its branch {}: switch back with `git switch {}`",
+            ws.path.display(),
+            ws.branch,
+            ws.branch
+        );
         let (staged, unstaged, untracked, conflicted) = changes(&ws.path)?;
         ensure!(
             staged + unstaged + untracked + conflicted == 0,
             "the workspace has uncommitted or untracked files, which the merge does not ship but its gate would test; \
              checkpoint first"
         );
-        if git(&ws.path, &["rebase", "--quiet", &ws.base]).is_err() {
+        // one base commit for the rebase, the diff the user sees and the checks before the fast-forward
+        let base = git(
+            &ws.path,
+            &["rev-parse", "--verify", &format!("{}^{{commit}}", ws.base)],
+        )?;
+        if git(&ws.path, &["rebase", "--quiet", &base]).is_err() {
             bail!(
                 "the rebase onto {} stopped on conflicts; resolve them in {}, run `git rebase --continue`, then merge again",
                 ws.base,
                 ws.path.display()
             );
         }
+        let tested = git(&ws.path, &["rev-parse", "HEAD"])?;
         let own_gates = git(
             &ws.path,
-            &["diff", "--name-only", &ws.base, "HEAD", "--", ".legionctl"],
+            &[&["diff", "--name-only"][..], &gates_range(&base, &tested)].concat(),
         )?;
-        if !own_gates.is_empty() && session.is_some() {
+        ensure!(
+            !request || !own_gates.is_empty(),
+            "the branch {} does not change .legionctl/: merge it with workspace merge",
+            ws.branch
+        );
+        if !own_gates.is_empty() && session.is_some() && !request {
             let topic = if ws.topic.is_empty() {
                 String::new()
             } else {
                 format!(" --topic {}", ws.topic)
             };
             bail!(
-                "the branch {} changes .legionctl/, which sets its own gates: an agent cannot merge it. The user \
-                 merges it from a terminal outside an agent session: legionctl -C {} workspace merge{topic} \
-                 --dossier {} (the same gate, then a desktop dialog to confirm)",
+                "the branch {} changes .legionctl/, which sets its own gates: an agent cannot merge it. Ask the user \
+                 with `legionctl workspace merge-request{topic}` (the same gate, then a desktop dialog with the \
+                 diff), or the user merges it from a terminal outside an agent session: legionctl -C {} workspace \
+                 merge{topic} --dossier {}",
                 ws.branch,
                 ws.repo.display(),
                 ws.dossier
             );
         }
-        let tested = git(&ws.path, &["rev-parse", "HEAD"])?;
         let mut lines = self
             .gate(&ws.path, crate::checks::Gate::Merge, (session, jail))
             .map_err(|e| {
@@ -658,34 +761,16 @@ impl Dossiers {
                     &e,
                 )
             })?;
-        let main_head =
-            git(&ws.repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]).unwrap_or_default();
-        ensure!(
-            main_head == ws.base,
-            "the main checkout {} is on '{main_head}', not the base {}; switch it first",
-            ws.repo.display(),
-            ws.base
-        );
-        let (staged, unstaged, _, conflicted) = changes(&ws.repo)?;
-        ensure!(
-            staged + unstaged + conflicted == 0,
-            "the main checkout {} has uncommitted changes; the fast-forward would touch them",
-            ws.repo.display()
-        );
+        main_ready(ws, &base)?;
         if !own_gates.is_empty() {
-            let what = format!(
-                "merge {} into {} in {}: it changes {}, which sets the repository's own gates",
-                ws.branch,
-                ws.base,
-                ws.repo.display(),
-                own_gates.lines().collect::<Vec<_>>().join(", ")
-            );
             ensure!(
-                confirm(&what)?,
+                confirm(&gates_diff(ws, (&base, &tested), &own_gates)?)?,
                 "the user did not confirm the merge of {}; {} stays where it was (the branch stays rebased)",
                 ws.branch,
                 ws.base
             );
+            // the dialog can wait long: check again after the user's answer
+            main_ready(ws, &base)?;
         }
         // the tested commit, not the branch: a checkpoint after the gate is not tested
         git(&ws.repo, &["merge", "--quiet", "--ff-only", &tested])?;

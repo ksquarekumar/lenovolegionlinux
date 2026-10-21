@@ -1626,7 +1626,7 @@ Review round 3 (todo-107, EV-review-03) changed the gates:
 
 | Item | Now |
 | --- | --- |
-| What a merge tests | `workspace merge` refuses untracked files (the gate would test files that the fast-forward does not ship) and a branch of an agent that changes `.legionctl/` (it sets its own gates: the user merges it with `workspace merge --dossier <d>` from a terminal, the same gate, then a desktop dialog); it fast-forwards to the commit that the gate tested, not to the branch. |
+| What a merge tests | `workspace merge` refuses untracked files (the gate would test files that the fast-forward does not ship) and a branch of an agent that changes `.legionctl/` (it sets its own gates: the agent asks with `workspace merge-request`, or the user merges it with `workspace merge --dossier <d>` from a terminal; the same gate, then a desktop dialog with the `.legionctl/` diff); it fast-forwards to the commit that the gate tested, not to the branch. |
 | A broken checks file | A problem in a file of the repository layer (`<repo>/.legionctl/*.jsonc`) refuses each check operation and gate; a `deploy` or `install` check with a gate, and `keep_runs` 0, are refused. |
 | The tree of a run | Computed again after the run; when the files changed (a fixing tool, a generator, a peer), the run has no tree, is evidence for none, and the gate refuses. |
 | A hanging check | Each run is in its own process group; past `checks.timeout_minutes` (60) the group is killed and the run fails (128 + 9), with a line in its log. |

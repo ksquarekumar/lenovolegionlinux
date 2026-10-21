@@ -10,34 +10,55 @@ use futures_util::StreamExt;
 const NOTIFICATIONS: &str = "org.freedesktop.Notifications";
 const WAIT: Duration = Duration::from_secs(120);
 
+/// `body` as the desktop shows it. A desktop with `body-markup` reads markup in the body, where a `<` or `&` of a
+/// command or a diff would show other text than the one the user approves: there it is escaped; elsewhere it stays.
+async fn shown(bus: &zbus::Connection, body: &str) -> Result<String> {
+    let reply = bus
+        .call_method(
+            Some(NOTIFICATIONS),
+            "/org/freedesktop/Notifications",
+            Some(NOTIFICATIONS),
+            "GetCapabilities",
+            &(),
+        )
+        .await?;
+    let capabilities: Vec<String> = reply.body().deserialize()?;
+    Ok(if capabilities.iter().any(|c| c == "body-markup") {
+        body.replace('&', "&amp;").replace('<', "&lt;")
+    } else {
+        body.to_string()
+    })
+}
+
 /// Show the user a notice that stays until closed (urgency critical).
 ///
 /// # Errors
 /// There is no notification service on `bus`.
 pub async fn tell(bus: &zbus::Connection, icon: &str, summary: &str, body: &str) -> Result<()> {
     let hints = std::collections::HashMap::from([("urgency", zbus::zvariant::Value::U8(2))]);
-    // Notify: app, replaces id, icon, summary, body, actions, hints, timeout
-    let args = (
-        "legionctl",
-        0u32,
-        icon,
-        summary,
-        body,
-        Vec::<&str>::new(),
-        hints,
-        0i32,
-    );
     // a desktop that does not answer must not hold up the caller
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        // Notify: app, replaces id, icon, summary, body, actions, hints, timeout
+        let args = (
+            "legionctl",
+            0u32,
+            icon,
+            summary,
+            shown(bus, body).await?,
+            Vec::<&str>::new(),
+            hints,
+            0i32,
+        );
         bus.call_method(
             Some(NOTIFICATIONS),
             "/org/freedesktop/Notifications",
             Some(NOTIFICATIONS),
             "Notify",
             &args,
-        ),
-    )
+        )
+        .await
+        .map_err(anyhow::Error::from)
+    })
     .await
     .context("the desktop notification service does not answer")?
     .context("no desktop notification service")?;
@@ -134,7 +155,9 @@ async fn notice_answer(
         0u32,
         "dialog-question",
         summary,
-        body,
+        shown(&bus, body)
+            .await
+            .context("no desktop notification service to show the question")?,
         vec!["allow", "Allow", "deny", "Deny"],
         hints,
         0i32,

@@ -3428,7 +3428,8 @@ mod operator_and_daemon {
 
     /// Safe mode reaches the desktop: the operator's session module finds the daemon's safe-mode reason and sends one
     /// desktop notification (a stand-in `org.freedesktop.Notifications` on the private bus, which is also the session
-    /// bus here) with the reason and what to do.
+    /// bus here) with the reason and what to do. This desktop shows the body as plain text (no `body-markup`), so the
+    /// reason's `<` and `&` reach it as they are.
     #[tokio::test(flavor = "multi_thread")]
     async fn safe_mode_becomes_one_desktop_notification() {
         let m = Machine::new("safenote");
@@ -3437,7 +3438,7 @@ mod operator_and_daemon {
         drop(daemon);
         m.set(
             "/run/legionctl/safe-mode",
-            "set: platform_profile balanced\n",
+            "set: platform_profile <balanced> & fan auto\n",
         );
         let address = format!("unix:path={}", m.dir.join("bus").display());
         let notices = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
@@ -3454,6 +3455,16 @@ mod operator_and_daemon {
             let mut calls = zbus::MessageStream::from(&replies);
             while let Some(Ok(call)) = futures_util::StreamExt::next(&mut calls).await {
                 if call
+                    .header()
+                    .member()
+                    .is_some_and(|m| m.as_str() == "GetCapabilities")
+                {
+                    // a desktop that shows the body as plain text
+                    replies
+                        .reply(&call.header(), &(vec!["actions"],))
+                        .await
+                        .unwrap();
+                } else if call
                     .header()
                     .member()
                     .is_some_and(|m| m.as_str() == "Notify")
@@ -3486,8 +3497,9 @@ mod operator_and_daemon {
             *notices.lock().unwrap(),
             [(
                 "legionctl: safe mode".to_string(),
-                // the daemon's reason once, with no shell commands (EV-review-11 U-15)
-                "set: platform_profile balanced".to_string()
+                // the daemon's reason once, with no shell commands (EV-review-11 U-15); as it is for a desktop
+                // that shows the body as plain text
+                "set: platform_profile <balanced> & fan auto".to_string()
             )]
         );
         drop(desktop);

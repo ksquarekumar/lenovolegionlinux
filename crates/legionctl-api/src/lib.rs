@@ -650,6 +650,9 @@ operations! {
     code_tests_mutant_run / CodeTestsMutantRun = "code.tests.mutant.run", Session, WorkspaceIn => Lines;
     /// Rebase the branch onto the base, then fast-forward the base in the main checkout (which must be clean).
     workspace_merge / WorkspaceMerge = "workspace.merge", Workspace, MergeIn => Lines;
+    /// An agent asks the user to merge its branch that changes `.legionctl/` (the repository's own gates): the same
+    /// gate and checks as the merge, then a desktop dialog with the `.legionctl/` diff before the fast-forward.
+    workspace_merge_request / WorkspaceMergeRequest = "workspace.merge-request", Session, WorkspaceIn => Lines;
     /// Remove the worktree of this session's dossier; the branch and the dossier stay. Refuses uncommitted changes
     /// unless `--force`, and a folder in another dossier's workspace.
     workspace_close / WorkspaceClose = "workspace.close", Session, CloseIn => Lines;
