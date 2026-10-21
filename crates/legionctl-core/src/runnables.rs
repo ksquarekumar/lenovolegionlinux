@@ -372,7 +372,8 @@ pub(crate) fn load(
             .collect();
         files.sort();
         for file in files {
-            let value = legionctl_machine::profile::read_jsonc(&file)?;
+            // as a settings file: a top-level $schema is for editors, not a part of the set or its hash
+            let value = crate::config::read_layer_file(&file)?;
             let set: Manifest = serde_json::from_value(value.clone())
                 .with_context(|| format!("{} is not a valid capability set", file.display()))?;
             let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned());

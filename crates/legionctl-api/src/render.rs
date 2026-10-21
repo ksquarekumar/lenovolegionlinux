@@ -1022,10 +1022,13 @@ impl Render for SettingsView {
 
 /// A setting's value in a line: plain text as it is, other values as JSON, a long list or map as its count, none as
 /// "not set".
-fn value_text(value: &serde_json::Value) -> String {
+fn value_text(value: Option<&serde_json::Value>) -> String {
+    let Some(value) = value else {
+        return "not set".into();
+    };
     let all = value.to_string();
     match value {
-        serde_json::Value::Null => "not set".into(),
+        serde_json::Value::Null => "removed".into(),
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Array(items) if all.len() > 60 => format!("{} items", items.len()),
         serde_json::Value::Object(map) if all.len() > 60 => format!("{} entries", map.len()),
@@ -1059,8 +1062,8 @@ impl Render for SettingsHistory {
                     legionctl_core::views::local(c.at),
                     c.key,
                     c.scope.name(),
-                    value_text(&c.old),
-                    value_text(&c.new),
+                    value_text(c.old.as_ref()),
+                    value_text(c.new.as_ref()),
                     c.by
                 )
             })

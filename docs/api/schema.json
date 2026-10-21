@@ -14442,10 +14442,10 @@
               "description": "The layer file."
             },
             "old": {
-              "description": "The value it had in that layer before (null: none there)."
+              "description": "The value it had in that layer before (none: not there; a null there removes a map entry)."
             },
             "new": {
-              "description": "The value it has there now (null: none there)."
+              "description": "The value it has there now (none: not there)."
             },
             "by": {
               "type": "string",
@@ -14458,8 +14458,6 @@
             "key",
             "scope",
             "file",
-            "old",
-            "new",
             "by"
           ],
           "description": "A change of one setting in one layer."
@@ -14562,10 +14560,10 @@
               "description": "The layer file."
             },
             "old": {
-              "description": "The value it had in that layer before (null: none there)."
+              "description": "The value it had in that layer before (none: not there; a null there removes a map entry)."
             },
             "new": {
-              "description": "The value it has there now (null: none there)."
+              "description": "The value it has there now (none: not there)."
             },
             "by": {
               "type": "string",
@@ -14578,8 +14576,6 @@
             "key",
             "scope",
             "file",
-            "old",
-            "new",
             "by"
           ],
           "description": "A change of one setting in one layer."
@@ -14702,10 +14698,10 @@
               "description": "The layer file."
             },
             "old": {
-              "description": "The value it had in that layer before (null: none there)."
+              "description": "The value it had in that layer before (none: not there; a null there removes a map entry)."
             },
             "new": {
-              "description": "The value it has there now (null: none there)."
+              "description": "The value it has there now (none: not there)."
             },
             "by": {
               "type": "string",
@@ -14718,8 +14714,6 @@
             "key",
             "scope",
             "file",
-            "old",
-            "new",
             "by"
           ],
           "description": "A change of one setting in one layer."
@@ -14842,10 +14836,10 @@
               "description": "The layer file."
             },
             "old": {
-              "description": "The value it had in that layer before (null: none there)."
+              "description": "The value it had in that layer before (none: not there; a null there removes a map entry)."
             },
             "new": {
-              "description": "The value it has there now (null: none there)."
+              "description": "The value it has there now (none: not there)."
             },
             "by": {
               "type": "string",
@@ -14858,8 +14852,6 @@
             "key",
             "scope",
             "file",
-            "old",
-            "new",
             "by"
           ],
           "description": "A change of one setting in one layer."
@@ -14942,10 +14934,10 @@
               "description": "The layer file."
             },
             "old": {
-              "description": "The value it had in that layer before (null: none there)."
+              "description": "The value it had in that layer before (none: not there; a null there removes a map entry)."
             },
             "new": {
-              "description": "The value it has there now (null: none there)."
+              "description": "The value it has there now (none: not there)."
             },
             "by": {
               "type": "string",
@@ -14958,8 +14950,6 @@
             "key",
             "scope",
             "file",
-            "old",
-            "new",
             "by"
           ],
           "description": "A change of one setting in one layer."
@@ -15051,10 +15041,10 @@
                 "type": "string"
               },
               "old": {
-                "description": "The value it had in that layer before (null: none there)."
+                "description": "The value it had in that layer before (none: not there; a null there removes a map entry)."
               },
               "new": {
-                "description": "The value it has there now (null: none there)."
+                "description": "The value it has there now (none: not there)."
               },
               "by": {
                 "description": "`user`, `agent:<id>` or `session:<id>`.",
@@ -15067,8 +15057,6 @@
               "key",
               "scope",
               "file",
-              "old",
-              "new",
               "by"
             ]
           }

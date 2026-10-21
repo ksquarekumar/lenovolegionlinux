@@ -281,6 +281,34 @@ fn wrong_changes_write_nothing(lab: &Lab) {
     }
 }
 
+/// A map entry removed for you (null in your layer) comes back with an unset of that null, with its history row;
+/// Undo of that unset removes it again: the history keeps a null apart from no value.
+fn a_removed_map_entry_comes_back_and_goes_again(lab: &Lab) {
+    lab.op
+        .ok(&["config", "remove", "views.composer_models", "codex"]);
+    assert_eq!(
+        row(&lab.op, "views.composer_models")["value"].get("codex"),
+        None
+    );
+    lab.op
+        .ok(&["config", "unset", "views.composer_models.codex"]);
+    assert_eq!(
+        row(&lab.op, "views.composer_models")["value"]["codex"],
+        "gpt-6-luna[low]"
+    );
+    assert_eq!(lab.history().len(), 5);
+    let unset = lab.history()[0]["id"].as_i64().unwrap().to_string();
+    lab.op.ok(&["config", "revert", &unset]);
+    assert_eq!(
+        row(&lab.op, "views.composer_models")["value"].get("codex"),
+        None
+    );
+    let shown = lab
+        .op
+        .ok(&["config", "history", "--key", "views.composer_models"]);
+    assert!(shown.contains("removed -> not set"), "{shown}");
+}
+
 /// A setting that the user wrote by hand and that does not work is a health finding with its one step.
 fn a_broken_value_is_a_health_finding(lab: &Lab) {
     let layer = lab.home.join(".config/legionctl");
@@ -410,20 +438,7 @@ async fn a_first_start_writes_nothing_and_each_change_is_checked_kept_and_undone
     assert_eq!(row(&lab.op, "dossier.nudge_turns")["from"], "defaults");
     assert_eq!(lab.history().len(), 3);
 
-    // a map entry removed for you (null in your layer) comes back with an unset of that null, with its history row
-    lab.op
-        .ok(&["config", "remove", "views.composer_models", "codex"]);
-    assert_eq!(
-        row(&lab.op, "views.composer_models")["value"].get("codex"),
-        None
-    );
-    lab.op
-        .ok(&["config", "unset", "views.composer_models.codex"]);
-    assert_eq!(
-        row(&lab.op, "views.composer_models")["value"]["codex"],
-        "gpt-6-luna[low]"
-    );
-    assert_eq!(lab.history().len(), 5);
+    a_removed_map_entry_comes_back_and_goes_again(&lab);
 }
 
 /// One list of forbidden and one of allowed actions, each entry with its reason and where it comes from: a

@@ -294,7 +294,10 @@ impl Operator {
             settings::record(
                 edit,
                 std::path::Path::new(&file),
-                serde_json::from_str(&old)?,
+                // the service says "" for a key that was not there
+                (!old.is_empty())
+                    .then(|| serde_json::from_str(&old))
+                    .transpose()?,
             )?
         } else {
             settings::write(&resolved, edit, entry)?
@@ -528,7 +531,7 @@ impl Operator {
             &Edit {
                 key: &change.key,
                 scope: change.scope,
-                value: (!change.old.is_null()).then(|| change.old.clone()),
+                value: change.old.clone(),
                 by: &by,
             },
             None,

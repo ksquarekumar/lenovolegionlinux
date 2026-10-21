@@ -1245,8 +1245,8 @@ impl System1 {
     }
 
     /// Set `key` (dotted) in the computer's settings (`/etc/legionctl/managed.jsonc`) to the JSON `value`, or remove it
-    /// there (empty `value`); the file and the value it had there (JSON, null: none). The operator checked the key
-    /// and the value against the settings registry; this checks their form.
+    /// there (empty `value`); the file and the value it had there (JSON; empty: none there). The operator checked the
+    /// key and the value against the settings registry; this checks their form.
     async fn set_setting(
         &self,
         key: String,
@@ -1284,7 +1284,7 @@ impl System1 {
         let file = dir.join(legionctl_machine::settings_file::MANAGED);
         Ok((
             file.display().to_string(),
-            old.unwrap_or(serde_json::Value::Null).to_string(),
+            old.map_or_else(String::new, |v| v.to_string()),
         ))
     }
 

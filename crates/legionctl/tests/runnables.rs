@@ -689,10 +689,10 @@ fn a_session_reaches_its_granted_connections_through_the_gateway_tunnel_and_noth
     );
 }
 
-/// A repository's settings files may name their JSON Schema (`$schema`): checks, config and a session start work
-/// with it, `legionctl config schema` gives a schema that a copy of agency-os's checks file passes, and a key that is
-/// not a setting is one sentence with the nearest one (feedbacks/0007); a change of the project file that legionctl
-/// writes keeps it allowed when it names its schema.
+/// A repository's settings files and capability sets may name their JSON Schema (`$schema`): checks, config and a
+/// session start with the set work with it, `legionctl config schema` gives a schema that a copy of agency-os's checks
+/// file passes, and a key that is not a setting is one sentence with the nearest one (feedbacks/0007); a change of the
+/// project file that legionctl writes keeps it allowed when it names its schema.
 #[test]
 fn a_repository_settings_file_may_name_its_schema() {
     let lab = Lab::new("schema", &[], &[], None);
@@ -706,14 +706,25 @@ fn a_repository_settings_file_may_name_its_schema() {
         &config,
         r#"{ "$schema": "./legionctl.schema.json", "workspace": { "nudge": false } }"#,
     );
-    for file in [&checks, &config] {
+    let set = lab.repo.join(".legionctl/capabilities/mirror.jsonc");
+    write(
+        &set,
+        r#"{ "$schema": "./capability.schema.json", "name": "mirror", "version": 1, "connections": { "out": [{ "host": "mirror.example.com" }] } }"#,
+    );
+    for file in [&checks, &config, &set] {
         trust::allow(&lab.home, file);
     }
     for args in [&["code", "checks", "list"][..], &["config", "show"]] {
         let out = lab.op.cli_in(&lab.repo, args);
         assert!(out.status.success(), "{args:?}: {}", text(&out));
     }
-    assert!(lab.start("probe", "schema", &[]).status.success());
+    // a capability set that names its schema loads, and the answer to its content holds
+    let started = launch(&lab.start("probe", "schema", &["--capability", "mirror"]));
+    let grant = lab.show(started["id"].as_str().unwrap());
+    assert!(
+        hosts(&grant["manifest"]["connections"]).contains(&"mirror.example.com".to_string()),
+        "{grant:#}"
+    );
 
     let schema = lab.op.cli_in(&lab.repo, &["config", "schema"]);
     assert!(schema.status.success(), "{}", text(&schema));

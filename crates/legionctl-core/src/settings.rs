@@ -496,12 +496,27 @@ pub struct Change {
     pub scope: Scope,
     /// The layer file.
     pub file: String,
-    /// The value it had in that layer before (null: none there).
-    pub old: Value,
-    /// The value it has there now (null: none there).
-    pub new: Value,
+    /// The value it had in that layer before (none: not there; a null there removes a map entry).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub old: Option<Value>,
+    /// The value it has there now (none: not there).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub new: Option<Value>,
     /// `user`, `agent:<id>` or `session:<id>`.
     pub by: String,
+}
+
+/// A value that is in the JSON, null too (a missing one is none).
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
 }
 
 /// The settings history in the operator database (step 17 -> 18).
@@ -514,8 +529,8 @@ macro_rules! tables {
         key   TEXT NOT NULL,
         scope TEXT NOT NULL,
         file  TEXT NOT NULL,
-        old   TEXT NOT NULL,
-        new   TEXT NOT NULL,
+        old   TEXT,
+        new   TEXT,
         by    TEXT NOT NULL
      );
      CREATE INDEX settings_history_key ON settings_history (key, id);"
@@ -526,7 +541,7 @@ pub(crate) use tables;
 const COLUMNS: &str = "id, at, key, scope, file, old, new, by";
 
 fn change_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Change> {
-    let json = |s: String| serde_json::from_str(&s).unwrap_or(Value::Null);
+    let json = |s: Option<String>| s.map(|s| serde_json::from_str(&s).unwrap_or(Value::Null));
     let scope: String = r.get(3)?;
     Ok(Change {
         id: r.get(0)?,
@@ -716,9 +731,9 @@ pub fn layer_dir(resolved: &Resolved, scope: Scope) -> Result<PathBuf> {
 }
 
 /// Put the history row of `edit` (old value `old`, file `file`) in `conn`; the change.
-fn insert(conn: &Connection, edit: &Edit, file: &Path, old: Value) -> Result<Change> {
+fn insert(conn: &Connection, edit: &Edit, file: &Path, old: Option<Value>) -> Result<Change> {
     let at = crate::db::now();
-    let new = edit.value.clone().unwrap_or(Value::Null);
+    let new = edit.value.clone();
     conn.execute(
         "INSERT INTO settings_history (at, key, scope, file, old, new, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
@@ -726,8 +741,8 @@ fn insert(conn: &Connection, edit: &Edit, file: &Path, old: Value) -> Result<Cha
             edit.key,
             edit.scope.name(),
             file.display().to_string(),
-            old.to_string(),
-            new.to_string(),
+            old.as_ref().map(Value::to_string),
+            new.as_ref().map(Value::to_string),
             edit.by
         ],
     )?;
@@ -747,7 +762,7 @@ fn insert(conn: &Connection, edit: &Edit, file: &Path, old: Value) -> Result<Cha
 ///
 /// # Errors
 /// The history cannot be written.
-pub fn record(edit: &Edit, file: &Path, old: Value) -> Result<Change> {
+pub fn record(edit: &Edit, file: &Path, old: Option<Value>) -> Result<Change> {
     insert(Db::open_default()?.conn(), edit, file, old)
 }
 
@@ -831,12 +846,7 @@ pub fn write(resolved: &Resolved, edit: &Edit, entry: Option<&Entry>) -> Result<
             value: value.clone(),
             ..*edit
         };
-        change = Some(insert(
-            &tx,
-            &made,
-            &file,
-            stored.cloned().unwrap_or(Value::Null),
-        )?);
+        change = Some(insert(&tx, &made, &file, stored.cloned())?);
         Ok(value)
     })?;
     let change = change.context("the settings file was not changed")?;
