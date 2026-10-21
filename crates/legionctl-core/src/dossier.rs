@@ -688,10 +688,15 @@ impl Dossiers {
     /// The process's start cannot be read, or the database write fails.
     pub fn hold(&self, session: &str, pid: u32) -> Result<()> {
         if let Some(started) = process_started(pid)? {
-            self.db.conn().execute(
-                "UPDATE bindings SET holder_pid = ?1, holder_started = ?2 WHERE session = ?3 AND released IS NULL",
-                params![pid, started, session],
-            )?;
+            let session = session.to_string();
+            // through the control writer, as the bind before it
+            self.db.queued(move |tx| {
+                tx.execute(
+                    "UPDATE bindings SET holder_pid = ?1, holder_started = ?2 WHERE session = ?3 AND released IS NULL",
+                    params![pid, started, session],
+                )?;
+                Ok(())
+            })?;
         }
         Ok(())
     }
@@ -703,12 +708,16 @@ impl Dossiers {
     pub fn free_ended_locks(&self) -> Result<Vec<String>> {
         let mut freed = Vec::new();
         for lock in self.locks()?.into_iter().filter(|l| l.stale) {
+            let (session, dossier, updated) =
+                (lock.session.clone(), lock.dossier.clone(), lock.updated);
             // a binding refreshed since it was read is live again
-            let released = self.db.conn().execute(
-                "UPDATE bindings SET released = ?1 WHERE session = ?2 AND dossier = ?3 AND updated = ?4 \
-                 AND released IS NULL",
-                params![now(), lock.session, lock.dossier, lock.updated],
-            )?;
+            let released = self.db.queued(move |tx| {
+                Ok(tx.execute(
+                    "UPDATE bindings SET released = ?1 WHERE session = ?2 AND dossier = ?3 AND updated = ?4 \
+                     AND released IS NULL",
+                    params![now(), session, dossier, updated],
+                )?)
+            })?;
             if released > 0 {
                 freed.push(format!(
                     "freed dossier {}: its session {} ended",
