@@ -323,6 +323,26 @@ fn rule_state(m: &Machine, layer: &Layer) -> Result<RuleState> {
 }
 
 /// The event id a page cursor stands for (0 without one), and the page length.
+/// `text` in seconds since 1970: those seconds, or a local time that SQLite reads (`2026-10-21 04:30`).
+fn time_of(db: &Db, flag: &str, text: &str) -> Result<i64> {
+    if let Ok(seconds) = text.parse() {
+        return Ok(seconds);
+    }
+    db.conn()
+        .query_row("SELECT unixepoch(?1, 'utc')", [text], |r| {
+            r.get::<_, Option<i64>>(0)
+        })?
+        .ok_or_else(|| {
+            coded(
+                Code::InvalidInput,
+                format!(
+                    "--{flag} {text} is not a time: give seconds since 1970 (as `at` shows them), or a local time \
+                     such as 2026-10-21 04:30"
+                ),
+            )
+        })
+}
+
 fn page_of(cursor: Option<&str>, limit: u32) -> Result<(i64, u32)> {
     if !(1..=1000).contains(&limit) {
         return Err(coded(Code::InvalidInput, "--limit must be 1-1000"));
@@ -1418,6 +1438,7 @@ fn compaction_journal(
             field: Some(("$.session", session)),
             naming: None,
             session: None,
+            ..legionctl_core::db::EventFilter::default()
         },
         0,
         200,
@@ -3537,6 +3558,7 @@ impl Engine for Operator {
             field: input.of.as_deref().map(|s| ("$.session", s)),
             naming: None,
             session: None,
+            ..EventFilter::default()
         };
         Ok(page(
             Db::open_default()?.events_page(&filter, after, limit)?,
@@ -3669,9 +3691,17 @@ impl Engine for Operator {
             Principal::Session(id) => Some(id.as_str()),
             Principal::User | Principal::Agent(_) => None,
         };
-        Ok(page(Db::open_default()?.events_page(
+        let db = Db::open_default()?;
+        let kinds: Vec<&str> = input.kind.iter().map(String::as_str).collect();
+        let time = |flag: &str, text: &Option<String>| {
+            text.as_deref().map(|t| time_of(&db, flag, t)).transpose()
+        };
+        Ok(page(db.events_page(
             &EventFilter {
                 session,
+                kinds: &kinds,
+                since: time("since", &input.since)?,
+                until: time("until", &input.until)?,
                 ..EventFilter::default()
             },
             after,
@@ -5497,6 +5527,7 @@ impl Engine for Operator {
             field: Some(("$.session", &input.id)),
             naming: None,
             session: None,
+            ..EventFilter::default()
         })?;
         Ok(match newest {
             Some(event) => serde_json::from_value(event.payload["commands"].clone())?,
@@ -5517,6 +5548,7 @@ impl Engine for Operator {
             field: Some(("$.session", &input.id)),
             naming: None,
             session: None,
+            ..EventFilter::default()
         };
         let (rows, next) = Db::open_default()?.events_page(&filter, after, limit)?;
         Ok(Page {

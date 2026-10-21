@@ -106,6 +106,7 @@ fn freeze_idle() -> Result<Vec<(String, u32)>> {
             field: Some(("$.input.session", &session.id)),
             naming: None,
             session: None,
+            ..EventFilter::default()
         };
         let Some(last) = db.last_event(&filter)? else {
             continue;
@@ -120,6 +121,7 @@ fn freeze_idle() -> Result<Vec<(String, u32)>> {
                 field: Some((path, &session.id)),
                 naming: None,
                 session: None,
+                ..EventFilter::default()
             };
             Ok(db.last_event(&filter)?.is_some_and(|e| e.id > last.id))
         };

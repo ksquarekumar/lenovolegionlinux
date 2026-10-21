@@ -1299,6 +1299,17 @@ pub struct EventsIn {
     /// Items on the page (1-1000).
     #[serde(default = "two_hundred")]
     pub limit: u32,
+    /// Only events of this kind (`dossier.use`); repeat it for more kinds. Every kind when not given.
+    #[serde(default)]
+    #[schemars(extend("x-option" = true))]
+    pub kind: Vec<String>,
+    /// Only events at this time or later: seconds since 1970 (as `at` shows them), or a local time such as
+    /// `2026-10-21 04:30`.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Only events before this time, in the same forms as `since`.
+    #[serde(default)]
+    pub until: Option<String>,
 }
 
 pub type Events = Vec<EventRow>;

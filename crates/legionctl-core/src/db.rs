@@ -518,6 +518,10 @@ pub struct EventFilter<'a> {
     pub naming: Option<&'a str>,
     /// Only the events of this session: what it ran and opened, and its own calls.
     pub session: Option<&'a str>,
+    /// Only the events at this time (seconds since the epoch) or later.
+    pub since: Option<i64>,
+    /// Only the events before this time.
+    pub until: Option<i64>,
 }
 
 /// The first `limit` rows, and the id of the last one when the query found more (it asks for one more).
@@ -842,6 +846,14 @@ impl Db {
             );
             args.push(Box::new(session.to_string()));
             args.push(Box::new(session.to_string()));
+        }
+        if let Some(since) = filter.since {
+            sql.push_str(" AND ts >= ?");
+            args.push(Box::new(since));
+        }
+        if let Some(until) = filter.until {
+            sql.push_str(" AND ts < ?");
+            args.push(Box::new(until));
         }
         if let Some(text) = filter.naming {
             let escaped = text

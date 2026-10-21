@@ -89,6 +89,7 @@ async fn boot_notice(session: &zbus::Connection) -> Result<()> {
         field: Some(("$.boot", boot)),
         naming: None,
         session: None,
+        ..legionctl_core::db::EventFilter::default()
     };
     if db.last_event(&filter)?.is_some() {
         return Ok(());

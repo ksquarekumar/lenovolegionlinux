@@ -297,6 +297,9 @@ impl LegionApp {
                 .call::<op::EventsOp>(&EventsIn {
                     cursor: None,
                     limit: 1,
+                    kind: Vec::new(),
+                    since: None,
+                    until: None,
                 })
                 .await
         });

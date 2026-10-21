@@ -9904,6 +9904,157 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
     assert!(!error && out.to_string().contains("review-live"), "{out}");
 }
 
+/// Whether `value` holds the string `text` at any depth.
+fn holds_text(value: &Value, text: &str) -> bool {
+    match value {
+        Value::String(s) => s == text,
+        Value::Array(items) => items.iter().any(|v| holds_text(v, text)),
+        Value::Object(map) => map.values().any(|v| holds_text(v, text)),
+        _ => false,
+    }
+}
+
+/// Five agent tool events whose command holds \u0001, a newline and an ANSI escape, and a dossier's create: the ids of
+/// the five (they come back as sent) and their kind, and the whole log as `events --json` prints it.
+fn five_tool_events_with_control_characters(
+    op: &Operator,
+    home: &Path,
+) -> (Vec<i64>, String, Value) {
+    let command = |i: i64| format!("echo {i}\u{1}\n\u{1b}[31mred");
+    for i in 1..=5 {
+        let out = op.run_bare(
+            home,
+            &[],
+            &["hook", "post-tool"],
+            &claude_hook(
+                "post-tool",
+                &json!({"session_id": "s1", "cwd": home, "tool_name": "Bash", "tool_input": {"command": command(i)}}),
+            ),
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    op.ok(&["dossier", "create", "evfilter"]);
+    // serde_json, as Python's json, refuses a raw control character in a string
+    let all: Value =
+        serde_json::from_str(&op.ok(&["events", "--json", "--limit", "1000"])).unwrap();
+    let items = all["items"].as_array().unwrap();
+    let ours: Vec<(i64, String)> = (1..=5)
+        .map(|i| {
+            let item = items
+                .iter()
+                .find(|e| holds_text(&e["payload"], &command(i)))
+                .unwrap_or_else(|| panic!("no event holds command {i} as sent: {all:#}"));
+            (
+                item["id"].as_i64().unwrap(),
+                item["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let kind = ours[0].1.clone();
+    assert!(ours.iter().all(|(_, k)| *k == kind), "{ours:?}");
+    (ours.into_iter().map(|(id, _)| id).collect(), kind, all)
+}
+
+/// `events` filters by a time window and by kind in the database's query, and pages through the matches only
+/// (plan#todo-227 AOS-6, feedbacks/0005: an audit paged through 8052 pages of 1.6M events). A payload with control
+/// characters prints as valid JSON and comes back as it was sent (the report's "invalid JSON" was zsh's echo, which
+/// turns each `\n` escape into a raw newline: EVIDENCE/validation/70).
+#[test]
+fn events_filter_by_time_window_and_kind_in_the_query_and_page_through_the_matches() {
+    let (op, home) = operator("evfilter");
+    let (ours, kind, all) = five_tool_events_with_control_characters(&op, &home);
+    let items = all["items"].as_array().unwrap();
+    let page = |args: &[&str]| -> Value {
+        serde_json::from_str(&op.ok(&[&["events", "--json"], args].concat())).unwrap()
+    };
+    // our events at 1000..5000; every other event inside the window, at 2500
+    sql(&home, "UPDATE events SET ts = 2500");
+    for (i, id) in ours.iter().enumerate() {
+        sql(
+            &home,
+            &format!("UPDATE events SET ts = {} WHERE id = {id}", 1000 * (i + 1)),
+        );
+    }
+    let others = items.len() - 5;
+    assert!(others > 0, "the dossier create is an event of another kind");
+    let ids = |page: &Value| -> Vec<i64> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_i64().unwrap())
+            .collect()
+    };
+
+    // the window [2000, 4000) of one kind, one item a page: 2000, then 3000, then no next page
+    let first = page(&[
+        "--kind", &kind, "--since", "2000", "--until", "4000", "--limit", "1",
+    ]);
+    assert_eq!(ids(&first), [ours[1]]);
+    let cursor = first["next"].as_str().expect("a second page").to_string();
+    let second = page(&[
+        "--kind", &kind, "--since", "2000", "--until", "4000", "--limit", "1", "--cursor", &cursor,
+    ]);
+    assert_eq!(
+        (ids(&second), second["next"].clone()),
+        (vec![ours[2]], Value::Null)
+    );
+    // no kind: the window has the other kinds too; two kinds: both
+    assert_eq!(
+        ids(&page(&["--since", "2000", "--until", "4000"])).len(),
+        2 + others
+    );
+    let by_two = page(&[
+        "--kind",
+        &kind,
+        "--kind",
+        "dossier.create",
+        "--since",
+        "2500",
+        "--until",
+        "2501",
+    ]);
+    let creates = items
+        .iter()
+        .filter(|e| e["kind"] == "dossier.create")
+        .count();
+    assert_eq!(
+        (by_two["items"].as_array().unwrap().len(), creates > 0),
+        (creates, true),
+        "{by_two:#}"
+    );
+    // a local time as the user reads a clock: the same window
+    let local = |ts: i64| {
+        let out = Command::new("date")
+            .args(["-d", &format!("@{ts}"), "+%Y-%m-%d %H:%M:%S"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    assert_eq!(
+        ids(&page(&[
+            "--kind",
+            &kind,
+            "--since",
+            &local(2000),
+            "--until",
+            &local(4000)
+        ])),
+        [ours[1], ours[2]]
+    );
+    // a time it cannot read is refused with the forms it reads
+    let refused = op.cli(&["events", "--since", "yesterday"]);
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !refused.status.success() && said.contains("--since yesterday is not a time"),
+        "{said}"
+    );
+}
+
 /// The record of a workspace whose worktree is gone is forgotten at the operator's start when its branch is merged
 /// into its base or gone; doctor offers Forget for one whose branch has commits the base does not have, and Forget
 /// keeps that branch (plan#todo-227: doctor listed 41 "the worktree ... is missing; open the workspace again" lines

@@ -5624,6 +5624,31 @@
           "minimum": 0,
           "description": "Items on the page (1-1000).",
           "default": 200
+        },
+        "kind": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Only events of this kind (`dossier.use`); repeat it for more kinds. Every kind when not given.",
+          "default": [],
+          "x-option": true
+        },
+        "since": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only events at this time or later: seconds since 1970 (as `at` shows them), or a local time such as\n`2026-10-21 04:30`.",
+          "default": null
+        },
+        "until": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only events before this time, in the same forms as `since`.",
+          "default": null
         }
       },
       "title": "EventsIn",
