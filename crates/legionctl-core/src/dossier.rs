@@ -42,7 +42,7 @@ macro_rules! annotations {
 }
 pub(crate) use annotations;
 
-/// v17 -> v18: the processes that hold each dossier binding made through an MCP server (the server and its parent, the
+/// v18 -> v19: the processes that hold each dossier binding made through an MCP server (the server and its parent, the
 /// agent: id and start in clock ticks since the epoch), which tell whether that agent still runs (plan#todo-227
 /// AOS-4), and the events by time, which `events --since/--until` reads (AOS-6).
 macro_rules! binding_holders {
