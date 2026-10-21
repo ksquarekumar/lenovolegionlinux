@@ -116,10 +116,11 @@ the first line before the run ends and a cut-off run that goes on in its loaded 
 Built (2026-10-13, S4): `session pause|unpause <id>` freeze and thaw the session's scope (cgroup freezer; `systemctl
 --user freeze|thaw`), `session stop <id>` stops it, `session resume <id>` prepares an ended session again (same id,
 dossier binding and workspace; the sandbox anew) with the agent's resume command (`session.resume`: `claude --resume
-{id} ...`; Codex has none by id). A resume of a session that still runs is refused. The e2e test resumes a session and
-sees the same id and folder, and a refusal for an agent without a resume command; pause and thaw were checked live
-(active, frozen, running, inactive), as CI has no user systemd. Not yet: the idle and memory-pressure policies that
-pause and offload on their own.
+{id} ...`; Codex has none by id). A resume of a session that still runs is refused, and so is a resume within a minute
+of a prepared launch of the session that has not run yet (it would replace that launch's files and token). The e2e
+test resumes a session and sees the same id and folder, and a refusal for an agent without a resume command; pause and
+thaw were checked live (active, frozen, running, inactive), as CI has no user systemd. Not yet: the idle and memory-
+pressure policies that pause and offload on their own.
 
 Liveness (one test, `session::liveness`, AOS-2): `sh -c 'exec 9>>lock && flock -w 10 9 && exec ...'` comes first in
 front of the sandbox (`Launch.scope`), so the session lock (`<session home>/lock`) is taken before the mounts and the

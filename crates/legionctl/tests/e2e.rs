@@ -4568,7 +4568,7 @@ fn held_client(op: &Operator, repo: &Path, home: &Path, args: &[&str]) -> Kill {
 /// a scan of the home (`rg`, Codex's AGENTS.md loader) fails on it. While a headless run holds, its session is live by
 /// its lock: a resume of it is refused in one sentence, and another session's start (which clears the folders of ended
 /// sessions) keeps its folders. When the run ends, its `work/work` goes and its `upper` stays; a scan of the whole HOME
-/// reads every folder; a resume starts again.
+/// reads every folder; a resume starts again, and a second resume before the first one's launch ran is refused.
 #[test]
 fn an_ended_session_leaves_no_overlay_work_folder_and_a_running_one_keeps_its_own() {
     let (op, home) = operator("overlay-end");
@@ -4649,6 +4649,14 @@ fn an_ended_session_leaves_no_overlay_work_folder_and_a_running_one_keeps_its_ow
         "{}",
         String::from_utf8_lossy(&resumed.stderr)
     );
+    // a second resume before the first one's launch ran would replace its files and token
+    let second = op.run(&repo, &env, &["session", "resume", &id, "--json"], "");
+    let why = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        !second.status.success() && why.contains(&format!("session {id} was prepared to run")),
+        "{why}"
+    );
+    plain::assert_plain("the refusal", why.trim().trim_start_matches("Error: "));
 }
 
 /// A session whose sandbox was killed (a crash, a closed terminal: no cleanup ran) and the home of a session from

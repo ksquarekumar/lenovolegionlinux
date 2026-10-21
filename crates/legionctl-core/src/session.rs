@@ -375,6 +375,14 @@ fn liveness_within(
     Ok(Liveness::Ended)
 }
 
+/// The mark of a launch that was prepared and has not taken its lock yet (`<session home>/launch`): the lock prefix
+/// removes it; a resume refuses while it is newer than [`PENDING_SECONDS`], so it does not replace the session's files
+/// and token under a launch that is about to run.
+const PENDING: &str = "launch";
+
+/// How long a prepared launch holds off a resume: its client runs it within moments, or not at all.
+const PENDING_SECONDS: u64 = 60;
+
 /// The commands in front of session `id`'s sandbox: its lock (made here) taken on [`LOCK_FD`] from before the mounts
 /// and held by the sandbox (bwrap and its PID 1, QEMU and its helpers, the docker client; a cleanup holds it for a
 /// moment), then its systemd scope when it has one.
@@ -383,7 +391,7 @@ fn lock_and_scope(id: &str, scope: bool) -> Result<Vec<String>> {
     std::fs::create_dir_all(session_home(id))?;
     std::fs::File::create(&lock).with_context(|| format!("making {}", lock.display()))?;
     let take = format!(
-        "exec {LOCK_FD}>>\"$0\" && flock -w {LOCK_WAIT_SECONDS} {LOCK_FD} && exec \"$@\" || \
+        "exec {LOCK_FD}>>\"$0\" && flock -w {LOCK_WAIT_SECONDS} {LOCK_FD} && rm -f \"${{0%/*}}/{PENDING}\" && exec \"$@\" || \
          {{ echo \"legionctl: session {id} still runs (its lock $0 is held)\" >&2; exit 75; }}"
     );
     let mut argv: Vec<String> = vec![
@@ -2064,6 +2072,16 @@ impl Dossiers {
         let command = commands
             .get(&record.agent)
             .with_context(|| format!("agent {} cannot resume a session ({key})", record.agent))?;
+        let pending = session_home(id).join(PENDING);
+        if let Ok(meta) = pending.metadata() {
+            let age = meta.modified()?.elapsed().unwrap_or_default();
+            anyhow::ensure!(
+                age.as_secs() >= PENDING_SECONDS,
+                "session {id} was prepared to run {} s ago and has not started yet: start that launch, or resume \
+                 again in a minute",
+                age.as_secs()
+            );
+        }
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
@@ -2221,11 +2239,13 @@ impl Dossiers {
                 (&workdir, mounts, &env),
             )?,
         };
+        let scope = lock_and_scope(
+            &id,
+            config.session.scope && !matches!(runs, Runs::Container(_)),
+        )?;
+        std::fs::write(session_home(&id).join(PENDING), "")?;
         Ok(Launch {
-            scope: lock_and_scope(
-                &id,
-                config.session.scope && !matches!(runs, Runs::Container(_)),
-            )?,
+            scope,
             sandbox,
             inside: match runs {
                 Runs::Host => Inside::Host,

@@ -115,10 +115,6 @@ const RETENTION: &str = "old log rows are not removed (events.keep_days)";
 /// The fault of a job that a restart cut off and that does not go on (its row stays `running`).
 pub(crate) const JOBS: &str = "jobs that a restart cut off are not resumed";
 
-/// The fault of the start's cleanup of the overlay folders that did not run.
-const OVERLAYS: &str =
-    "the overlay work folders of ended sessions stay (mode 000: a scan of the home fails on them)";
-
 /// What sessions and commands sandboxes left before this start (a crash, a killed sandbox): the overlay work folders
 /// of ended sessions and the commands sandboxes' layers.
 fn clear_overlays(store: &legionctl_core::dossier::Dossiers) -> Result<()> {
@@ -131,6 +127,10 @@ fn clear_overlays(store: &legionctl_core::dossier::Dossiers) -> Result<()> {
     }
     Ok(())
 }
+
+/// The fault of the start's upkeep of what ended agents and sessions left that did not run.
+const ENDED: &str = "the dossiers of ended agents stay locked, old workspaces stay listed, or the overlay work \
+                     folders of ended sessions stay (mode 000: a scan of the home fails on them)";
 
 /// The operator until SIGTERM, or until a module fails.
 async fn run() -> Result<()> {
@@ -170,20 +170,14 @@ async fn run() -> Result<()> {
                         for kept in legionctl_core::settings::upgrade(&r, &store)? {
                             eprintln!("operator: {kept}");
                         }
-                        Ok(store)
+                        Ok(())
                     });
             match settled {
-                Ok(store) => {
-                    faults::works("registry");
-                    match clear_overlays(&store) {
-                        Ok(()) => faults::works("overlays"),
-                        Err(e) => faults::failed("overlays", OVERLAYS, &e),
-                    }
-                }
+                Ok(()) => faults::works("registry"),
                 Err(e) => faults::failed("registry", "the dossier registry is not settled", &e),
             }
-            // the dossier locks of agents that ended, and the workspaces of merged topics whose folders went, while the
-            // operator was off
+            // the dossier locks of agents that ended, the workspaces of merged topics whose folders went, and the
+            // overlay work folders of ended sessions, while the operator was off
             let freed =
                 legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), None)
                     .and_then(|r| {
@@ -195,15 +189,11 @@ async fn run() -> Result<()> {
                         {
                             eprintln!("operator: {line}");
                         }
-                        Ok(())
+                        clear_overlays(&store)
                     });
             match freed {
                 Ok(()) => faults::works("ended"),
-                Err(e) => faults::failed(
-                    "ended",
-                    "the dossiers of ended agents stay locked, or old workspaces stay listed",
-                    &e,
-                ),
+                Err(e) => faults::failed("ended", ENDED, &e),
             }
         }
     })
