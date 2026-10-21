@@ -8582,15 +8582,48 @@ fn jail_files(home: &Path, workspace: &Path) {
     );
 }
 
+/// `git commit` in `workspace` with `LEGIONCTL_CHECKPOINT_TREE` set to `tree` and a stand-in `legionctl` first in PATH: its
+/// review refuses and appends its arguments to `$HOME/reviewed`.
+fn plain_commit_naming(home: &Path, workspace: &Path, tree: &str) -> std::process::Output {
+    let bin = home.join("gate-bin");
+    write(
+        &bin.join("legionctl"),
+        "#!/bin/sh\ncase \"$*\" in *--help*) exit 0 ;; esac\necho \"$*\" >> \"$HOME/reviewed\"\nexit 1\n",
+    );
+    std::fs::set_permissions(
+        bin.join("legionctl"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["commit", "--quiet", "-m", "manual"])
+        .env("HOME", home)
+        .env("LEGIONCTL_CHECKPOINT_TREE", tree)
+        .env(
+            "PATH",
+            std::env::join_paths(
+                std::iter::once(bin)
+                    .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+            )
+            .unwrap(),
+        )
+        .output()
+        .unwrap()
+}
+
 /// F13 (Codex P1 #5 of the F13 challenge, lead 2026-10-22): a session's checkpoint commits in its jail, where the
 /// operator socket is hidden, so legionctl's own commit hook (scripts/test-gate.sh, the test review for a plain commit)
 /// failed every checkpoint of Rust code from a session. The checkpoint reviewed that tree already and gives its id to
-/// the commit (`LEGIONCTL_CHECKPOINT_TREE`): the hook lets that tree through and reviews any other one, so the variable
+/// the commit (`LEGIONCTL_CHECKPOINT_TREE`): the hook lets that tree through and reviews any other one (also a change
+/// of a submodule's commit alone that git's settings hide from a plain diff), so the variable
 /// with another tree's id skips nothing.
 #[test]
 fn a_session_checkpoint_passes_the_test_gate_hook_and_a_commit_of_another_tree_is_reviewed() {
     let (op, home) = operator("gate-hook");
     let repo = repository(&home);
+    submodules(&home, &repo);
     let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-gate.sh");
     let hook = repo.join(".git/hooks/pre-commit");
     write(&hook, &format!("#!/bin/sh\nexec sh {}\n", gate.display()));
@@ -8627,39 +8660,46 @@ fn a_session_checkpoint_passes_the_test_gate_hook_and_a_commit_of_another_tree_i
     );
 
     // a plain commit that names another tree: the hook runs the review (a stand-in legionctl that refuses)
-    let bin = home.join("gate-bin");
-    write(
-        &bin.join("legionctl"),
-        "#!/bin/sh\ncase \"$*\" in *--help*) exit 0 ;; esac\necho \"$*\" >> \"$HOME/reviewed\"\nexit 1\n",
-    );
-    std::fs::set_permissions(
-        bin.join("legionctl"),
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    )
-    .unwrap();
     let reviewed = git(&home, &workspace, &["rev-parse", "HEAD^{tree}"]);
+    let commit = || plain_commit_naming(&home, &workspace, &reviewed);
     write(&workspace.join("lib.rs"), "pub fn y() {}\n");
     git(&home, &workspace, &["add", "lib.rs"]);
-    let commit = Command::new("git")
-        .arg("-C")
-        .arg(&workspace)
-        .args(["commit", "--quiet", "-m", "manual"])
-        .env("HOME", &home)
-        .env("LEGIONCTL_CHECKPOINT_TREE", &reviewed)
-        .env(
-            "PATH",
-            std::env::join_paths(
-                std::iter::once(bin.clone())
-                    .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-            )
-            .unwrap(),
-        )
-        .output()
-        .unwrap();
-    assert!(!commit.status.success(), "the hook refused the other tree");
+    assert!(
+        !commit().status.success(),
+        "the hook refused the other tree"
+    );
+    git(&home, &workspace, &["reset", "--quiet", "lib.rs"]);
+    // a change of a submodule's commit alone, which git's diff.ignoreSubmodules = all hides (Codex re-check)
+    git(
+        &home,
+        &workspace,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--quiet",
+            "--init",
+        ],
+    );
+    git(
+        &home,
+        &workspace.join("vendor/lib"),
+        &["commit", "--quiet", "--allow-empty", "-m", "moved"],
+    );
+    git(&home, &workspace, &["add", "vendor/lib"]);
+    git(
+        &home,
+        &workspace,
+        &["config", "diff.ignoreSubmodules", "all"],
+    );
+    assert!(
+        !commit().status.success(),
+        "the hook refused the submodule change"
+    );
     assert_eq!(
         std::fs::read_to_string(home.join("reviewed")).unwrap(),
-        "code tests review --staged\n"
+        "code tests review --staged\ncode tests review --staged\n"
     );
     assert_eq!(
         git(&home, &workspace, &["log", "-1", "--format=%s"]),

@@ -2,8 +2,9 @@
 # The test gate for commits made outside `legionctl workspace checkpoint` (design 23, A7): the new and changed tests
 # of the staged change set need an assertion and a recorded kill, or an accept.
 set -eu
-# nothing staged (`pre-commit run --all-files`, as in `make lint` and CI): no change set to review
-git diff --cached --quiet && exit 0
+# nothing staged (`pre-commit run --all-files`, as in `make lint` and CI): no change set to review; a submodule's new
+# commit is a change too, also when diff.ignoreSubmodules hides it
+git diff --cached --quiet --ignore-submodules=none && exit 0
 # `legionctl workspace checkpoint` reviewed this tree and names it; any other tree is reviewed here
 [ -n "${LEGIONCTL_CHECKPOINT_TREE:-}" ] && [ "$(git write-tree)" = "$LEGIONCTL_CHECKPOINT_TREE" ] && exit 0
 if ! legionctl code tests review --help >/dev/null 2>&1; then

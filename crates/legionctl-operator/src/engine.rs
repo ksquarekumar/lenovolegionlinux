@@ -5835,6 +5835,37 @@ impl Engine for Operator {
     }
 }
 
+/// The session whose run made the ACP session that `input` goes on in (`--acp`), with its record and its folder's
+/// config: the agent keeps the conversation in its home, which is that session's layer, so the run goes on there
+/// (F12). None: no run of legionctl made it (the agent's own to load, in a new session).
+fn acp_origin(
+    store: &Dossiers,
+    db: &Db,
+    input: &SessionRunIn,
+    (agent, dossier): (&str, &str),
+) -> Result<Option<(String, legionctl_core::session::SessionRecord, Resolved)>> {
+    let Some(id) = input
+        .acp
+        .as_deref()
+        .map(|acp| db.acp_session(acp))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    let record = store.session(&id)?;
+    anyhow::ensure!(
+        record.agent == agent && record.dossier == dossier,
+        "ACP session {} is of session {id} (agent {}, dossier {}): run it with that agent and --dossier {}",
+        input.acp.as_deref().unwrap_or_default(),
+        record.agent,
+        record.dossier,
+        record.dossier
+    );
+    let own = config(Some(&place_of(&record.workdir)))?;
+    Ok(Some((id, record, own)))
+}
+
 impl Operator {
     /// A headless run of `agent` on `dossier` in `dir`, with the output `tag` and the ACP session `acp` to go on in.
     fn run_headless(
@@ -5845,6 +5876,12 @@ impl Operator {
         input: &SessionRunIn,
         (tag, acp, prompt, history): (Option<String>, Option<String>, &str, Option<String>),
     ) -> Result<RunOutput> {
+        let db = Db::open_default()?;
+        let made = acp_origin(store, &db, input, (agent, dossier))?;
+        let (resolved, dir, inside) = match &made {
+            Some((_, record, own)) => (own, record.workdir.as_path(), record.inside),
+            None => (resolved, dir, input.inside.into()),
+        };
         let token = legionctl_api::random_token()?;
         let start = Start {
             agent,
@@ -5855,7 +5892,7 @@ impl Operator {
             topic,
             headless: true,
             account: input.account.as_deref(),
-            inside: input.inside.into(),
+            inside,
             gpu: input.gpu,
             member: None,
             capabilities: &main_agent_sets(&resolved.config, &input.capability),
@@ -5868,7 +5905,6 @@ impl Operator {
                 .find(|op| op.name == tool && !op.internal())
                 .with_context(|| format!("no operation {tool} to bind the agent to"))?;
         }
-        let db = Db::open_default()?;
         if let Some(command) = resolved.config.session.acp.get(agent)
             && start.inside == legionctl_core::session::Inside::Host
         {
@@ -5898,33 +5934,14 @@ impl Operator {
                 &serde_json::json!({"tag": tag, "text": text, "note": true}),
             );
         })?;
-        // the ACP session of an earlier run goes on in that run's session: the agent keeps the conversation in its
-        // home, which is that session's layer (F12)
-        let made = match input.acp.as_deref() {
-            Some(acp) => db.acp_session(acp)?,
-            None => None,
-        };
-        let launch = match made {
-            Some(id) => {
-                let record = store.session(&id)?;
-                anyhow::ensure!(
-                    record.agent == agent && record.dossier == dossier,
-                    "ACP session {} is of session {id} (agent {}, dossier {}): run it with that agent and --dossier {}",
-                    input.acp.as_deref().unwrap_or_default(),
-                    record.agent,
-                    record.dossier,
-                    record.dossier
-                );
-                // the config of that session's folder, as a resume after a restart takes it (continue_run)
-                let own = config(Some(&place_of(&record.workdir)))?;
-                store.resume_session(
-                    &id,
-                    &own.config,
-                    start.account,
-                    &token,
-                    (true, start.tools),
-                )?
-            }
+        let launch = match &made {
+            Some((id, ..)) => store.resume_session(
+                id,
+                &resolved.config,
+                start.account,
+                &token,
+                (true, start.tools),
+            )?,
             None => store.start_session(&start, &resolved.config)?,
         };
         db.issue_token(&launch.id, &token)?;
