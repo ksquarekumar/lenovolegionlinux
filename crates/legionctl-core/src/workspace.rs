@@ -247,23 +247,20 @@ fn status(path: &Path, workspace: bool) -> Result<Vec<String>> {
     } else {
         &["status", "--porcelain=v1", "--ignore-submodules=untracked"]
     };
-    let mut entries: Vec<String> = git(path, args)?.lines().map(String::from).collect();
+    // git's own lines, not trimmed: the first one may start with a space (" M file", unstaged)
+    let lines = |args: &[&str]| -> Result<String> {
+        Ok(String::from_utf8_lossy(&crate::git::bytes(path, args)?).into_owned())
+    };
+    let mut entries: Vec<String> = lines(args)?.lines().map(String::from).collect();
     // `--ignore-submodules` does not reach a nested submodule, whose own `ignore = all` hides it: each one is read
     if path.join(".gitmodules").exists() {
         let each = format!("echo \"#$displaypath\"; git {}", args.join(" "));
         let mut submodule = String::new();
-        for line in git(
-            path,
-            &["submodule", "foreach", "--quiet", "--recursive", &each],
-        )?
-        .lines()
-        {
-            match line.strip_prefix('#') {
-                Some(at) => submodule = format!("{at}/"),
-                None if line.len() > 3 => {
-                    entries.push(format!("{}{submodule}{}", &line[..3], &line[3..]));
-                }
-                None => {}
+        for line in lines(&["submodule", "foreach", "--quiet", "--recursive", &each])?.lines() {
+            match (line.strip_prefix('#'), line.get(..3), line.get(3..)) {
+                (Some(at), ..) => submodule = format!("{at}/"),
+                (None, Some(code), Some(file)) => entries.push(format!("{code}{submodule}{file}")),
+                _ => {}
             }
         }
     }
@@ -295,7 +292,7 @@ fn refuse_dirty_main(repo: &Path) -> Result<()> {
     let files: Vec<String> = status(repo, false)?
         .iter()
         .filter(|line| !line.starts_with("??"))
-        .map(|line| line[3..].to_string())
+        .filter_map(|line| line.get(3..).map(String::from))
         .collect();
     if files.is_empty() {
         return Ok(());
@@ -496,30 +493,30 @@ impl Dossiers {
         {
             return Ok(open);
         }
-        ensure!(committed(&repo), no_commit_yet(&repo));
-        let base = match base {
-            Some(b) => {
-                ensure!(!b.starts_with('-'), "base must be a git ref, not an option");
-                ensure!(
-                    git(
-                        &repo,
-                        &[
-                            "rev-parse",
-                            "--verify",
-                            "--quiet",
-                            &format!("{b}^{{commit}}")
-                        ]
-                    )
-                    .is_ok(),
-                    "the base {b} names no commit in {}",
-                    repo.display()
-                );
-                b.to_string()
-            }
-            None => match git(&repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        let base = if let Some(b) = base {
+            ensure!(!b.starts_with('-'), "base must be a git ref, not an option");
+            ensure!(
+                git(
+                    &repo,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        &format!("{b}^{{commit}}")
+                    ]
+                )
+                .is_ok(),
+                "the base {b} names no commit in {}",
+                repo.display()
+            );
+            b.to_string()
+        } else {
+            // the current branch, which needs a commit (an explicit --base may name another branch)
+            ensure!(committed(&repo), no_commit_yet(&repo));
+            match git(&repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
                 Ok(branch) => branch,
                 Err(_) => git(&repo, &["rev-parse", "HEAD"])?,
-            },
+            }
         };
         let name = repo
             .file_name()

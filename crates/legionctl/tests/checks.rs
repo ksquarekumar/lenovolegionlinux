@@ -362,8 +362,8 @@ fn two_languages_an_unknown_one_and_the_written_proposal(lab: &Lab, rust_text: &
 
 /// F6 (feedbacks/0001 item 6): JSONC allows trailing commas, and formatters (oxfmt) write them. A repository's
 /// `.legionctl/checks.jsonc` and a dossier's `dossier.jsonc` with trailing commas (and `, }` in a string) work end to
-/// end: the check runs, the dossier gets its id written (at a registry read) and keeps its title. A layer file with an unfinished comment
-/// fails the call with one line that names the file.
+/// end: the check runs, the dossier gets its id written (at a registry read) and keeps its title. A layer file with an
+/// unfinished comment, or with a comma that follows no value, fails the call with one line that names the file.
 #[test]
 fn jsonc_files_with_trailing_commas_work_and_an_unfinished_comment_names_its_file() {
     let lab = Lab::new("jsonc");
@@ -403,17 +403,23 @@ fn jsonc_files_with_trailing_commas_work_and_an_unfinished_comment_names_its_fil
         "{written}"
     );
 
+    // an unfinished comment, and a comma that follows no value (Codex P2: `[,]` was read as `[]`)
     let layer = lab.home.join(".config/legionctl/mine.jsonc");
-    write(&layer, "{ \"session\": {} /* not closed\n");
-    let out = lab.run(&ws, &["config", "show"]);
-    let (_, err) = text(&out);
-    assert!(
-        !out.status.success()
-            && err.lines().count() == 1
-            && err.contains(&layer.display().to_string())
-            && !err.contains("panicked"),
-        "{err}"
-    );
+    for broken in [
+        "{ \"session\": {} /* not closed\n",
+        "{ \"session\": { \"writable\": [,] } }\n",
+    ] {
+        write(&layer, broken);
+        let out = lab.run(&ws, &["config", "show"]);
+        let (_, err) = text(&out);
+        assert!(
+            !out.status.success()
+                && err.lines().count() == 1
+                && err.contains(&layer.display().to_string())
+                && !err.contains("panicked"),
+            "{broken}: {err}"
+        );
+    }
 }
 
 /// The checkpoint gate (E2 rule 4): a failing `gate: checkpoint` check refuses the checkpoint with the check's exit

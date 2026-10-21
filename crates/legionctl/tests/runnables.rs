@@ -416,19 +416,28 @@ fn a_bazel_session_gets_bazel_dev_from_the_defaults() {
 /// sandbox replaces /tmp, also the one that a test starts inside it), cannot run in a session: /var/tmp is read-only
 /// there. The shipped set var-tmp-write makes the host's /var/tmp writable for a session that asks for it; a shared
 /// folder, so the defaults do not allow it: a start that asks for it is refused until the user allows it (here in the
-/// user's folder for this repository), then the agent's file is in the host's /var/tmp.
+/// user's folder for this repository), then the agent's file is in the host's /var/tmp. A runtime folder under
+/// /var/tmp (a test operator's) would be shown again by that mount, so then the set is refused (Codex P1,
+/// legionctl-feedback-rest-review EVIDENCE/review/01).
 #[test]
 fn a_session_writes_the_hosts_var_tmp_only_with_the_set_that_the_user_allowed() {
-    // the home under /tmp: under /var/tmp its hidden ~/.ssh would refuse the set (a session binds its paths over
-    // its private /tmp)
-    let home =
-        Scratch::new(std::env::temp_dir().join(format!("legionctl-vartmp-{}", std::process::id())));
-    let lab = Lab::at(home, "vartmp", &[], &[], None);
-    let probe = Scratch::new(format!(
-        "/var/tmp/legionctl-vartmp-probe-{}",
-        std::process::id()
-    ));
-    let probe = probe.join("written-in-the-session");
+    let allow = r#"{ "actions": { "allow+": [{ "pattern": "toolset:var-tmp-write", "reason": "e2e tests" }] } }"#;
+    // the home and the runtime folder under /tmp (a session binds its paths over its private /tmp): under /var/tmp
+    // they would refuse the set
+    let tmp = std::env::temp_dir();
+    let pid = std::process::id();
+    let lab = Lab::at(
+        Scratch::new(tmp.join(format!("legionctl-vartmp-{pid}"))),
+        "vartmp",
+        &[],
+        &[(
+            "XDG_RUNTIME_DIR",
+            tmp.join(format!("lc-vartmp-run-{pid}")).into(),
+        )],
+        None,
+    );
+    let scratch = Scratch::new(format!("/var/tmp/legionctl-vartmp-probe-{pid}"));
+    let probe = scratch.join("written-in-the-session");
     lab.agents(&json!({"probe": ["sh", "-c", format!("echo scratch > {} && echo WROTE", probe.display())]}));
     let refused = lab.start("probe", "vartmp", &["--capability", "var-tmp-write"]);
     assert!(
@@ -447,11 +456,31 @@ fn a_session_writes_the_hosts_var_tmp_only_with_the_set_that_the_user_allowed() 
 
     write(
         &lab.home.join(".config/legionctl/repos/repo/config.jsonc"),
-        r#"{ "actions": { "allow+": [{ "pattern": "toolset:var-tmp-write", "reason": "e2e tests" }] } }"#,
+        allow,
     );
     let granted = launch(&lab.start("probe", "vartmp2", &["--capability", "var-tmp-write"]));
     assert!(text(&lab.run_launch(&granted)).contains("WROTE"));
     assert_eq!(std::fs::read_to_string(&probe).unwrap(), "scratch\n");
+
+    // a test operator's runtime folder is under /var/tmp
+    let exposed = Lab::new("vartmp-run", &[], &[], None);
+    write(
+        &exposed
+            .home
+            .join(".config/legionctl/repos/repo/config.jsonc"),
+        allow,
+    );
+    exposed.agents(&json!({"probe": ["true"]}));
+    let refused = exposed.start("probe", "vartmp", &["--capability", "var-tmp-write"]);
+    assert!(
+        !refused.status.success()
+            && text(&refused).contains(&format!(
+                "storage /var/tmp: it reaches the runtime folder {}, which sessions hide",
+                exposed.op.runtime.display()
+            )),
+        "{}",
+        text(&refused)
+    );
 }
 
 /// The harness sets (DESIGN-12, user decision 2026-10-17: the harness's own sandbox is off, ours is the one): a

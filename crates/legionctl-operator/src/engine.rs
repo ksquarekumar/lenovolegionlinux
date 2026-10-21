@@ -5915,9 +5915,11 @@ impl Operator {
                     record.dossier,
                     record.dossier
                 );
+                // the config of that session's folder, as a resume after a restart takes it (continue_run)
+                let own = config(Some(&place_of(&record.workdir)))?;
                 store.resume_session(
                     &id,
-                    &resolved.config,
+                    &own.config,
                     start.account,
                     &token,
                     (true, start.tools),

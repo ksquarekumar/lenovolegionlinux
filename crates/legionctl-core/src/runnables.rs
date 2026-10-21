@@ -516,6 +516,8 @@ pub fn grant(config: &Config, runnable: &str, request: &Request) -> Result<Grant
         .iter()
         .map(|h| crate::config::expand_home(h))
         .collect::<Result<_>>()?;
+    // the runtime folder is hidden in every sandbox but legionctl's part: a storage mount over it would show it again
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     let mut refused = Vec::new();
     let mut sets = Vec::new();
     let mut manifest = Manifest {
@@ -548,7 +550,7 @@ pub fn grant(config: &Config, runnable: &str, request: &Request) -> Result<Grant
                 request.inside.as_str()
             ));
         }
-        for problem in host_problems(set, request.inside, &hidden)? {
+        for problem in host_problems(set, request.inside, &hidden, runtime.as_deref())? {
             no(problem);
         }
         if set.harness.is_some() && manifest.harness.is_some() {
@@ -575,7 +577,12 @@ pub fn grant(config: &Config, runnable: &str, request: &Request) -> Result<Grant
 }
 
 /// What the environment cannot give of a set's host and storage parts.
-fn host_problems(set: &Manifest, inside: Inside, hidden: &[PathBuf]) -> Result<Vec<String>> {
+fn host_problems(
+    set: &Manifest,
+    inside: Inside,
+    hidden: &[PathBuf],
+    runtime: Option<&Path>,
+) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for p in &set.host.privileges {
         out.push(format!(
@@ -612,6 +619,13 @@ fn host_problems(set: &Manifest, inside: Inside, hidden: &[PathBuf]) -> Result<V
                 "storage {}: it reaches {}, which sessions hide (session.hidden)",
                 s.path,
                 h.display()
+            ));
+        }
+        if let Some(runtime) = runtime.filter(|r| path.starts_with(r) || r.starts_with(&path)) {
+            out.push(format!(
+                "storage {}: it reaches the runtime folder {}, which sessions hide",
+                s.path,
+                runtime.display()
             ));
         }
     }

@@ -2736,7 +2736,8 @@ fn feedback_about_takes_key_values_and_json_and_refuses_other_tokens() {
 /// F3 (feedbacks/0001 item 3): a repository with no commit cannot have a workspace yet. `workspace open` tells the
 /// agent to make a first commit (not git's "invalid reference: main"), session start tells it the same, and Stop does
 /// not block on the files of the main checkout: the agent cannot open the workspace that Stop would ask for. In a
-/// repository with commits, a `--base` that names no commit is named as such, not as a missing first commit.
+/// repository with commits, a `--base` that names no commit is named as such, not as a missing first commit, and a
+/// `--base` that names a commit works also while the current branch has none.
 #[test]
 fn a_repository_with_no_commit_asks_for_a_first_commit_and_stop_does_not_block() {
     let (op, home) = operator("first-commit");
@@ -2782,6 +2783,14 @@ fn a_repository_with_no_commit_asks_for_a_first_commit_and_stop_does_not_block()
     assert!(
         !open.status.success() && why.contains("the base nowhere names no commit"),
         "{why}"
+    );
+    // an unborn current branch does not refuse an explicit base that names a commit (Codex P3)
+    git(&home, &repo, &["switch", "--quiet", "--orphan", "scratch"]);
+    let open = op.run(&repo, &env, &["workspace", "open", "--base", "main"], "");
+    assert!(
+        open.status.success(),
+        "{}",
+        String::from_utf8_lossy(&open.stderr)
     );
 }
 
@@ -2977,8 +2986,9 @@ fn the_main_checkout_check_skips_untracked_submodule_files_and_sees_hidden_track
 
 /// F5 (feedbacks/0001 item 5): Claude Code writes the permissions that the user allows at a prompt into the main
 /// checkout's tracked `.claude/settings.json`, and the merge is refused for it. The refusal names each changed file
-/// (also one in a submodule), says where such permissions can go instead, and gives no command that drops the user's
-/// change; the file's bytes and the index stay as they were.
+/// (also one in a submodule, one with a name outside ASCII, an unstaged one first in git's list), says where such
+/// permissions can go instead, and gives no command that drops the user's change; the file's bytes and the index stay
+/// as they were.
 #[test]
 fn a_merge_refused_for_the_main_checkout_names_its_changed_files() {
     let (op, home) = operator("merge-dirty-main");
@@ -2986,8 +2996,12 @@ fn a_merge_refused_for_the_main_checkout_names_its_changed_files() {
     submodules(&home, &repo);
     let settings = repo.join(".claude/settings.json");
     write(&settings, "{\"permissions\": {\"allow\": []}}\n");
+    let notes = repo.join("notes-é.txt");
+    write(&notes, "notes\n");
     git(&home, &repo, &["add", "."]);
     git(&home, &repo, &["commit", "--quiet", "-m", "settings"]);
+    // git names a file outside ASCII as it is, and the settings file comes first in its list (unstaged: " M ...")
+    git(&home, &repo, &["config", "core.quotePath", "false"]);
     let env = [
         ("HOME", home.to_str().unwrap()),
         ("LEGIONCTL_SESSION", "s1"),
@@ -3007,14 +3021,15 @@ fn a_merge_refused_for_the_main_checkout_names_its_changed_files() {
 
     let granted = "{\"permissions\": {\"allow\": [\"Bash(make test)\"]}}\n";
     write(&settings, granted);
-    git(&home, &repo, &["add", ".claude/settings.json"]);
+    write(&notes, "more notes\n");
+    git(&home, &repo, &["add", "notes-é.txt"]);
     write(&repo.join("vendor/lib/in/lib.rs"), "pub fn changed() {}\n");
     let before = git(&home, &repo, &["status", "--porcelain"]);
     let refused = run(&["workspace", "merge"]);
     let why = String::from_utf8_lossy(&refused.stderr);
     assert!(
         !refused.status.success()
-            && why.contains(".claude/settings.json")
+            && why.contains("would touch: .claude/settings.json, notes-é.txt, ")
             && why.contains("vendor/lib/in/lib.rs")
             && why.contains(".claude/settings.local.json"),
         "{why}"
@@ -5707,7 +5722,8 @@ fn a_chat_goes_on_when_the_agent_lost_its_session() {
 /// F12 (plan#todo-223, agency-os EVIDENCE/06): an agent keeps its conversations in its own home (claude-code-acp in
 /// ~/.claude), which is the session's private layer. `session run --acp <id>` started a new session with a new layer,
 /// so the agent did not find the conversation ("Session not found"). Now the run goes on in the session whose run made
-/// that ACP session, in its layers: the agent loads it, and the run has that session's id; a run on another dossier is
+/// that ACP session, in its layers and with its own folder's config (also when the caller works elsewhere): the agent
+/// loads it, and the run has that session's id; a run on another dossier is
 /// refused with the dossier to give. An ACP session that no run of legionctl made is the agent's to load, in a new
 /// session, as before.
 #[test]
@@ -5726,13 +5742,18 @@ fn a_run_with_acp_goes_on_in_the_session_that_made_it() {
     write(
         &home.join(".config/legionctl/run.jsonc"),
         &json!({"session": {"acp": {"fake": ["python3", agent]}, "scope": false,
-                            "writable": ["~/.claude"], "caches": []}})
+                            "writable": [], "caches": []}})
         .to_string(),
     );
+    // the agent's home layer is the repository's setting (your folder for it): a run elsewhere has none
+    write(
+        &home.join(".config/legionctl/repos/repo/config.jsonc"),
+        &json!({"session": {"writable": ["~/.claude"]}}).to_string(),
+    );
     let env = [("HOME", home.to_str().unwrap())];
-    let run = |args: &[&str]| -> Value {
+    let run = |dir: &Path, args: &[&str]| -> Value {
         let out = op.run(
-            &repo,
+            dir,
             &env,
             &[
                 &["session", "run", "fake"][..],
@@ -5749,14 +5770,15 @@ fn a_run_with_acp_goes_on_in_the_session_that_made_it() {
         );
         serde_json::from_slice(&out.stdout).unwrap()
     };
-    let first = run(&["first"]);
+    let first = run(&repo, &["first"]);
     let acp = first["acp"].as_str().unwrap();
     assert!(
         !sessions.exists(),
         "the conversation is in the session's layer, not in the home"
     );
 
-    let second = run(&["second", "--acp", acp]);
+    // from another folder: the session goes on with the config of its own folder
+    let second = run(&home, &["second", "--acp", acp]);
     let text = second["text"].as_str().unwrap();
     assert!(text.contains(&format!("acp: loaded {acp}")), "{text}");
     assert_eq!(

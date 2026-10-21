@@ -111,15 +111,17 @@ pub fn parse_jsonc<T: DeserializeOwned>(text: impl AsRef<[u8]>) -> serde_json::R
     serde_json::from_str(&strip_jsonc(text.as_ref()).map_err(serde_json::Error::io)?)
 }
 
-/// A JSONC text as plain JSON: each comment and each trailing comma (one that only blanks separate from the `]` or
-/// `}` after it) becomes spaces, so a position in the result is the same in the text (F6, feedbacks/0001 item 6).
+/// A JSONC text as plain JSON: each comment and each trailing comma (one after a value that only blanks separate from
+/// the `]` or `}` after it) becomes spaces, so a position in the result is the same in the text (F6, feedbacks/0001 item 6).
 ///
 /// # Errors
 /// The text is not UTF-8 or has an unfinished comment.
 pub fn strip_jsonc(text: &[u8]) -> std::io::Result<String> {
     let mut plain = String::with_capacity(text.len());
     std::io::Read::read_to_string(&mut json_comments::StripComments::new(text), &mut plain)?;
-    let (mut trailing, mut comma) = (Vec::new(), None);
+    // `prev`: the last character outside strings and blanks; a comma right after `[`, `{` or a comma follows no value,
+    // so it stays and serde refuses it (`[,]` is no JSONC)
+    let (mut trailing, mut comma, mut prev) = (Vec::new(), None, ' ');
     let (mut in_string, mut escaped) = (false, false);
     for (at, c) in plain.char_indices() {
         if in_string {
@@ -132,11 +134,14 @@ pub fn strip_jsonc(text: &[u8]) -> std::io::Result<String> {
             continue;
         }
         match c {
-            '"' => (in_string, comma) = (true, None),
-            ',' => comma = Some(at),
-            ']' | '}' => trailing.extend(comma.take()),
+            '"' => (in_string, comma, prev) = (true, None, c),
+            ',' => (comma, prev) = ((!matches!(prev, '[' | '{' | ',')).then_some(at), c),
+            ']' | '}' => {
+                trailing.extend(comma.take());
+                prev = c;
+            }
             c if c.is_whitespace() => {}
-            _ => comma = None,
+            _ => (comma, prev) = (None, c),
         }
     }
     for at in trailing {

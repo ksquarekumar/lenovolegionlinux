@@ -117,8 +117,16 @@ impl Operator {
 
     /// As [`Operator::start`], with `wrapper` (a tracer: `strace -o <log> ...`) in front of the socket activation.
     pub fn start_under(tag: &str, env: &[(&str, OsString)], wrapper: &[OsString]) -> Operator {
-        // outside /tmp like /run/user/<uid>: the session sandbox replaces /tmp, which would hide what it must hide
-        let runtime = Scratch::new(format!("/var/tmp/lc-{tag}-{}", std::process::id()));
+        // outside /tmp like /run/user/<uid>: the session sandbox replaces /tmp, which would hide what it must hide; a
+        // test that gives XDG_RUNTIME_DIR has it there
+        let runtime = Scratch::new(
+            env.iter()
+                .find(|(k, _)| *k == "XDG_RUNTIME_DIR")
+                .map_or_else(
+                    || format!("/var/tmp/lc-{tag}-{}", std::process::id()).into(),
+                    |(_, v)| PathBuf::from(v),
+                ),
+        );
         let socket = runtime.join("legionctl/api.sock");
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let nowhere = OsString::from("unix:path=/nonexistent/bus");
