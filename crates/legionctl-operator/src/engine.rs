@@ -1742,20 +1742,28 @@ fn blocking_reason(
         && config.dossier.gate
         && !runs_dossier
     {
-        return gate_message(resolved, repo, last, rebound).map(Some);
+        return gate_message(
+            resolved,
+            (repo, last),
+            rebound,
+            "so the prompt was not sent",
+        )
+        .map(Some);
     }
     if Event::from(input.event) != Event::Stop {
         return Ok(None);
     }
-    // Codex's caller sees only the run's last reply (SPIKE/03): a run that the gate holds ends with the gate's text
-    if let Some((repo, last)) = unbound.filter(|_| input.codex && config.dossier.gate) {
-        let gate = gate_message(resolved, repo, last, rebound)?;
+    let nudge = config.dossier.nudge.contains(&Event::Stop);
+    // Codex's caller sees only the run's last reply (SPIKE/03): the nudge of a run that the gate holds makes that
+    // reply the gate's text
+    if let Some((repo, last)) = unbound.filter(|_| input.codex && config.dossier.gate && nudge) {
+        let gate = gate_message(resolved, (repo, last), rebound, "so this run has no record")?;
         return Ok(Some(format!(
-            "legionctl: end this reply with only this text, word for word: {gate}"
+            "legionctl: make your final message exactly this text: {gate}"
         )));
     }
     // before the reply ends, the agent (not the user) hears what is not set up, and sets it up first
-    if config.dossier.nudge.contains(&Event::Stop) && unbound.is_some() {
+    if nudge && unbound.is_some() {
         return Ok(Some(
             "legionctl: this session has no dossier. Before you end this reply, bind one with the legionctl MCP tool \
              legionctl_run dossier.use (a new name makes a new dossier; ask the user for the name if it is not clear), record the state \
@@ -1921,9 +1929,9 @@ fn nudge_line(resolved: &Resolved) -> String {
 /// the gate and the most recent dossiers.
 fn gate_message(
     resolved: &Resolved,
-    repo: &Path,
-    last: &str,
+    (repo, last): (&Path, &str),
     failed: Option<&str>,
+    outcome: &str,
 ) -> Result<String> {
     let recent: Vec<String> = Dossiers::open(&resolved.config.dossier)?
         .list()?
@@ -1932,8 +1940,8 @@ fn gate_message(
         .map(|d| d.name)
         .collect();
     Ok(format!(
-        "legionctl: {} works in dossier {last}, but this session has no dossier{}, so the prompt was not sent. Choose \
-         one with `/legionctl:dossier use <name>`, then send the prompt again. Recent dossiers: {}.",
+        "legionctl: {} works in dossier {last}, but this session has no dossier{}, {outcome}. Choose one with \
+         `/legionctl:dossier use <name>`, then send the prompt again. Recent dossiers: {}.",
         repo.display(),
         failed
             .map(|f| format!(" (it could not take {last}: {f})"))

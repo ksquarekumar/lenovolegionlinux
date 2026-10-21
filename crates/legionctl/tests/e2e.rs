@@ -10680,11 +10680,19 @@ fn a_codex_run_from_a_lead_session_reads_the_leads_dossier_and_acts_as_itself() 
         assert_eq!(ended["decision"], "block", "{ended}");
         let reason = ended["reason"].as_str().unwrap();
         assert!(
-            reason.starts_with("legionctl: end this reply with only this text")
+            reason.starts_with("legionctl: make your final message exactly this text")
+                && reason.contains("so this run has no record")
                 && reason.contains("/legionctl:dossier use <name>"),
             "{ended}"
         );
     }
+    // with no stop nudge in the config, the stop hook adds nothing of its own: a thread's stop rules hold as before
+    write(
+        &home.join(".config/legionctl/no-stop-nudge.jsonc"),
+        r#"{ "dossier": { "nudge": ["session-start"] } }"#,
+    );
+    let session = "01a14ef6-0000-7000-8000-000000000002";
+    assert_eq!(hook("stop", "stop.json", session, &[]), "");
 }
 
 /// A Codex run uses legionctl's tools (todo-205, live 2026-10-18: Codex answered "Unavailable" to a load call): Codex
