@@ -259,6 +259,20 @@ of its worktrees use the same folder. Two special cases:
 When two repositories that legionctl knows have the same name, they share one folder. `config layers` and `doctor`
 then show one line that names both paths. To keep them apart, rename the folder of one main checkout.
 
+A session can write only its workspace, its dossier and its own layers; its `/tmp` is private and `/var/tmp` is
+read-only. A repository whose tests keep their files in `/var/tmp` (legionctl's own tests do) asks for the capability
+set `var-tmp-write`, which makes the computer's `/var/tmp` writable. That folder is shared with your other programs, so
+legionctl does not allow the set by default. Allow it for one repository, then start the session with the set:
+
+```jsonc
+// ~/.config/legionctl/repos/<repo>/config.jsonc (or the repository's .legionctl, which you allow once)
+{ "actions": { "allow+": [{ "pattern": "toolset:var-tmp-write", "reason": "the tests keep their files in /var/tmp" }] } }
+```
+
+```bash
+legionctl session start claude --capability var-tmp-write
+```
+
 ## Safety
 
 | Class | Who approves | Examples |

@@ -1,0 +1,12 @@
+// The host's /var/tmp, writable (F13, plan#todo-224): for test suites that keep their scratch there, such as
+// legionctl's own e2e tests (a session replaces /tmp, also the session that a test starts inside it, so they cannot
+// use /tmp). The folder is shared with your other programs, so the defaults do not allow this set: allow it for one
+// repository (an actions.allow entry "toolset:var-tmp-write" in its .legionctl or your ~/.config/legionctl/repos/<repo>/),
+// and ask for it with `session start --capability var-tmp-write` (also `session run`).
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "var-tmp-write",
+  "version": 1,
+  "description": "The host's /var/tmp, writable: scratch of test suites, shared with your other programs.",
+  "storage": [{ "path": "/var/tmp", "mode": "write" }]
+}

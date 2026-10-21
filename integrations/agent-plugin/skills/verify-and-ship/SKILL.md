@@ -28,6 +28,9 @@ user-invocable: true
    where and why, and let the user decide.
 7. Run the tests with `cargo test --profile test-fast --workspace --locked --no-fail-fast` when the machine is not busy
    (skill tool-lifecycle, load).
+7a. In a session, the tests need the host's /var/tmp (their scratch; the session's /tmp is private): the session asks
+    for the set var-tmp-write (`session start --capability var-tmp-write`), which the user allows first for the
+    repository (guide, Settings). The container tests need Docker, which a session does not reach.
 8. Tests are end to end, from a boundary that a user or agent uses, with high diagnostic value. Do not write a test that
    checks the obvious.
 9. The `#[ignore]` tests (root eBPF and VM tests) run only in their own CI steps (`.github/workflows/ci.yml`). Do not
