@@ -193,7 +193,7 @@ type LanguageCase = (
     &'static [(&'static str, &'static str, &'static str)],
 );
 
-const LANGUAGE_CASES: [LanguageCase; 3] = [
+const LANGUAGE_CASES: [LanguageCase; 4] = [
     (
         "rust",
         &[(
@@ -244,6 +244,18 @@ const LANGUAGE_CASES: [LanguageCase; 3] = [
             ("lint", "lint", "uvx ruff check ."),
             ("test", "test", "uv run pytest"),
             ("types", "types", "uvx ty check"),
+        ],
+    ),
+    // F7 (feedbacks/0001 item 7): a Bazel repository (MODULE.bazel in its top folder)
+    (
+        "bazel",
+        &[("MODULE.bazel", "module(name = \"fx\")\n")],
+        "toolchain bazel, lsp none, formatter buildifier, linter buildifier",
+        &[
+            ("build", "build", "bazel build //..."),
+            ("format", "format", "buildifier -mode=check -r ."),
+            ("lint", "lint", "buildifier -lint=warn -mode=check -r ."),
+            ("test", "test", "bazel test //..."),
         ],
     ),
 ];

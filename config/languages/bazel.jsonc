@@ -1,0 +1,27 @@
+// Bazel (design 23, E2; F7, feedbacks/0001 item 7): what `legionctl code checks detect` reads. A repository with
+// MODULE.bazel or WORKSPACE in its top folder is a Bazel repository.
+{
+  "name": "bazel",
+  // A repository is in this language when its top folder has one of these files.
+  "manifests": ["MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"],
+  // Folders that builds write (not versioned): Bazel's output links.
+  "outputs": ["bazel-bin", "bazel-out", "bazel-testlogs"],
+  // The checks that detect proposes; the fields are those of a check in <repo>/.legionctl/checks.jsonc.
+  "checks": {
+    "format": { "kind": "format", "run": "buildifier -mode=check -r .", "fix": "buildifier -r ." },
+    "lint": { "kind": "lint", "run": "buildifier -lint=warn -mode=check -r .", "gate": "checkpoint" },
+    "build": { "kind": "build", "run": "bazel build //...", "gate": "merge" },
+    "test": { "kind": "test", "run": "bazel test //...", "gate": "merge" }
+  },
+  // The capability set of a session in such a repository (config/capabilities, DESIGN-13).
+  "capability_set": "bazel-dev",
+  "tools": {
+    "toolchain": "bazel",
+    "lsp": "none",
+    "formatter": "buildifier",
+    "linter": "buildifier",
+    "analyzers": [],
+    "profiler": "bazel analyze-profile",
+    "debugger": "none"
+  }
+}

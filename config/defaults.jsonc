@@ -368,6 +368,7 @@
       { "pattern": "toolset:rust-dev", "reason": "Ships with legionctl." },
       { "pattern": "toolset:node-dev", "reason": "Ships with legionctl." },
       { "pattern": "toolset:python-dev", "reason": "Ships with legionctl." },
+      { "pattern": "toolset:bazel-dev", "reason": "Ships with legionctl." },
       { "pattern": "toolset:web-read", "reason": "Ships with legionctl." },
       { "pattern": "toolset:github-read", "reason": "Ships with legionctl." },
       { "pattern": "toolset:dossier-write", "reason": "Ships with legionctl." },

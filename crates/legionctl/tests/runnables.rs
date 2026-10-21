@@ -370,6 +370,37 @@ fn a_rust_session_gets_cargos_hosts_in_its_record_and_its_registry_as_an_overlay
     );
 }
 
+/// F7 (feedbacks/0001 item 7): a session in a Bazel repository (MODULE.bazel in its top folder) gets the shipped set
+/// bazel-dev by itself, as a Rust repository gets rust-dev: the defaults allow it, and its Bazel cache is an overlay
+/// whose writes stay in the session. It has no connections yet (external modules come from the cache; R3).
+#[test]
+fn a_bazel_session_gets_bazel_dev_from_the_defaults() {
+    let lab = Lab::new(
+        "bazel",
+        &[("MODULE.bazel", "module(name = \"probe\")\n")],
+        &[],
+        None,
+    );
+    lab.agents(&json!({"probe": ["true"]}));
+    let launch = launch(&lab.start("probe", "bazel", &[]));
+    assert!(
+        launch["lines"].to_string().contains("bazel-dev@1"),
+        "{launch}"
+    );
+    let grant = lab.show(launch["id"].as_str().unwrap());
+    assert!(
+        set_names(&grant).contains(&"bazel-dev".to_string()),
+        "{grant:#}"
+    );
+    assert!(
+        grant["manifest"]["storage"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"path": "~/.cache/bazel", "mode": "overlay"})),
+        "{grant:#}"
+    );
+}
+
 /// The harness sets (DESIGN-12, user decision 2026-10-17: the harness's own sandbox is off, ours is the one): a
 /// session of agent claude gets claude-code by itself, its settings file has Claude Code's sandbox off beside the
 /// git gate's denies, and the telemetry variables are set; a session of agent codex gets Codex's sandbox mode

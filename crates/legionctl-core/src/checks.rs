@@ -22,10 +22,11 @@ use crate::git::text as git;
 use crate::workspace::git_common_dir;
 
 /// The shipped language files. A new language is a new file in `config/languages/` and a line here.
-const LANGUAGES: [&str; 3] = [
+const LANGUAGES: [&str; 4] = [
     include_str!("../../../config/languages/node.jsonc"),
     include_str!("../../../config/languages/python.jsonc"),
     include_str!("../../../config/languages/rust.jsonc"),
+    include_str!("../../../config/languages/bazel.jsonc"),
 ];
 
 /// The lines of a run's log that a refusal and `code checks show` give.

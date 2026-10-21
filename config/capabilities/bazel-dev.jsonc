@@ -1,0 +1,11 @@
+// Bazel work (config/languages/bazel.jsonc names this set): Bazel's cache as an overlay whose writes stay in the
+// session. No connections yet: external modules come from the cache (a session cannot fetch them; R3).
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "bazel-dev",
+  "version": 1,
+  "description": "bazel and buildifier: local Bazel builds and tests from Bazel's cache.",
+  "connections": {},
+  "storage": [{ "path": "~/.cache/bazel", "mode": "overlay" }],
+  "tools": [{ "name": "bazel" }, { "name": "buildifier" }]
+}

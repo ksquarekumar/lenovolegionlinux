@@ -28,8 +28,9 @@ macro_rules! tables {
 pub(crate) use tables;
 
 /// The shipped sets. A new set is a new file in `config/capabilities/` and a line here.
-const SHIPPED: [&str; 18] = [
+const SHIPPED: [&str; 19] = [
     include_str!("../../../config/capabilities/agent-work.jsonc"),
+    include_str!("../../../config/capabilities/bazel-dev.jsonc"),
     include_str!("../../../config/capabilities/claude-code.jsonc"),
     include_str!("../../../config/capabilities/code-work.jsonc"),
     include_str!("../../../config/capabilities/codex.jsonc"),
