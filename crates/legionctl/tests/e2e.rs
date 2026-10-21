@@ -4487,15 +4487,22 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
 }
 
 /// The overlay layers of a test session: the session's config (a stand-in ACP agent, interactive and resume commands
-/// that wait, no scope, `~/.claude` as its one home layer), and the place of its `~/.claude` layer under session-home.
+/// that try to unlock their session and wait, no scope, `~/.claude` as its one home layer), and the place of its
+/// `~/.claude` layer under session-home.
 fn overlay_lab(home: &Path) -> impl Fn(&str) -> PathBuf {
     let agent =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
     std::fs::create_dir_all(home.join(".claude")).unwrap();
+    // the interactive agent tries to unlock its session (each descriptor a lock could have), then waits
+    let waits = json!([
+        "sh",
+        "-c",
+        "for fd in 3 4 5 6 7 8 9; do flock -u $fd 2>/dev/null; done; exec sleep 300"
+    ]);
     write(
         &home.join(".config/legionctl/run.jsonc"),
-        &json!({"session": {"acp": {"fake": ["python3", agent]}, "agents": {"fake": ["sleep", "300"]},
-                            "resume": {"fake": ["sleep", "300"]},
+        &json!({"session": {"acp": {"fake": ["python3", agent]}, "agents": {"fake": waits.clone()},
+                            "resume": {"fake": waits},
                             "scope": false, "writable": ["~/.claude"], "caches": []}})
         .to_string(),
     );

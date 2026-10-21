@@ -13285,7 +13285,7 @@
           "items": {
             "type": "string"
           },
-          "description": "`flock ... <session lock>` (the session's liveness), then `systemd-run --user --scope ...`: the session's\ncgroup, for `session stop` and limits."
+          "description": "`sh -c ... flock ...`: the session lock on descriptor 9 (the session's liveness), then `systemd-run --user\n--scope ...`: the session's cgroup, for `session stop` and limits."
         },
         "sandbox": {
           "type": "array",
@@ -13868,7 +13868,7 @@
           "items": {
             "type": "string"
           },
-          "description": "`flock ... <session lock>` (the session's liveness), then `systemd-run --user --scope ...`: the session's\ncgroup, for `session stop` and limits."
+          "description": "`sh -c ... flock ...`: the session lock on descriptor 9 (the session's liveness), then `systemd-run --user\n--scope ...`: the session's cgroup, for `session stop` and limits."
         },
         "sandbox": {
           "type": "array",

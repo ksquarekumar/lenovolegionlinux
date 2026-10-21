@@ -196,8 +196,8 @@ pub struct Start<'a> {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Launch {
     pub id: String,
-    /// `flock ... <session lock>` (the session's liveness), then `systemd-run --user --scope ...`: the session's
-    /// cgroup, for `session stop` and limits.
+    /// `sh -c ... flock ...`: the session lock on descriptor 9 (the session's liveness), then `systemd-run --user
+    /// --scope ...`: the session's cgroup, for `session stop` and limits.
     pub scope: Vec<String>,
     /// `bwrap ...` (the caller adds the git gate: its own legionctl over `/usr/bin/git`), `docker run ...` of the
     /// agent image, whose `/usr/bin/git` is the gate already, or `vm <spec> --`, which the caller runs with its own
@@ -310,6 +310,10 @@ pub enum Liveness {
 /// How long a launch (`flock -w`) and a resume wait for the session lock that a cleanup holds for a moment.
 const LOCK_WAIT_SECONDS: u64 = 10;
 
+/// The descriptor of the session lock in front of the sandbox; bwrap keeps it (`--sync-fd`) and gives it to no
+/// process in the sandbox, so an agent cannot unlock its own session.
+const LOCK_FD: &str = "9";
+
 /// The session lock (`<session home>/lock`): `flock` in front of the sandbox takes it before the mounts, every process
 /// of the sandbox inherits it, and the kernel frees it when the last of them ends, also after a crash. A session of a
 /// build before it has none.
@@ -371,18 +375,21 @@ fn liveness_within(
     Ok(Liveness::Ended)
 }
 
-/// The commands in front of session `id`'s sandbox: `flock` of its lock (made here), held from before the mounts by
-/// every process of the sandbox (the outer bwrap, QEMU and its helpers, the docker client; a cleanup holds it for a
+/// The commands in front of session `id`'s sandbox: its lock (made here) taken on [`LOCK_FD`] from before the mounts
+/// and held by the sandbox (bwrap and its PID 1, QEMU and its helpers, the docker client; a cleanup holds it for a
 /// moment), then its systemd scope when it has one.
 fn lock_and_scope(id: &str, scope: bool) -> Result<Vec<String>> {
     let lock = lock_file(id);
     std::fs::create_dir_all(session_home(id))?;
     std::fs::File::create(&lock).with_context(|| format!("making {}", lock.display()))?;
+    let take = format!(
+        "exec {LOCK_FD}>>\"$0\" && flock -w {LOCK_WAIT_SECONDS} {LOCK_FD} && exec \"$@\" || \
+         {{ echo \"legionctl: session {id} still runs (its lock $0 is held)\" >&2; exit 75; }}"
+    );
     let mut argv: Vec<String> = vec![
-        "flock".into(),
-        "--no-fork".into(),
-        "-w".into(),
-        LOCK_WAIT_SECONDS.to_string(),
+        "sh".into(),
+        "-c".into(),
+        take,
         lock.to_string_lossy().into_owned(),
     ];
     if scope {
@@ -2122,12 +2129,14 @@ impl Dossiers {
                 headless_path(&mut env, config, who)?;
                 forward(&mut agent, gateway, &legionctl.join(GATEWAY_SOCKET));
                 mounts.push(Mount::ReadOnly("/usr/bin/git".into(), real_git.clone()));
-                bwrap_sandbox(
+                let mut args = bwrap_sandbox(
                     ws,
                     (&runtime, &config.session.hidden, who.headless, gpu),
                     &mounts,
                     &env,
-                )?
+                )?;
+                args.splice(1..1, ["--sync-fd".into(), LOCK_FD.into()]);
+                args
             }
             Runs::Container(image) => docker_sandbox(
                 (&id, image, gateway, gpu),

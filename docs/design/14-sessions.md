@@ -118,10 +118,11 @@ Built (2026-10-13, S4): `session pause|unpause <id>` freeze and thaw the session
 again (same id, dossier binding and workspace; the sandbox anew) with the agent's resume command (`session.resume`:
 `claude --resume {id} ...`; Codex has none by id). A resume of a session that still runs is refused.
 
-Liveness (one test, `session::liveness`, AOS-2): `flock --no-fork -w 10 <session home>/lock` comes first in front of
-the sandbox (`Launch.scope`), so the session lock is taken before the mounts and every process of the sandbox holds it
-(the outer bwrap and its PID namespace, `legionctl vm` with QEMU and virtiofsd, the docker client); the kernel frees
-it when the last one ends, also after a crash. Live: the lock is held, or a container still runs (it outlives a killed
+Liveness (one test, `session::liveness`, AOS-2): `sh -c 'exec 9>>lock && flock -w 10 9 && exec ...'` comes first in
+front of the sandbox (`Launch.scope`), so the session lock (`<session home>/lock`) is taken before the mounts and the
+sandbox holds it on descriptor 9 (bwrap keeps it with `--sync-fd 9` in its own processes and gives it to no process
+in the sandbox, so an agent cannot unlock its session; `legionctl vm` with QEMU and virtiofsd; the docker client);
+the kernel frees it when the last holder ends, also after a crash. Live: the lock is held, or a container still runs (it outlives a killed
 docker client). A session of a build before the lock: its scope or container tells; with neither, unknown. Bindings,
 tokens, peer states and resumes use it. The overlay work folders (`work/work`, mode 000 from the kernel: a scan of the
 home fails on it) of an ended host session go under its lock, never below `upper`: at the end of a headless run, at

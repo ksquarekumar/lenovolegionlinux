@@ -587,8 +587,8 @@ wire! {
     /// How the client starts a session in its terminal: `scope` + `sandbox` + `agent`, in that order.
     struct Launch from core::session::Launch {
         id: String,
-        /// `flock ... <session lock>` (the session's liveness), then `systemd-run --user --scope ...`: the session's
-        /// cgroup, for `session stop` and limits.
+        /// `sh -c ... flock ...`: the session lock on descriptor 9 (the session's liveness), then `systemd-run --user
+        /// --scope ...`: the session's cgroup, for `session stop` and limits.
         scope: Vec<String>,
         /// `bwrap ...` (the caller adds the git gate: its own legionctl over `/usr/bin/git`), `docker run ...` of the
         /// agent image, whose `/usr/bin/git` is the gate already, or `vm <spec> --`, which the caller runs with its own
