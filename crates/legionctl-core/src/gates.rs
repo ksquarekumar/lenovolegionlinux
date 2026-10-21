@@ -74,7 +74,7 @@ pub fn git_refusal(
         let mut words = rule.split_whitespace();
         let rule_sub = words.next()?;
         let flags: Vec<&str> = words.collect();
-        let matches = rule_sub == sub && flags.iter().all(|f| rest.iter().any(|a| has_flag(a, f)));
+        let matches = crate::actions::glob(rule_sub, sub) && flags.iter().all(|f| rest.iter().any(|a| has_flag(a, f)));
         matches.then(|| {
             format!("legionctl gate: 'git {rule}' is forbidden in this session (actions.forbid): {reason}")
         })
@@ -93,6 +93,7 @@ mod tests {
             "clean -f",
             "branch -D",
             "gc --prune",
+            "tag*",
         ]
         .map(|r| (r, "test"));
         let refused = |line: &str| {
@@ -105,6 +106,10 @@ mod tests {
         assert!(refused("clean -fdx"), "a short flag inside a bundle");
         assert!(refused("gc --prune=now"), "--flag=value");
         assert!(refused("p origin"), "an alias could name push");
+        assert!(
+            refused("tag v1"),
+            "a pattern of the forbidden list: git:tag*"
+        );
         // the same subcommands without the unsafe flag, and local work, run
         assert!(!refused("reset --soft HEAD~1"));
         assert!(!refused("clean -n"));
@@ -114,5 +119,6 @@ mod tests {
             "an argument that looks like a rule is not a subcommand"
         );
         assert!(!refused("status"));
+        assert!(!refused("stash"), "tag* is no prefix of stash");
     }
 }

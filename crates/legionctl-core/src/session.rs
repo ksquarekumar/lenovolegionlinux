@@ -1401,7 +1401,7 @@ fn grant_mounts(
 }
 
 /// The granted harness's variables (into `env`: what turns its telemetry and updates off, and its own) and the
-/// arguments after its command.
+/// arguments after its command; a project that owns its harness (`owned`) gets only the telemetry and update switches.
 fn harness_parts(
     (manifest, owned): (&crate::runnables::Manifest, bool),
     env: &mut Vec<(String, String)>,
@@ -1414,9 +1414,8 @@ fn harness_parts(
             }
             args.extend(t.args.iter().cloned());
         }
-        env.extend(harness.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-        // its options set the harness's own settings (Codex's -c): none for a project that owns its harness
         if !owned {
+            env.extend(harness.env.iter().map(|(k, v)| (k.clone(), v.clone())));
             args.extend(harness.args.iter().cloned());
         }
     }

@@ -691,7 +691,8 @@ fn a_session_reaches_its_granted_connections_through_the_gateway_tunnel_and_noth
 
 /// A repository's settings files may name their JSON Schema (`$schema`): checks, config and a session start work
 /// with it, `legionctl config schema` gives a schema that a copy of agency-os's checks file passes, and a key that is
-/// not a setting is one sentence with the nearest one (feedbacks/0007).
+/// not a setting is one sentence with the nearest one (feedbacks/0007); a change of the project file that legionctl
+/// writes keeps it allowed when it names its schema.
 #[test]
 fn a_repository_settings_file_may_name_its_schema() {
     let lab = Lab::new("schema", &[], &[], None);
@@ -747,11 +748,40 @@ fn a_repository_settings_file_may_name_its_schema() {
         "{}",
         text(&typo)
     );
+    // the file that legionctl writes may name its schema too: a change keeps the allowed file allowed
+    std::fs::remove_file(&config).unwrap();
+    let managed = lab.repo.join(".legionctl/managed.jsonc");
+    write(
+        &managed,
+        r#"{ "$schema": "./legionctl.schema.json", "project": { "owns": ["reminders"] } }"#,
+    );
+    trust::allow(&lab.home, &managed);
+    let set = lab.op.cli_in(
+        &lab.repo,
+        &[
+            "config",
+            "set",
+            "workspace.nudge",
+            "false",
+            "--scope",
+            "project",
+        ],
+    );
+    assert!(set.status.success(), "{}", text(&set));
+    let owned = lab
+        .op
+        .cli_in(&lab.repo, &["config", "settings", "--key", "project.owns"]);
+    assert!(
+        text(&owned).contains("This project manages its own reminders"),
+        "{}",
+        text(&owned)
+    );
 }
 
 /// A project that manages its own harness (`project.owns: ["harness"]`, once the user allowed its file) gets no
 /// settings of legionctl's harness set in its sessions: Claude Code's settings file has the git gate's denies and no
-/// sandbox setting, and Codex starts with no sandbox option of legionctl; its telemetry and update switches stay.
+/// sandbox setting, and Codex starts with no sandbox option or agent mode of legionctl; the telemetry and update
+/// switches stay.
 #[test]
 fn a_project_that_owns_its_harness_gets_only_the_denies() {
     let lab = Lab::new("ownharness", &[], &[], None);
@@ -790,5 +820,14 @@ fn a_project_that_owns_its_harness_gets_only_the_denies() {
     assert_eq!(
         agent[at..],
         ["codex", "-c", "check_for_update_on_startup=false"]
+    );
+    // the harness set's own variables go too (Codex's agent mode); the telemetry switches stay
+    let sandbox = codex["sandbox"].to_string();
+    assert!(!sandbox.contains("INITIAL_AGENT_MODE"), "{sandbox}");
+    let sandbox = claude["sandbox"].to_string();
+    assert!(
+        sandbox.contains(r#""--setenv","DISABLE_TELEMETRY","1""#)
+            && !sandbox.contains("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
+        "{sandbox}"
     );
 }

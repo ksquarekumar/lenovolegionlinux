@@ -1279,10 +1279,13 @@ impl System1 {
             )
         };
         let dir = self.root.path("/etc/legionctl");
-        let old =
-            legionctl_machine::settings_file::edit(&dir, &key, value).map_err(|e| failed(&e))?;
+        let old = legionctl_machine::settings_file::edit(&dir, &key, |_| Ok(value))
+            .map_err(|e| failed(&e))?;
         let file = dir.join(legionctl_machine::settings_file::MANAGED);
-        Ok((file.display().to_string(), old.to_string()))
+        Ok((
+            file.display().to_string(),
+            old.unwrap_or(serde_json::Value::Null).to_string(),
+        ))
     }
 
     /// Turn a layer on or off (`on`, `off`), or give it its default again (`default`: a generated layer is off, the

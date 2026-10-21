@@ -329,6 +329,8 @@ async fn a_first_start_writes_nothing_and_each_change_is_checked_kept_and_undone
         lab.op.ok(args);
     }
     lab.op.ok(&["dossier", "list"]);
+    let said = lab.fails(&["config", "unset", "dossier.gate"]);
+    assert!(said.contains("dossier.gate is not set for you"), "{said}");
     let notes = lab.home.join("agentWorkspaces");
     for made in [&layer, &notes] {
         assert!(!made.exists(), "a first start made {}", made.display());
@@ -407,6 +409,21 @@ async fn a_first_start_writes_nothing_and_each_change_is_checked_kept_and_undone
     );
     assert_eq!(row(&lab.op, "dossier.nudge_turns")["from"], "defaults");
     assert_eq!(lab.history().len(), 3);
+
+    // a map entry removed for you (null in your layer) comes back with an unset of that null, with its history row
+    lab.op
+        .ok(&["config", "remove", "views.composer_models", "codex"]);
+    assert_eq!(
+        row(&lab.op, "views.composer_models")["value"].get("codex"),
+        None
+    );
+    lab.op
+        .ok(&["config", "unset", "views.composer_models.codex"]);
+    assert_eq!(
+        row(&lab.op, "views.composer_models")["value"]["codex"],
+        "gpt-6-luna[low]"
+    );
+    assert_eq!(lab.history().len(), 5);
 }
 
 /// One list of forbidden and one of allowed actions, each entry with its reason and where it comes from: a
@@ -536,6 +553,76 @@ fn a_projects_list_binds_its_agents(lab: &Lab, repo: &Path) {
     );
     let (out, failed) = lab.agent().run("views.list", &json!({}));
     assert!(!failed, "outside the project: {out}");
+}
+/// Entries added to one list at once all stay: each change builds on the entries in the file when it writes.
+fn list_entries_at_the_same_time_all_land(op: &std::sync::Arc<Operator>) {
+    let threads: Vec<_> = (0..16)
+        .map(|i| {
+            let op = op.clone();
+            std::thread::spawn(move || {
+                let pattern = format!("cmd:tool-{i}");
+                let out = op.cli(&[
+                    "config",
+                    "add",
+                    "actions.forbid",
+                    &pattern,
+                    "--reason",
+                    "test",
+                ]);
+                assert!(out.status.success(), "{pattern}: {}", text(&out));
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    let entries = row(op, "actions.forbid")["entries"].clone();
+    let added = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| {
+            e["pattern"]
+                .as_str()
+                .is_some_and(|p| p.starts_with("cmd:tool-"))
+        })
+        .count();
+    assert_eq!(added, 16, "lost entries: {entries:#}");
+}
+
+/// A change that waits for its layer's folder holds no lock of the operator's database: other writes go on.
+fn a_change_that_waits_for_its_folder_stops_no_other_write(
+    op: &std::sync::Arc<Operator>,
+    home: &Path,
+) {
+    let layer = home.join(".config/legionctl");
+    let mut holder = Command::new("python3")
+        .args([
+            "-c",
+            "import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_RDONLY); \
+             fcntl.flock(fd, fcntl.LOCK_EX); print('held', flush=True); time.sleep(8)",
+        ])
+        .arg(&layer)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut held = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(holder.stdout.as_mut().unwrap()),
+        &mut held,
+    )
+    .unwrap();
+    assert_eq!(held.trim(), "held");
+    let waiting = {
+        let op = op.clone();
+        std::thread::spawn(move || op.cli(&["config", "set", "workspace.nudge", "false"]))
+    };
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let fact = op.cli(&["facts", "set", "during-the-wait", "1"]);
+    assert!(fact.status.success(), "{}", text(&fact));
+    assert!(holder.wait().unwrap().success());
+    let set = waiting.join().unwrap();
+    assert!(set.status.success(), "{}", text(&set));
 }
 
 /// Twelve projects get a setting at the same time: each new project file is the user's own, so each is allowed, and
@@ -991,7 +1078,8 @@ fn an_upgrade_keeps_the_old_working_copies_folder_where_the_workspaces_are() {
 
 /// Changes that run at the same time never lose each other (review/16 B10): each takes the layer's lock, writes its
 /// own temporary file and renames it. Before, two writers read the same file and the second rename dropped the first
-/// one's key. The operations that change settings for you (reminders, hooks) go the same way, with their history;
+/// one's key; two entries added to one list at once kept only one; a change that waited for the folder held the
+/// operator database's write lock, so other writes failed after 5 s. The operations that change settings for you (reminders, hooks) go the same way, with their history;
 /// removing a hook action drops its bindings.
 #[test]
 fn changes_at_the_same_time_all_land_with_their_history() {
@@ -1036,6 +1124,8 @@ fn changes_at_the_same_time_all_land_with_their_history() {
         "{history:#}"
     );
 
+    list_entries_at_the_same_time_all_land(&op);
+    a_change_that_waits_for_its_folder_stops_no_other_write(&op, &home);
     project_answers_at_the_same_time_all_land(&op, &home);
     op.ok(&["hooks", "add", "greet", "echo hello"]);
     op.ok(&["hooks", "bind", "prompt", "greet"]);

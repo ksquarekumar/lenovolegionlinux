@@ -1084,8 +1084,9 @@ fn applies_once_allowed(op: &Operator, home: &Path, repo: &Path) {
 
 /// A project that manages an area itself (`project.owns`, once the user allowed its file) gets no reminders or nudges
 /// of that area: beside a plain project, where the agent hears the reminders, the workspace nudge and the missing
-/// checks, an agent in a project that owns reminders, workspace and checks hears none of them; `config settings`
-/// names the areas.
+/// checks (your own layer that names the same areas changes nothing), an agent in a project that owns reminders,
+/// workspace and checks hears none of them; `config settings` names the areas; a key that this computer locks keeps
+/// its value.
 #[test]
 fn a_project_that_owns_an_area_gets_no_reminders_or_nudges_of_it() {
     let (op, home) = operator("owns");
@@ -1109,6 +1110,11 @@ fn a_project_that_owns_an_area_gets_no_reminders_or_nudges_of_it() {
         r#"{ "project": { "owns": ["reminders", "workspace", "checks"] } }"#,
     );
     trust::allow(&home, &file);
+    // only a project's own file says what it owns: the same key in your layer is ignored
+    write(
+        &home.join(".config/legionctl/own.jsonc"),
+        r#"{ "project": { "owns": ["reminders", "workspace", "checks"] } }"#,
+    );
     let hear = |repo: &Path, session: &str, event: &str| {
         let bound = op.run(
             repo,
@@ -1159,6 +1165,16 @@ fn a_project_that_owns_an_area_gets_no_reminders_or_nudges_of_it() {
             .contains("This project manages its own reminders, workspace, checks: legionctl leaves them alone."),
         "{}",
         String::from_utf8_lossy(&listed.stdout)
+    );
+    // a key that this computer locks keeps its value in an owned area
+    write(
+        &home.join("root/etc/legionctl/10-site.jsonc"),
+        r#"{ "config": { "overrides": { "checks.nudge": { "scope": ["computer"] } } }, "checks": { "nudge": true } }"#,
+    );
+    let start = hear(&owner, "owner-l", "session-start");
+    assert!(
+        start.contains("legionctl code checks detect") && !start.contains("no workspace for"),
+        "{start}"
     );
 }
 

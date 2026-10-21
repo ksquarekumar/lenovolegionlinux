@@ -751,13 +751,48 @@ pub fn record(edit: &Edit, file: &Path, old: Value) -> Result<Change> {
     insert(Db::open_default()?.conn(), edit, file, old)
 }
 
-/// Write `edit` into the user or project layer (validated first) and keep it in the history, in one transaction of
-/// the history that ends after the file is in place (a failed file write leaves no row). A project file that the
-/// user had allowed stays allowed with its new content: the change is the user's own, or one the user allowed.
+/// A change of one entry of a list setting: `item` added (`add`) or the entries that are the same as it removed.
+pub struct Entry<'a> {
+    pub setting: &'a Setting,
+    pub item: &'a Value,
+    pub add: bool,
+}
+
+impl Entry<'_> {
+    /// The entries `items` with this change.
+    fn apply(&self, items: &[Value]) -> Vec<Value> {
+        let mut items: Vec<Value> = items
+            .iter()
+            .filter(|i| !same_entry(self.setting, i, self.item))
+            .cloned()
+            .collect();
+        if self.add {
+            items.push(self.item.clone());
+        }
+        items
+    }
+}
+
+/// Whether two entries of `setting`'s list are the same: a rule by its pattern, else the value.
+#[must_use]
+pub fn same_entry(setting: &Setting, a: &Value, b: &Value) -> bool {
+    if setting.kind["x-rules"] == true {
+        a["pattern"] == b["pattern"]
+    } else {
+        a == b
+    }
+}
+
+/// Write `edit` into the user or project layer (validated first) and keep it in the history. A list change (`entry`)
+/// applies to the entries that the layer file has when it is written, so an entry that another change added or
+/// removed since they were read stays as that change left it. The history row goes in under the folder lock, in a
+/// transaction that ends after the file is in place (a failed file write leaves no row; a writer that waits for the
+/// folder holds no lock of the history). A project file that the user had allowed stays allowed with its new
+/// content: the change is the user's own, or one the user allowed.
 ///
 /// # Errors
 /// The edit does not validate, or the layer file or the history cannot be written.
-pub fn write(resolved: &Resolved, edit: &Edit) -> Result<Change> {
+pub fn write(resolved: &Resolved, edit: &Edit, entry: Option<&Entry>) -> Result<Change> {
     validate(resolved, edit)?;
     anyhow::ensure!(
         edit.scope != Scope::Computer,
@@ -765,26 +800,46 @@ pub fn write(resolved: &Resolved, edit: &Edit) -> Result<Change> {
     );
     let dir = layer_dir(resolved, edit.scope)?;
     let file = dir.join(legionctl_machine::settings_file::MANAGED);
-    let was_allowed = edit.scope == Scope::Project && project_file_allowed(&file)?;
-    let db = Db::open_default()?;
-    let tx = db.conn().unchecked_transaction()?;
-    let mut change = insert(&tx, edit, &file, Value::Null)?;
-    change.old = legionctl_machine::settings_file::edit(&dir, edit.key, edit.value.clone())?;
-    if edit.value.is_none() && change.old.is_null() {
-        // the transaction ends without the row: nothing changed
-        bail!(
+    let not_set = || {
+        anyhow::anyhow!(
             "{} is not set {} (legionctl config settings shows where its value comes from)",
             edit.key,
             match edit.scope {
                 Scope::Project => "for this project",
                 Scope::User | Scope::Computer => "for you",
             }
-        );
+        )
+    };
+    // an unset with no file makes no folder either
+    if edit.value.is_none() && !file.exists() {
+        return Err(not_set());
     }
-    tx.execute(
-        "UPDATE settings_history SET old = ?2 WHERE id = ?1",
-        params![change.id, change.old.to_string()],
-    )?;
+    let was_allowed = edit.scope == Scope::Project && project_file_allowed(&file)?;
+    let db = Db::open_default()?;
+    // deferred: the history's write lock comes with the row, under the folder lock
+    let tx = db.conn().unchecked_transaction()?;
+    let mut change = None;
+    legionctl_machine::settings_file::edit(&dir, edit.key, |stored| {
+        let value = match (entry, stored) {
+            (Some(entry), Some(Value::Array(items))) => Some(Value::Array(entry.apply(items))),
+            _ => edit.value.clone(),
+        };
+        if stored.is_none() && value.is_none() {
+            return Err(not_set());
+        }
+        let made = Edit {
+            value: value.clone(),
+            ..*edit
+        };
+        change = Some(insert(
+            &tx,
+            &made,
+            &file,
+            stored.cloned().unwrap_or(Value::Null),
+        )?);
+        Ok(value)
+    })?;
+    let change = change.context("the settings file was not changed")?;
     tx.commit()?;
     if was_allowed {
         allow_project_file(&file)?;
@@ -797,12 +852,12 @@ fn project_file_allowed(file: &Path) -> Result<bool> {
     if !file.exists() {
         return Ok(true);
     }
-    let value = legionctl_machine::profile::read_jsonc(file)?;
+    let value = crate::config::read_layer_file(file)?;
     Ok(crate::config::Approvals::read()?.of(file, &value).2 == Some(true))
 }
 
 fn allow_project_file(file: &Path) -> Result<()> {
-    let value = legionctl_machine::profile::read_jsonc(file)?;
+    let value = crate::config::read_layer_file(file)?;
     let (name, hash, _) = crate::config::Approvals::read()?.of(file, &value);
     crate::config::Approvals::answer(&name, &hash, true)
 }
@@ -851,6 +906,7 @@ pub fn set_mine(resolved: &Resolved, by: &str, key: &str, value: Value) -> Resul
             value: Some(value),
             by,
         },
+        None,
     )
     .map(|_| ())
 }

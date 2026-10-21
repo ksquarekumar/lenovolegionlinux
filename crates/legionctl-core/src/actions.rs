@@ -44,7 +44,7 @@ pub struct ActionsConfig {
 }
 
 /// Whether `text` matches `glob` (`*` is any text, also none).
-fn glob(glob: &str, text: &str) -> bool {
+pub(crate) fn glob(glob: &str, text: &str) -> bool {
     let mut parts = glob.split('*');
     let first = parts.next().unwrap_or_default();
     let Some(mut rest) = text.strip_prefix(first) else {

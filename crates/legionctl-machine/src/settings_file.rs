@@ -15,12 +15,17 @@ pub const MANAGED: &str = "managed.jsonc";
 const HEADER: &str = "// Written by legionctl (`legionctl config set`, Settings). Change it there, or move keys into your own file\n\
                       // in this folder; this file merges after your files.\n";
 
-/// Set `key` (dotted) in `<dir>/managed.jsonc` to `value`, or remove it there (`None`; emptied objects go too); the
-/// value it had there before (null: none).
+/// Change `key` (dotted) in `<dir>/managed.jsonc`: `change` gets the value it has there (`None`: none) under the lock
+/// and gives the new one (`None`: remove it there; emptied objects go too), so it builds on what is there when it is
+/// written. The value it had there before. A key that is not there and stays so writes nothing.
 ///
 /// # Errors
-/// The folder cannot be made or locked, or the file cannot be read, parsed or written.
-pub fn edit(dir: &Path, key: &str, value: Option<Value>) -> Result<Value> {
+/// The folder cannot be made or locked, the file cannot be read, parsed or written, or `change` fails.
+pub fn edit(
+    dir: &Path,
+    key: &str,
+    change: impl FnOnce(Option<&Value>) -> Result<Option<Value>>,
+) -> Result<Option<Value>> {
     let path = dir.join(MANAGED);
     update(&path, |bytes| {
         let mut managed = match bytes {
@@ -33,24 +38,35 @@ pub fn edit(dir: &Path, key: &str, value: Option<Value>) -> Result<Value> {
             None => Map::new(),
         };
         let parts: Vec<&str> = key.split('.').collect();
-        let old = put(&mut managed, &parts, value);
+        let old = parts
+            .split_first()
+            .and_then(|(first, rest)| {
+                rest.iter()
+                    .try_fold(managed.get(*first)?, |at, part| at.get(*part))
+            })
+            .cloned();
+        let value = change(old.as_ref())?;
+        if old.is_none() && value.is_none() {
+            return Ok((None, old));
+        }
+        put(&mut managed, &parts, value);
         let text = format!(
             "{HEADER}{}\n",
             serde_json::to_string_pretty(&Value::Object(managed))?
         );
-        Ok((text.into_bytes(), old))
+        Ok((Some(text.into_bytes()), old))
     })
 }
 
-/// Change the file `path` from its bytes (none: no file yet) to the bytes that `change` gives, under an exclusive lock
-/// of its folder, through a temporary file of its own and a rename: concurrent changes never lose each other
-/// (review/16 B10), and a reader never sees half a file. What `change` gives besides.
+/// Change the file `path` from its bytes (none: no file yet) to the bytes that `change` gives (none: leave it), under
+/// an exclusive lock of its folder, through a temporary file of its own and a rename: concurrent changes never lose
+/// each other (review/16 B10), and a reader never sees half a file. What `change` gives besides.
 ///
 /// # Errors
 /// The folder cannot be made or locked, the file cannot be read or written, or `change` fails.
 pub fn update<T>(
     path: &Path,
-    change: impl FnOnce(Option<&[u8]>) -> Result<(Vec<u8>, T)>,
+    change: impl FnOnce(Option<&[u8]>) -> Result<(Option<Vec<u8>>, T)>,
 ) -> Result<T> {
     let dir = path.parent().context("a file has a folder")?;
     std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
@@ -63,6 +79,9 @@ pub fn update<T>(
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
     let (bytes, out) = change(old.as_deref())?;
+    let Some(bytes) = bytes else {
+        return Ok(out);
+    };
     let name = path
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -88,20 +107,20 @@ pub fn update<T>(
     Ok(out)
 }
 
-/// Put `value` at `parts` in `map` (or remove it; an object left empty goes too); the old value (null: none).
-fn put(map: &mut Map<String, Value>, parts: &[&str], value: Option<Value>) -> Value {
+/// Put `value` at `parts` in `map` (or remove it; an object left empty goes too).
+fn put(map: &mut Map<String, Value>, parts: &[&str], value: Option<Value>) {
     let Some((first, rest)) = parts.split_first() else {
-        return Value::Null;
+        return;
     };
     if rest.is_empty() {
-        return match value {
+        match value {
             Some(v) => map.insert((*first).to_string(), v),
             None => map.remove(*first),
-        }
-        .unwrap_or(Value::Null);
+        };
+        return;
     }
     if value.is_none() && !map.get(*first).is_some_and(Value::is_object) {
-        return Value::Null;
+        return;
     }
     let next = map
         .entry((*first).to_string())
@@ -110,11 +129,10 @@ fn put(map: &mut Map<String, Value>, parts: &[&str], value: Option<Value>) -> Va
         *next = Value::Object(Map::new());
     }
     let Value::Object(inner) = next else {
-        return Value::Null;
+        return;
     };
-    let old = put(inner, rest, value);
+    put(inner, rest, value);
     if inner.is_empty() {
         map.remove(*first);
     }
-    old
 }

@@ -267,7 +267,12 @@ fn lines(setting: &Setting, resolved_after: &Resolved, edit: &Edit) -> Vec<Strin
 impl Operator {
     /// Write `edit` in the layer of its scope: the computer's through the system service (polkit asks), the others
     /// through the one writer; a deep check that fails refuses the value, so the old one stays in force.
-    fn change_setting(&self, project: &std::path::Path, edit: &Edit) -> Result<SettingChanged> {
+    fn change_setting(
+        &self,
+        project: &std::path::Path,
+        edit: &Edit,
+        entry: Option<&settings::Entry>,
+    ) -> Result<SettingChanged> {
         let resolved = config(Some(project))?;
         let setting = settings::validate(&resolved, edit)?;
         if let Some(value) = &edit.value {
@@ -292,7 +297,7 @@ impl Operator {
                 serde_json::from_str(&old)?,
             )?
         } else {
-            settings::write(&resolved, edit)?
+            settings::write(&resolved, edit, entry)?
         };
         Ok(SettingChanged {
             lines: lines(setting, &config(Some(project))?, edit),
@@ -318,6 +323,7 @@ impl Operator {
                 value: Some(value),
                 by: &by,
             },
+            None,
         )
     }
 
@@ -335,6 +341,7 @@ impl Operator {
                 value: None,
                 by: &by,
             },
+            None,
         )
     }
 
@@ -389,25 +396,20 @@ impl Operator {
         })
     }
 
-    fn same(setting: &Setting, a: &Value, b: &Value) -> bool {
-        if setting.kind["x-rules"] == true {
-            a["pattern"] == b["pattern"]
-        } else {
-            a == b
-        }
-    }
-
     pub(crate) fn settings_add(&self, ctx: &Ctx, input: &ConfigItemIn) -> Result<SettingChanged> {
         let (setting, mut items) = Self::base_list(ctx, input)?;
         let item = Self::item(setting, input)?;
-        if items.iter().any(|i| Self::same(setting, i, &item)) {
+        if items
+            .iter()
+            .any(|i| settings::same_entry(setting, i, &item))
+        {
             bail!(
                 "{}: {} is in the list already",
                 setting.label,
                 text(&input.value)
             );
         }
-        items.push(item);
+        items.push(item.clone());
         let by = crate::calls::principal_key(&ctx.principal);
         self.change_setting(
             ctx.folder()?,
@@ -417,6 +419,11 @@ impl Operator {
                 value: Some(Value::Array(items)),
                 by: &by,
             },
+            Some(&settings::Entry {
+                setting,
+                item: &item,
+                add: true,
+            }),
         )
     }
 
@@ -444,6 +451,7 @@ impl Operator {
                     value: Some(Value::Null),
                     by: &by,
                 },
+                None,
             );
         }
         let (setting, mut items) = Self::base_list(ctx, input)?;
@@ -456,7 +464,7 @@ impl Operator {
             },
         )?;
         let before = items.len();
-        items.retain(|i| !Self::same(setting, i, &item));
+        items.retain(|i| !settings::same_entry(setting, i, &item));
         if items.len() == before && setting.union {
             bail!(
                 "{}: {} is not one of the entries {}; each layer removes only its own (legionctl config settings shows where each entry comes from)",
@@ -484,6 +492,11 @@ impl Operator {
                 value: Some(Value::Array(items)),
                 by: &by,
             },
+            Some(&settings::Entry {
+                setting,
+                item: &item,
+                add: false,
+            }),
         )
     }
 
@@ -518,6 +531,7 @@ impl Operator {
                 value: (!change.old.is_null()).then(|| change.old.clone()),
                 by: &by,
             },
+            None,
         )
     }
 }

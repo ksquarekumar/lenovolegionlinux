@@ -133,8 +133,13 @@ impl Area {
 }
 
 /// The areas that the project owns (its `project.owns`, once the user allowed its file) turn their settings off: in
-/// the value and in the trace, as the file that owns them set them, so every reader and `config explain` agree.
-fn leave_owned_areas(value: &mut Value, trace: &mut BTreeMap<String, Vec<Setting>>) {
+/// the value and in the trace, as the file that owns them set them, so every reader and `config explain` agree. A key
+/// that this computer locks keeps its value.
+fn leave_owned_areas(
+    value: &mut Value,
+    trace: &mut BTreeMap<String, Vec<Setting>>,
+    locks: &[String],
+) {
     let Some(source) = trace
         .get("project.owns")
         .and_then(|sets| sets.last())
@@ -146,6 +151,9 @@ fn leave_owned_areas(value: &mut Value, trace: &mut BTreeMap<String, Vec<Setting
         serde_json::from_value(value["project"]["owns"].clone()).unwrap_or_default();
     for area in owns {
         for (key, off) in area.turns_off(value) {
+            if locked(locks, &key) {
+                continue;
+            }
             let parts: Vec<&str> = key.split('.').collect();
             let mut at = &mut *value;
             for part in &parts[..parts.len() - 1] {
@@ -707,7 +715,7 @@ impl Approvals {
                 None => Approvals::default(),
             };
             all.0.insert(file.to_string(), (hash.to_string(), allowed));
-            Ok((serde_json::to_vec_pretty(&all)?, ()))
+            Ok((Some(serde_json::to_vec_pretty(&all)?), ()))
         })
     }
 }
@@ -841,8 +849,9 @@ struct Merge<'a> {
     /// The defaults and /etc/legionctl may set `config` and locked keys.
     trusted: bool,
     locks: &'a [String],
-    /// The keys that no repository layer file sets.
-    repo_never: &'a [String],
+    /// The keys that this layer never sets: a repository's the settings with no project scope, yours and this
+    /// computer's the settings of a project only.
+    never: &'a [String],
     /// A repository layer file: the powerful settings and the user's answer to this content (none yet: `None`).
     approve: Option<(&'a [String], Option<bool>)>,
     /// The powerful settings this file set that wait for an answer.
@@ -874,11 +883,18 @@ impl Merge<'_> {
                 ));
                 continue;
             }
-            if self.approve.is_some() && removes(self.repo_never) {
-                self.problems.push(format!(
-                    "{}: {path} is not a project setting; ignored",
-                    self.source.file
-                ));
+            if removes(self.never) {
+                self.problems.push(if self.approve.is_some() {
+                    format!(
+                        "{}: {path} is not a project setting; ignored",
+                        self.source.file
+                    )
+                } else {
+                    format!(
+                        "{}: {path} is set only in a project's .legionctl; ignored",
+                        self.source.file
+                    )
+                });
                 continue;
             }
             if let Some((keys, answer)) = self.approve
@@ -967,7 +983,7 @@ impl Merge<'_> {
 /// file's powerful settings only when the user allowed its content; the files whose keys wait for an answer.
 fn merge_layers(
     ordered: Vec<(Source, bool, Value)>,
-    (locks, repo_never, approve, approvals): (&[String], &[String], &[String], &Approvals),
+    (lists, approvals): (&TrustLists, &Approvals),
     trace: &mut BTreeMap<String, Vec<Setting>>,
     problems: &mut Vec<String>,
 ) -> (Map<String, Value>, Vec<Unapproved>) {
@@ -986,9 +1002,13 @@ fn merge_layers(
             let mut merge = Merge {
                 source: &source,
                 trusted,
-                locks,
-                repo_never,
-                approve: answer.map(|answer| (approve, answer)),
+                locks: &lists.locks,
+                never: match source.layer.as_str() {
+                    "repo" => &lists.repo_never,
+                    "defaults" => &[],
+                    _ => &lists.project_only,
+                },
+                approve: answer.map(|answer| (lists.approve.as_slice(), answer)),
                 held: Vec::new(),
                 trace,
                 problems,
@@ -1052,13 +1072,23 @@ fn trusted_overrides(
     Ok(out)
 }
 
-/// The locked keys, the keys a repository file sets only after the user allowed it, and the keys it never sets: each
-/// setting's scope and class with this computer's `overrides`, and each override pattern below a setting.
-fn trust_lists(
-    overrides: &BTreeMap<String, crate::settings::Override>,
-) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+/// Who sets which keys: each setting's scope and class with this computer's `overrides`, and each override pattern
+/// below a setting.
+#[derive(Default)]
+struct TrustLists {
+    /// Set only by the defaults and /etc/legionctl.
+    locks: Vec<String>,
+    /// Set by a repository file only after the user allowed it.
+    approve: Vec<String>,
+    /// Never set by a repository file.
+    repo_never: Vec<String>,
+    /// Set only by a repository file.
+    project_only: Vec<String>,
+}
+
+fn trust_lists(overrides: &BTreeMap<String, crate::settings::Override>) -> Result<TrustLists> {
     use crate::settings::{Class, Scope};
-    let (mut locks, mut approve, mut repo_never) = (Vec::new(), Vec::new(), Vec::new());
+    let mut lists = TrustLists::default();
     let keys = crate::settings::registry()?
         .iter()
         .map(|s| s.key.clone())
@@ -1079,16 +1109,19 @@ fn trust_lists(
         // a list whose entries add up only restricts: a project's entries need no answer
         let union = crate::settings::setting_of(&key).is_some_and(|s| s.union && s.key == key);
         if class != Class::Safe && !union {
-            approve.push(key.clone());
+            lists.approve.push(key.clone());
         }
         if !scope.contains(&Scope::Project) {
-            repo_never.push(key.clone());
+            lists.repo_never.push(key.clone());
+        }
+        if scope == [Scope::Project] {
+            lists.project_only.push(key.clone());
         }
         if scope == [Scope::Computer] {
-            locks.push(key);
+            lists.locks.push(key);
         }
     }
-    Ok((locks, approve, repo_never))
+    Ok(lists)
 }
 
 /// Resolve the config for work in `project`, and ask the user about the repository files that wait for an answer
@@ -1138,7 +1171,7 @@ pub fn resolve_quiet(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
             .unwrap_or_else(|| defaults["config"][key].clone())
     };
     let overrides = trusted_overrides(&defaults, &system)?;
-    let (locks, approve, repo_never) = trust_lists(&overrides)?;
+    let lists = trust_lists(&overrides)?;
     let precedence: Vec<String> =
         serde_json::from_value(trusted_meta("precedence")).context("config.precedence")?;
     // the repository's config files and capability sets need the user's answers
@@ -1183,14 +1216,10 @@ pub fn resolve_quiet(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
     );
 
     let mut trace = BTreeMap::new();
-    let (merged, unapproved) = merge_layers(
-        ordered,
-        (&locks, &repo_never, &approve, &approvals),
-        &mut trace,
-        &mut problems,
-    );
+    let (merged, unapproved) =
+        merge_layers(ordered, (&lists, &approvals), &mut trace, &mut problems);
     let mut value = Value::Object(merged);
-    leave_owned_areas(&mut value, &mut trace);
+    leave_owned_areas(&mut value, &mut trace, &lists.locks);
     let held = hold_unusable(&mut value, &trace);
     let mut config = typed(&value, &trace)?;
     config.workspace.root = expand_home(&config.workspace.root.to_string_lossy())?;
@@ -1211,7 +1240,7 @@ pub fn resolve_quiet(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         held,
         user_dir,
         repo_dir,
-        locks,
+        locks: lists.locks,
         overrides,
     })
 }
