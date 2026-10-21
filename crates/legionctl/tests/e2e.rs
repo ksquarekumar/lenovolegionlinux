@@ -2728,6 +2728,196 @@ fn a_repository_with_no_commit_asks_for_a_first_commit_and_stop_does_not_block()
     );
 }
 
+/// A one-commit repository at `dir` with the given submodules (path, source repository).
+fn small_repository(home: &Path, dir: &Path, submodules: &[(&str, &Path)]) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    git(home, dir, &["init", "--quiet"]);
+    write(&dir.join("lib.rs"), "pub fn lib() {}\n");
+    for (path, source) in submodules {
+        git(
+            home,
+            dir,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "--quiet",
+                source.to_str().unwrap(),
+                path,
+            ],
+        );
+    }
+    git(home, dir, &["add", "."]);
+    git(home, dir, &["commit", "--quiet", "-m", "init"]);
+    dir.to_path_buf()
+}
+
+/// Add `vendor/lib` (with its own submodule `in`) to `repo` and commit it.
+fn submodules(home: &Path, repo: &Path) {
+    let inner = small_repository(home, &home.join("inner"), &[]);
+    let lib = small_repository(home, &home.join("lib"), &[("in", &inner)]);
+    let with_files = ["-c", "protocol.file.allow=always"];
+    git(
+        home,
+        repo,
+        &[
+            &with_files[..],
+            &[
+                "submodule",
+                "add",
+                "--quiet",
+                lib.to_str().unwrap(),
+                "vendor/lib",
+            ],
+        ]
+        .concat(),
+    );
+    git(
+        home,
+        repo,
+        &[
+            &with_files[..],
+            &["submodule", "update", "--quiet", "--init", "--recursive"],
+        ]
+        .concat(),
+    );
+    git(
+        home,
+        repo,
+        &["commit", "--quiet", "-m", "add the lib submodule"],
+    );
+}
+
+/// Each repository and submodule of [`submodules`] hides itself from a plain `git status` (`ignore = all`,
+/// `status.showUntrackedFiles = no`), as a repository may.
+fn hide_submodules(home: &Path, repo: &Path) {
+    git(
+        home,
+        repo,
+        &["config", "submodule.vendor/lib.ignore", "all"],
+    );
+    git(
+        home,
+        &repo.join("vendor/lib"),
+        &["config", "submodule.in.ignore", "all"],
+    );
+    for dir in [
+        repo.to_path_buf(),
+        repo.join("vendor/lib"),
+        repo.join("vendor/lib/in"),
+    ] {
+        git(home, &dir, &["config", "status.showUntrackedFiles", "no"]);
+    }
+}
+
+/// F4 (feedbacks/0001 item 4, Codex EVIDENCE/16 #2, EVIDENCE/review/17 T4): the merge ships only commits, so a file of
+/// the workspace that is not committed refuses it, also inside a nested submodule and when git's own settings hide it
+/// (`ignore = all`, `status.showUntrackedFiles = no`): the gate would pass with a helper that the merged commit does
+/// not have.
+#[test]
+fn a_helper_file_that_git_hides_in_the_workspace_refuses_the_merge() {
+    let (op, home) = operator("merge-hidden-helper");
+    let repo = repository(&home);
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let ok = |args: &[&str]| {
+        let o = op.run(&repo, &env, args, "");
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    };
+    ok(&["dossier", "use", "port"]);
+    ok(&["workspace", "open"]);
+    let ws = home.join("worktrees/repo/port");
+    submodules(&home, &ws);
+    hide_submodules(&home, &ws);
+    for helper in [
+        "helper.txt",
+        "vendor/lib/helper.txt",
+        "vendor/lib/in/helper.txt",
+    ] {
+        write(&ws.join(helper), "a helper the gate could use\n");
+        let refused = op.run(&repo, &env, &["workspace", "merge"], "");
+        assert!(
+            !refused.status.success()
+                && String::from_utf8_lossy(&refused.stderr)
+                    .contains("uncommitted or untracked files"),
+            "{helper}: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        assert_eq!(
+            git(&home, &repo, &["log", "-1", "--format=%s"]),
+            "start",
+            "{helper}"
+        );
+        std::fs::remove_file(ws.join(helper)).unwrap();
+    }
+    ok(&["workspace", "merge"]);
+    assert_eq!(
+        git(&home, &repo, &["log", "-1", "--format=%s"]),
+        "add the lib submodule"
+    );
+}
+
+/// F4 (feedbacks/0001 item 4, Codex EVIDENCE/16 #3): in the main checkout a submodule's untracked file does not refuse
+/// the merge (a fast-forward cannot touch it), and a tracked change in a nested submodule that hides itself does.
+#[test]
+fn the_main_checkout_check_skips_untracked_submodule_files_and_sees_hidden_tracked_changes() {
+    let (op, home) = operator("merge-main-submodule");
+    let repo = repository(&home);
+    submodules(&home, &repo);
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let run = |args: &[&str]| op.run(&repo, &env, args, "");
+    let subject = || git(&home, &repo, &["log", "-1", "--format=%s"]);
+    assert!(run(&["dossier", "use", "port"]).status.success());
+    assert!(run(&["workspace", "open"]).status.success());
+    let ws = home.join("worktrees/repo/port");
+    write(&ws.join("one.txt"), "the dossier's work\n");
+    assert!(
+        run(&["workspace", "checkpoint", "add one"])
+            .status
+            .success()
+    );
+
+    write(&repo.join("vendor/lib/notes.txt"), "the user's own notes\n");
+    write(
+        &repo.join("vendor/lib/in/notes.txt"),
+        "the user's own notes\n",
+    );
+    let merged = run(&["workspace", "merge"]);
+    assert!(
+        merged.status.success(),
+        "{}",
+        String::from_utf8_lossy(&merged.stderr)
+    );
+    assert_eq!(subject(), "add one");
+
+    hide_submodules(&home, &repo);
+    write(&ws.join("two.txt"), "the dossier's work\n");
+    assert!(
+        run(&["workspace", "checkpoint", "add two"])
+            .status
+            .success()
+    );
+    write(&repo.join("vendor/lib/in/lib.rs"), "pub fn changed() {}\n");
+    let refused = run(&["workspace", "merge"]);
+    assert!(
+        !refused.status.success()
+            && String::from_utf8_lossy(&refused.stderr).contains("has uncommitted changes"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(subject(), "add one");
+}
+
 #[test]
 fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_repository() {
     let (op, home) = operator("workspace");

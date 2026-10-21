@@ -82,7 +82,7 @@ fn main_ready(ws: &Workspace, base: &str) -> Result<()> {
         ws.repo.display(),
         ws.base
     );
-    let (staged, unstaged, _, conflicted) = changes(&ws.repo)?;
+    let (staged, unstaged, _, conflicted) = changes(&ws.repo, false)?;
     ensure!(
         staged + unstaged + conflicted == 0,
         "the main checkout {} has uncommitted changes; the fast-forward would touch them",
@@ -237,10 +237,38 @@ pub fn repo_of(dir: &Path) -> Result<Option<PathBuf>> {
         .context("the repository has no main checkout")
 }
 
-/// Count the entries of `git status --porcelain` by kind: (staged, unstaged, untracked, conflicted).
-fn changes(path: &Path) -> Result<(u32, u32, u32, u32)> {
+/// Count the entries of `git status --porcelain` by kind: (staged, unstaged, untracked, conflicted), also in each
+/// submodule. `workspace`: every file that is not committed counts, also one that the repository's own settings
+/// (`status.showUntrackedFiles`, a submodule's `ignore`) hide, because a merge ships only commits; else (the main
+/// checkout) a submodule's untracked files do not count, because a fast-forward cannot touch them (F4).
+fn changes(path: &Path, workspace: bool) -> Result<(u32, u32, u32, u32)> {
+    let args: &[&str] = if workspace {
+        &[
+            "status",
+            "--porcelain=v1",
+            "--ignore-submodules=none",
+            "--untracked-files=all",
+        ]
+    } else {
+        &["status", "--porcelain=v1", "--ignore-submodules=untracked"]
+    };
+    let mut lines = git(path, args)?;
+    // `--ignore-submodules` does not reach a nested submodule, whose own `ignore = all` hides it: each one is read
+    if path.join(".gitmodules").exists() {
+        lines.push('\n');
+        lines.push_str(&git(
+            path,
+            &[
+                "submodule",
+                "foreach",
+                "--quiet",
+                "--recursive",
+                &format!("git {}", args.join(" ")),
+            ],
+        )?);
+    }
     let mut counts = (0, 0, 0, 0);
-    for line in git(path, &["status", "--porcelain=v1"])?.lines() {
+    for line in lines.lines() {
         let code: Vec<char> = line.chars().take(2).collect();
         let [x, y] = code[..] else { continue };
         if x == '?' {
@@ -290,7 +318,7 @@ impl Dossiers {
         let Some(repo) = repo_of(dir)? else {
             return Ok(None);
         };
-        let (staged, unstaged, untracked, conflicted) = changes(&repo)?;
+        let (staged, unstaged, untracked, conflicted) = changes(&repo, false)?;
         let dir = std::fs::canonicalize(dir)?;
         // a workspace whose worktree is gone contains nothing
         let containing = self
@@ -604,7 +632,7 @@ impl Dossiers {
             status.unstaged,
             status.untracked,
             status.conflicted,
-        ) = changes(&ws.path)?;
+        ) = changes(&ws.path, true)?;
         Ok(status)
     }
 
@@ -738,7 +766,7 @@ impl Dossiers {
             ws.branch,
             ws.branch
         );
-        let (staged, unstaged, untracked, conflicted) = changes(&ws.path)?;
+        let (staged, unstaged, untracked, conflicted) = changes(&ws.path, true)?;
         ensure!(
             staged + unstaged + untracked + conflicted == 0,
             "the workspace has uncommitted or untracked files, which the merge does not ship but its gate would test; \
@@ -901,7 +929,7 @@ impl Dossiers {
         if ws.is_folder() {
             crate::folder::close(&ws.path, &ws.repo, force, dry_run)?;
         } else if ws.path.join(".git").exists() {
-            let (staged, unstaged, untracked, conflicted) = changes(&ws.path)?;
+            let (staged, unstaged, untracked, conflicted) = changes(&ws.path, true)?;
             let dirty = staged + unstaged + untracked + conflicted;
             ensure!(
                 force || dirty == 0,
