@@ -794,9 +794,6 @@ const CLAUDE_SANDBOX: [(&[&str], &str); 2] = [
     (&["filesystem", "allowRead"], "~/.gitconfig"),
 ];
 
-/// The first words of each file that `setup apply` writes: a file without them is the user's.
-const WRITTEN_BY: &str = "# Written by `legionctl setup apply`";
-
 /// Codex's command rule: `legionctl` runs outside its sandbox, which denies every connection when its network is off,
 /// after the user allows it (some legionctl commands start programs of their own: `run`, `session start`).
 const CODEX_SANDBOX_RULE: &str = "# Written by `legionctl setup apply`: Codex asks you before it runs legionctl outside its sandbox\n\
@@ -854,15 +851,15 @@ fn claude_sandbox_missing() -> Result<Option<serde_json::Value>> {
     Ok(changed.then_some(sandbox))
 }
 
-/// The state of legionctl's Codex rule file: current, outdated (an older legionctl wrote it) or missing.
+/// The state of legionctl's Codex rule file: current or missing.
 ///
 /// # Errors
-/// The file cannot be read, or it holds rules of the user's own (legionctl does not replace them).
+/// The file cannot be read, or it holds other text than legionctl's rule: the user's rules, which legionctl does not
+/// replace (a later legionctl that changes the rule names the texts it wrote before).
 fn codex_rule_state() -> Result<&'static str> {
     let rule = codex_sandbox_rule();
     Ok(match legionctl_machine::sysroot::read_file(&rule)? {
         Some(text) if text == CODEX_SANDBOX_RULE => "current",
-        Some(text) if text.starts_with(WRITTEN_BY) => "outdated",
         Some(_) => anyhow::bail!(
             "{} holds rules of your own: move them to another .rules file, then set up again",
             rule.display()

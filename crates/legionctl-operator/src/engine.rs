@@ -1281,8 +1281,7 @@ fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
             // sandbox file it cannot read or that is the user's own
             if i.status == legionctl_machine::system::OSD_BROKEN
                 || i.status == legionctl_core::plugin::CODEX_HOOKS_UNTRUSTED
-                || (i.what == setup::SANDBOX_ACCESS
-                    && !["missing", "outdated"].contains(&i.status.as_str()))
+                || (i.what == setup::SANDBOX_ACCESS && i.status != "missing")
             {
                 return Ok(state(text));
             }

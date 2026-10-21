@@ -1861,10 +1861,17 @@ fn sandbox_rows(lab: &Lab) -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// A Codex rules file of the user's own at legionctl's name: the row says so, doctor gives no fix, apply stops before
-/// it writes, and the file stays as it was.
+/// A Codex rules file of the user's own at legionctl's name, or legionctl's with rules the user added: the row says so,
+/// doctor gives no fix, apply stops before it writes, and the file stays as it was.
 fn a_users_own_codex_rules_file_stays(lab: &Lab, rules: &Path) {
-    let own = "prefix_rule(pattern = [\"git\", \"push\"], decision = \"forbidden\")\n";
+    let added = "prefix_rule(pattern = [\"git\", \"push\"], decision = \"forbidden\")\n";
+    let ours = std::fs::read_to_string(rules).unwrap();
+    for own in [added.to_string(), format!("{ours}{added}")] {
+        a_users_rules_file_stays(lab, rules, &own);
+    }
+}
+
+fn a_users_rules_file_stays(lab: &Lab, rules: &Path, own: &str) {
     write(rules, own);
     let said = format!(
         "{} holds rules of your own: move them to another .rules file, then set up again",
