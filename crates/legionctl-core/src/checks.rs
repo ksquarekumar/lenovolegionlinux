@@ -887,16 +887,17 @@ impl Dossiers {
 
     /// The findings of the checks of `dir` (doctor, `dossier check`): the required kinds it lacks, each check whose
     /// last run did not find its command (exit 127), or why its checks do not resolve; a worktree that is gone is
-    /// that finding (its checks cannot be read).
+    /// that finding (its checks cannot be read). For an `agent` (`dossier check`) the lacking kinds' line also names
+    /// the command and the file (F8); for doctor it is a state for the user.
     #[must_use]
-    pub fn check_findings(&self, dir: &Path) -> Vec<String> {
+    pub fn check_findings(&self, dir: &Path, agent: bool) -> Vec<String> {
         if !dir.is_dir() {
             return vec![format!(
                 "the worktree {} is missing; open the workspace again",
                 dir.display()
             )];
         }
-        self.findings_of(dir).unwrap_or_else(|e| {
+        self.findings_of(dir, agent).unwrap_or_else(|e| {
             vec![format!(
                 "the checks of {} do not resolve: {e:#}",
                 dir.display()
@@ -904,11 +905,16 @@ impl Dossiers {
         })
     }
 
-    fn findings_of(&self, dir: &Path) -> Result<Vec<String>> {
+    fn findings_of(&self, dir: &Path, agent: bool) -> Result<Vec<String>> {
         let mut findings = Vec::new();
         let missing = missing_kinds(dir)?;
         if !missing.is_empty() {
-            findings.push(format!("{}: {}", dir.display(), missing_state(&missing)));
+            let line = if agent {
+                missing_line(&missing)
+            } else {
+                missing_state(&missing)
+            };
+            findings.push(format!("{}: {line}", dir.display()));
         }
         let facts = self.facts(dir)?;
         let repo = repo_key(dir)?;

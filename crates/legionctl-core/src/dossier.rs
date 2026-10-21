@@ -1588,7 +1588,7 @@ impl Dossiers {
                 self, dossier, &graph, &ws.path,
             ));
             // the checks of the repository (design 23, E2 rule 2), as the workspace's branch has them
-            findings.extend(self.check_findings(&ws.path));
+            findings.extend(self.check_findings(&ws.path, true));
         }
         findings
     }

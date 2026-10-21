@@ -1386,7 +1386,7 @@ fn agent_findings() -> Result<Vec<legionctl_api::Finding>> {
             && ws.path.is_dir()
             && checked.insert(ws.repo.clone())
         {
-            w.extend(store.check_findings(&ws.path));
+            w.extend(store.check_findings(&ws.path, false));
         }
         let unmerged = match store.gone_unmerged(&ws) {
             Ok(unmerged) => unmerged,

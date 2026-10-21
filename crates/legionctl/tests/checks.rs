@@ -1085,8 +1085,10 @@ fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
                  and write .legionctl/checks.jsonc.";
     let start = lab.session_start(&ws);
     assert!(start.contains(nudge), "{start}");
+    // F8 (feedbacks/0001 item 8): the finding names the file and the command, as the nudge does
     let finding = format!(
-        "{}: this repository has no checks of kind build, test",
+        "{}: this repository has no checks of kind build, test: run `legionctl code checks detect` and write \
+         .legionctl/checks.jsonc",
         ws.display()
     );
     assert!(lab.findings(&ws, &["dossier", "check"]).contains(&finding));
@@ -1104,7 +1106,11 @@ fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
         )
         .0
     };
-    assert!(doctor().contains(&finding));
+    let state = format!(
+        "{}: this repository has no checks of kind build, test",
+        ws.display()
+    );
+    assert!(doctor().contains(&state));
     // the finding is a state for the user (the app's Health); the command is the agent's nudge alone
     assert!(!doctor().contains("code checks detect"), "{}", doctor());
 

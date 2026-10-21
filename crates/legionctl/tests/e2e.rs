@@ -7150,7 +7150,8 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
              <path>#<symbol>",
             // the repository declares no checks (design 23, E2 rule 2)
             format!(
-                "{}: this repository has no checks of kind format, lint, build, test",
+                "{}: this repository has no checks of kind format, lint, build, test: run `legionctl code checks \
+                 detect` and write .legionctl/checks.jsonc",
                 home.join("worktrees/repo/port").display()
             )
         ])
