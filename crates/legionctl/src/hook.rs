@@ -6,7 +6,7 @@
 //! | Event | Operation | Answer |
 //! | --- | --- | --- |
 //! | session-start | `internal.hooks.run` | stdout: added to the context |
-//! | prompt | `internal.hooks.run` | stdout, or `{"decision":"block","reason":...}` from the dossier gate |
+//! | prompt | `internal.hooks.run` | stdout, or `{"decision":"block","reason":...}` from the dossier gate (Codex: the reason as an order to say it, as Codex shows none) |
 //! | pre-tool | `internal.thread.gate`, `internal.dossier.guard` | `permissionDecision: deny` for a tool that a thread hard-block holds, or a file tool's write (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) into a dossier: another one, or the session's own, which the dossier commands write with their checks |
 //! | subagent-start | `internal.hooks.delegate` | `additionalContext` for the subagent: the delegation rule of the session's dossier (none without a dossier) |
 //! | pre-compact | `internal.hooks.compact` | nothing (Claude Code takes no instructions for the summary from a `PreCompact` hook): the session's dossier gets an immutable JOURNAL entry and HEALTH note, and the session start after the compaction (`source: compact`) points to them |
@@ -36,17 +36,21 @@ enum Answer {
     KeepWorking(String),
 }
 
+/// The agent's harness: Codex's payload has a turn id; Claude Code's has none.
+fn harness(input: &Value) -> &'static str {
+    if input.get("turn_id").is_some() {
+        "codex"
+    } else {
+        "claude"
+    }
+}
+
 /// The hook's client: its calls work in the agent's folder, the hook input's `cwd` (Claude Code and Codex always send
 /// it). The events of `internal.hooks.run` need it; the others take it when it is a folder (the presence of a
 /// post-tool call names it).
 fn client(event: &str, input: &Value) -> Result<Client> {
     let client = Client::new("hook")?;
-    // Codex's payload has a turn id; Claude Code's has none
-    client.set_harness(if input.get("turn_id").is_some() {
-        "codex"
-    } else {
-        "claude"
-    });
+    client.set_harness(harness(input));
     let cwd = input["cwd"].as_str().map(std::path::Path::new);
     if !matches!(event, "session-start" | "prompt" | "stop") {
         if let Some(cwd) = cwd.filter(|c| c.is_absolute()) {
@@ -72,6 +76,7 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
         .filter(|s| !s.is_empty())
         .or_else(|| input["session_id"].as_str().map(String::from))
         .map(SessionId);
+    let lead = lead(session.as_ref());
     let run = |event: Event| HookRunIn {
         event,
         session: session.clone(),
@@ -79,6 +84,7 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
         // Claude Code sets stop_hook_active when a stop hook already made the agent go on in this reply
         again: input["stop_hook_active"] == true,
         source: input["source"].as_str().map(String::from),
+        lead: lead.clone(),
     };
     let tool = &input["tool_input"];
     let path = tool["file_path"]
@@ -95,14 +101,10 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
                 .await?
                 .text,
         ),
-        "prompt" => {
-            let HookReply { text, block } =
-                client.call::<op::HooksRun>(&run(Event::Prompt)).await?;
-            Some(match block {
-                Some(reason) => json!({"decision": "block", "reason": reason}).to_string(),
-                None => text,
-            })
-        }
+        "prompt" => Some(prompt(
+            input,
+            client.call::<op::HooksRun>(&run(Event::Prompt)).await?,
+        )),
         "pre-tool" => {
             let Some(session) = session else {
                 return Ok(None);
@@ -162,6 +164,32 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
         other => anyhow::bail!("unknown hook event {other}"),
     }
     .map(Answer::Out))
+}
+
+/// The session that started this one from its shell: outside a legionctl session, a harness session that another
+/// one started has that one's id in its environment (Codex sets `CODEX_THREAD_ID` only in its own shell).
+fn lead(session: Option<&SessionId>) -> Option<SessionId> {
+    if std::env::var_os("LEGIONCTL_SESSION").is_some() {
+        return None;
+    }
+    ["CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .find(|v| !v.is_empty() && Some(v) != session.map(|s| &s.0))
+        .map(SessionId)
+}
+
+/// The prompt hook's answer: its context, or the dossier gate's block. Codex shows no reason for a blocked prompt
+/// (codex 0.163: `hook: UserPromptSubmit Blocked`; its companion says only that no final message came), so there the
+/// prompt passes with the reason and the order to say only that.
+fn prompt(input: &Value, HookReply { text, block }: HookReply) -> String {
+    match block {
+        Some(reason) if harness(input) == "codex" => format!(
+            "legionctl: do not work on this prompt. Reply with only this text, word for word: {reason}"
+        ),
+        Some(reason) => json!({"decision": "block", "reason": reason}).to_string(),
+        None => text,
+    }
 }
 
 /// The tool of a call as threads name it: the operation of legionctl's MCP tool `legionctl_run`

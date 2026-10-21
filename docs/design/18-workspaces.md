@@ -37,11 +37,15 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
   objectives) in `<dossier>/dossier.jsonc`. There is no separate global pattern file.
 - Session id: hooks read `session_id` from Claude Code's hook JSON, except in a legionctl session, where
   `LEGIONCTL_SESSION` replaces it (the dossier is bound to the legionctl session, not to the agent inside it); CLI
-  and MCP calls take `LEGIONCTL_SESSION`, else `CLAUDE_CODE_SESSION_ID`, which Claude Code sets for the commands it
-  starts.
+  and MCP calls take `LEGIONCTL_SESSION`, else `CODEX_THREAD_ID` (Codex sets it in its shell), else
+  `CLAUDE_CODE_SESSION_ID`, which Claude Code sets for the commands it starts. Codex that a Claude Code session
+  starts from its shell (`codex exec`, the codex plugin's companion) inherits that lead's `CLAUDE_CODE_SESSION_ID`:
+  its hooks send it as `lead`, and while the run has no dossier of its own it reads the lead's (its start context
+  names it), with no binding, no gate and no nudge to bind (AOS-3, plan#todo-214).
 - `legionctl hook <event>` adapts Claude Code's hooks: `session-start` adds the dossier line to the context, `prompt`
   blocks (`{"decision":"block"}`) when `dossier.gate` is on and the session in a linked repository has no dossier
-  (a prompt that contains `legionctl:dossier` passes), `pre-tool` denies `Write`, `Edit`, `MultiEdit` and `NotebookEdit` into a dossier that
+  (a prompt that contains `legionctl:dossier` passes; Codex shows no reason for a blocked prompt, so for Codex the
+  prompt passes with the gate's text and the order to reply with only that text), `pre-tool` denies `Write`, `Edit`, `MultiEdit` and `NotebookEdit` into a dossier that
   is not the session's, `stop` (before the agent ends a reply) sends a session without a dossier back to set it
   up first, once per reply (`stop_hook_active`), and `session-end` releases the binding. Hook output is for the
   agent first, the user after (decided 2026-10-13); milestone 2 adds the operating directory, branch and copy to

@@ -4974,6 +4974,15 @@
           ],
           "description": "Session-start event: how the session started (`startup`, `resume`, `clear`, `compact`).",
           "default": null
+        },
+        "lead": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "session",
+          "description": "The agent session that started this one from its shell (Codex from a Claude Code session: the\n`CLAUDE_CODE_SESSION_ID` it inherited); a session with no dossier of its own reads that session's.",
+          "default": null
         }
       },
       "required": [

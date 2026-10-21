@@ -41,6 +41,7 @@ pub fn own(cmd: &mut Command) -> &mut Command {
     // the agent session of the shell that runs the tests is not the test's: only one that the test set is kept
     for var in [
         "CLAUDE_CODE_SESSION_ID",
+        "CODEX_THREAD_ID",
         "LEGIONCTL_SESSION",
         "LEGIONCTL_TOKEN",
     ] {

@@ -90,12 +90,18 @@ pub fn random_token() -> Result<String> {
 }
 /// HTTP header that says which surface made a call: cli, mcp or app.
 pub const ACTOR_HEADER: &str = "x-legionctl-actor";
-/// The agent session of this process: `LEGIONCTL_SESSION`, else Claude Code's `CLAUDE_CODE_SESSION_ID`.
+/// The agent session of this process: `LEGIONCTL_SESSION`, else Codex's `CODEX_THREAD_ID`, else Claude Code's
+/// `CLAUDE_CODE_SESSION_ID`. Codex that a Claude Code session started from its shell inherits that session's
+/// `CLAUDE_CODE_SESSION_ID` and sets its own `CODEX_THREAD_ID` in its shell: its calls act for itself, not for the lead.
 #[must_use]
 pub fn session_from_env() -> Option<String> {
-    ["LEGIONCTL_SESSION", "CLAUDE_CODE_SESSION_ID"]
-        .iter()
-        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+    [
+        "LEGIONCTL_SESSION",
+        "CODEX_THREAD_ID",
+        "CLAUDE_CODE_SESSION_ID",
+    ]
+    .iter()
+    .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
 }
 
 /// HTTP header with the folder a call works in (an absolute path, [`Ctx::folder`]): the CLI's working folder, the
@@ -342,8 +348,8 @@ impl JsonSchema for ClientPath {
     }
 }
 
-/// The agent session that makes a call. Clients fill it from `LEGIONCTL_SESSION`, else `CLAUDE_CODE_SESSION_ID`;
-/// its schema has `"format": "session"`.
+/// The agent session that makes a call. Clients fill it from the environment ([`session_from_env`]); its schema has
+/// `"format": "session"`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SessionId(pub String);

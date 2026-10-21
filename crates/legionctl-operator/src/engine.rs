@@ -1522,6 +1522,15 @@ fn after_compaction(store: &Dossiers, dossier: &str) -> String {
     )
 }
 
+/// What a session that its lead started reads at its start, in place of a dossier of its own.
+fn led_line(lead: &str, d: &str) -> String {
+    format!(
+        "legionctl dossier: {d}, of session {lead} that started this run (it stays bound to {lead}; for notes of your \
+         own, bind a dossier with legionctl_run dossier.use <name>). {}",
+        delegation_rule(d)
+    )
+}
+
 /// What a delegate of a session with dossier `d` reads first (user rule 2026-10-16, MEMORY-14; skill
 /// sessions-and-agents rule 25).
 fn delegation_rule(d: &str) -> String {
@@ -1635,7 +1644,10 @@ pub(crate) fn dossier_of(id: &SessionId) -> Result<String> {
 }
 
 /// The linked repository of a session with no dossier, and at the start and at each prompt the binding of its
-/// dossier (so a dossier that another session held is taken once it is free).
+/// dossier (so a dossier that another session held is taken once it is free); with them the dossier that the hooks
+/// show: the session's own, else, for a session that its lead started from its shell (a delegated Codex run), the
+/// lead's. That one it reads with no binding: it does not take the dossier that the lead holds, so no gate holds it
+/// and no nudge asks it to bind one.
 type Linked = (Option<(PathBuf, String)>, Option<Result<String, String>>);
 fn bind_linked(
     dir: &Path,
@@ -1643,8 +1655,19 @@ fn bind_linked(
     resolved: &Resolved,
     input: &HookRunIn,
     active: &mut Option<String>,
-) -> Result<Linked> {
+) -> Result<(Linked, Option<String>)> {
     let session = input.session.as_ref().filter(|s| !s.0.is_empty());
+    let leads = match (session, &active, input.lead.as_ref()) {
+        (Some(_), None, Some(lead)) if !lead.0.is_empty() => {
+            store.active(&lead.0)?.map(|d| (lead.0.clone(), d))
+        }
+        _ => None,
+    };
+    if let Some((lead, d)) = leads {
+        let line =
+            (Event::from(input.event) == Event::SessionStart).then(|| Ok(led_line(&lead, &d)));
+        return Ok(((None, line), Some(d)));
+    }
     let linked = match (session, &active) {
         (Some(_), None) => store.linked(dir)?,
         _ => None,
@@ -1660,7 +1683,22 @@ fn bind_linked(
         }
         _ => None,
     };
-    Ok((linked, rebound))
+    Ok(((linked, rebound), active.clone()))
+}
+
+/// Where the hooks' dossier `shown` works in the call's folder. A led session (`bound` false) works in its lead's
+/// workspace, and has no nudge to open one: that needs a dossier of its own.
+fn hook_place(
+    store: &Dossiers,
+    ctx: &Ctx,
+    shown: Option<&str>,
+    bound: bool,
+) -> Result<Option<Place>> {
+    Ok(match shown.zip(ctx.folder().ok()) {
+        Some((d, dir)) => store.place(d, dir)?,
+        None => None,
+    }
+    .filter(|p| bound || p.workspace.is_some()))
 }
 
 /// A session in a linked repository takes the dossier last used there, so nobody has to bind it again. Returns the
@@ -3164,11 +3202,9 @@ impl Engine for Operator {
             // each hook call shows the session is live, so its dossier is not taken over
             store.touch(&s.0)?;
         }
-        let (linked, rebound) = bind_linked(ctx.folder()?, &store, &resolved, &input, &mut active)?;
-        let place = match active.as_deref().zip(ctx.folder().ok()) {
-            Some((d, dir)) => store.place(d, dir)?,
-            None => None,
-        };
+        let ((linked, rebound), shown) =
+            bind_linked(ctx.folder()?, &store, &resolved, &input, &mut active)?;
+        let place = hook_place(&store, ctx, shown.as_deref(), active.is_some())?;
         let failed = match &rebound {
             Some(Err(why)) => Some(why.as_str()),
             _ => None,
@@ -3177,7 +3213,7 @@ impl Engine for Operator {
             &resolved,
             &input,
             (linked.as_ref(), failed),
-            active.as_deref(),
+            shown.as_deref(),
             place.as_ref(),
         )? {
             return Ok(HookReply {
@@ -3221,8 +3257,12 @@ impl Engine for Operator {
             lines.extend(start_lines(
                 &resolved,
                 &store,
-                (&s.0, input.source.as_deref() == Some("compact")),
-                active.as_deref(),
+                // the compaction line asks for a JOURNAL entry, which only a bound session can write
+                (
+                    &s.0,
+                    active.is_some() && input.source.as_deref() == Some("compact"),
+                ),
+                shown.as_deref(),
                 (linked.is_some(), rebound),
                 place.as_ref(),
             ));

@@ -170,12 +170,20 @@ impl Operator {
     }
 
     /// `legionctl` with only `XDG_RUNTIME_DIR` (to find the socket), `PATH`, `env`, the working directory `cwd` and
-    /// `stdin` as its input. An agent session (`LEGIONCTL_SESSION` or `CLAUDE_CODE_SESSION_ID` in `env`) loads the
-    /// skills of its work at its first call, as an agent does when its reminders name them, so their toolsets are its
-    /// scope (DESIGN/22 rule 2); [`Operator::run_bare`] is an agent that loaded none.
+    /// `stdin` as its input. An agent session (`LEGIONCTL_SESSION`, `CODEX_THREAD_ID` or `CLAUDE_CODE_SESSION_ID` in
+    /// `env`, the first one that is set, as the client takes it) loads the skills of its work at its first call, as an
+    /// agent does when its reminders name them, so their toolsets are its scope (DESIGN/22 rule 2);
+    /// [`Operator::run_bare`] is an agent that loaded none.
     pub fn run(&self, cwd: &Path, env: &[(&str, &str)], args: &[&str], stdin: &str) -> Output {
-        let session_vars = ["LEGIONCTL_SESSION", "CLAUDE_CODE_SESSION_ID"];
-        if let Some((_, session)) = env.iter().find(|(k, _)| session_vars.contains(k)) {
+        let session_vars = [
+            "LEGIONCTL_SESSION",
+            "CODEX_THREAD_ID",
+            "CLAUDE_CODE_SESSION_ID",
+        ];
+        if let Some(session) = session_vars
+            .iter()
+            .find_map(|v| env.iter().find(|(k, _)| k == v).map(|(_, s)| s))
+        {
             // the grant is in the HOME's operator database: an operator that starts again on it keeps it
             let home = env.iter().find(|(k, _)| *k == "HOME").map_or_else(
                 || self.runtime.display().to_string(),

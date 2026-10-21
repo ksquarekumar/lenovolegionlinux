@@ -10572,6 +10572,111 @@ fn the_legionctl_hooks_answer_codexs_own_payloads() {
     }
 }
 
+/// AOS-3 (feedbacks/0001 finding 2, plan#todo-214): Codex that a host Claude Code session starts from its shell
+/// (`codex exec`, the codex plugin's companion) has the lead's `CLAUDE_CODE_SESSION_ID` in its environment, its own id
+/// in its hook payloads (tests/fixtures/codex-hooks) and, in its shell, `CODEX_THREAD_ID` (live with codex 0.163,
+/// EVIDENCE/validation/72). Before, in a repository linked to the lead's dossier, its hooks tried to take that dossier,
+/// which the lead holds, and blocked each prompt; Codex shows no reason for a blocked prompt (`hook: UserPromptSubmit
+/// Blocked`), so the caller saw only "no final message". Now the run reads the lead's dossier with no binding of its
+/// own, its prompts pass, and its shell's CLI acts for the run, not for the lead. A run whose lead has no dossier, or
+/// that has no lead, is gated, and its agent's reply is the gate's text (the one answer that reaches a caller).
+#[test]
+fn a_codex_run_from_a_lead_session_reads_the_leads_dossier_and_acts_as_itself() {
+    let (op, home) = operator("codex-lead");
+    let repo = home.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&home, &repo, &["init", "--quiet"]);
+    let lead = [("CLAUDE_CODE_SESSION_ID", "cc-lead")];
+    let bound = op.run(&repo, &lead, &["dossier", "use", "lead"], "");
+    assert!(
+        bound.status.success(),
+        "{}",
+        String::from_utf8_lossy(&bound.stderr)
+    );
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/codex-hooks");
+    let codex = "01a14ef6-5f77-7523-b576-8e1af9113d99";
+    // a hook of Codex session `session` with Codex's environment `env`: its stdout
+    // `fixture` is a recorded payload's file, with `#<source>` for another session-start source
+    let hook = |event: &str, fixture: &str, session: &str, env: &[(&str, &str)]| -> String {
+        let (file, source) = fixture.split_once('#').unwrap_or((fixture, ""));
+        let mut payload: Value =
+            serde_json::from_str(&std::fs::read_to_string(fixtures.join(file)).unwrap()).unwrap();
+        payload["cwd"] = json!(repo);
+        payload["session_id"] = json!(session);
+        if !source.is_empty() {
+            payload["source"] = json!(source);
+        }
+        let out = op.run_bare(&repo, env, &["hook", event], &payload.to_string());
+        assert!(
+            out.status.success(),
+            "{event}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let start = hook("session-start", "session-start.json", codex, &lead);
+    assert!(
+        start.contains("legionctl dossier: lead, of session cc-lead that started this run")
+            && start.contains("legionctl dossier read lead/plan.md"),
+        "{start}"
+    );
+    assert!(!start.contains("workspace.open"), "{start}");
+    // after a compaction it is not asked to write a JOURNAL entry: it has no dossier to write
+    let compacted = hook("session-start", "session-start.json#compact", codex, &lead);
+    assert!(
+        compacted.contains("legionctl dossier: lead, of session cc-lead")
+            && !compacted.contains("JOURNAL"),
+        "{compacted}"
+    );
+    let prompt = hook("prompt", "prompt.json", codex, &lead);
+    assert!(!prompt.contains("\"decision\""), "{prompt}");
+    // the main checkout has changes and the lead no workspace: the run is not sent to open one (that needs a dossier
+    // of its own), nor to bind a dossier
+    write(&repo.join("draft.txt"), "draft");
+    assert_eq!(hook("stop", "stop.json", codex, &lead), "");
+    let locks = op.ok(&["dossier", "locks"]);
+    assert!(
+        locks.contains("lead  session=cc-lead") && !locks.contains(codex),
+        "{locks}"
+    );
+
+    // the run's shell has both variables: its CLI binds a dossier for the run, and the lead keeps its own
+    let shell = [
+        ("CLAUDE_CODE_SESSION_ID", "cc-lead"),
+        ("CODEX_THREAD_ID", codex),
+    ];
+    let used = op.run(&repo, &shell, &["dossier", "use", "lead-review"], "");
+    assert!(
+        used.status.success(),
+        "{}",
+        String::from_utf8_lossy(&used.stderr)
+    );
+    let locks = op.ok(&["dossier", "locks"]);
+    assert!(
+        locks.contains("lead  session=cc-lead")
+            && locks.contains(&format!("lead-review  session={codex}")),
+        "{locks}"
+    );
+
+    // a run with no lead (a terminal) or a lead with no dossier: the repository's dossier is held, so it is gated.
+    // Codex would show no reason for a blocked prompt: the prompt passes with the gate's text for its agent to say
+    for (session, env) in [
+        ("01a14ef6-0000-7000-8000-000000000002", &[][..]),
+        (
+            "01a14ef6-0000-7000-8000-000000000003",
+            &[("CLAUDE_CODE_SESSION_ID", "cc-unbound")][..],
+        ),
+    ] {
+        let gated = hook("prompt", "prompt.json", session, env);
+        assert!(
+            gated.starts_with("legionctl: do not work on this prompt. Reply with only this text")
+                && gated.contains("works in dossier lead")
+                && gated.contains("/legionctl:dossier use <name>"),
+            "{session}: {gated}"
+        );
+    }
+}
+
 /// A Codex run uses legionctl's tools (todo-205, live 2026-10-18: Codex answered "Unavailable" to a load call): Codex
 /// starts MCP servers with a cleared environment, so legionctl's server gets the session's operator variables in its
 /// own `env` at session/new. The stand-in starts the server as Codex does (only PATH and that `env`) and calls its

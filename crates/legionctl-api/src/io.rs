@@ -824,6 +824,10 @@ pub struct HookRunIn {
     /// Session-start event: how the session started (`startup`, `resume`, `clear`, `compact`).
     #[serde(default)]
     pub source: Option<String>,
+    /// The agent session that started this one from its shell (Codex from a Claude Code session: the
+    /// `CLAUDE_CODE_SESSION_ID` it inherited); a session with no dossier of its own reads that session's.
+    #[serde(default)]
+    pub lead: Option<SessionId>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
