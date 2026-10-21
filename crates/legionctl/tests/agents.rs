@@ -1861,6 +1861,31 @@ fn sandbox_rows(lab: &Lab) -> Vec<(String, String, String)> {
         .collect()
 }
 
+/// A Codex rules file of the user's own at legionctl's name: the row says so, doctor gives no fix, apply stops before
+/// it writes, and the file stays as it was.
+fn a_users_own_codex_rules_file_stays(lab: &Lab, rules: &Path) {
+    let own = "prefix_rule(pattern = [\"git\", \"push\"], decision = \"forbidden\")\n";
+    write(rules, own);
+    let said = format!(
+        "{} holds rules of your own: move them to another .rules file, then set up again",
+        rules.display()
+    );
+    assert_eq!(sandbox_rows(lab)[1].1, said);
+    let doctor = String::from_utf8_lossy(&lab.op.cli(&["doctor"]).stdout).into_owned();
+    assert!(
+        doctor.contains(&said) && !doctor.contains(&format!("{said} (fix:")),
+        "{doctor}"
+    );
+    let out = lab.op.cli_in(&lab.home, &["setup", "apply"]);
+    assert!(
+        !out.status.success() && String::from_utf8_lossy(&out.stderr).contains(&said),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(rules).unwrap(), own);
+    std::fs::remove_file(rules).unwrap();
+}
+
 /// The one backup that legionctl made of the settings file `settings`, as JSON.
 fn only_backup(settings: &Path) -> Value {
     let backups: Vec<_> = std::fs::read_dir(settings.parent().unwrap())
@@ -1951,6 +1976,7 @@ fn setup_apply_lets_sandboxed_agents_run_legionctl_and_keeps_the_users_own_sandb
     assert_eq!(only_backup(&settings), own);
     assert_eq!(rows(), want("current", "current"));
     assert!(!apply().contains("sandbox access"), "written once");
+    a_users_own_codex_rules_file_stays(&lab, &rules);
 
     // settings that are not JSON: the row names the file, apply fails and changes nothing
     write(&settings, "{ \"sandbox\": ");

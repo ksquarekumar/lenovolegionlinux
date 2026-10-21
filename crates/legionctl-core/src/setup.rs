@@ -794,6 +794,9 @@ const CLAUDE_SANDBOX: [(&[&str], &str); 2] = [
     (&["filesystem", "allowRead"], "~/.gitconfig"),
 ];
 
+/// The first words of each file that `setup apply` writes: a file without them is the user's.
+const WRITTEN_BY: &str = "# Written by `legionctl setup apply`";
+
 /// Codex's command rule: `legionctl` runs outside its sandbox, which denies every connection when its network is off,
 /// after the user allows it (some legionctl commands start programs of their own: `run`, `session start`).
 const CODEX_SANDBOX_RULE: &str = "# Written by `legionctl setup apply`: Codex asks you before it runs legionctl outside its sandbox\n\
@@ -851,6 +854,23 @@ fn claude_sandbox_missing() -> Result<Option<serde_json::Value>> {
     Ok(changed.then_some(sandbox))
 }
 
+/// The state of legionctl's Codex rule file: current, outdated (an older legionctl wrote it) or missing.
+///
+/// # Errors
+/// The file cannot be read, or it holds rules of the user's own (legionctl does not replace them).
+fn codex_rule_state() -> Result<&'static str> {
+    let rule = codex_sandbox_rule();
+    Ok(match legionctl_machine::sysroot::read_file(&rule)? {
+        Some(text) if text == CODEX_SANDBOX_RULE => "current",
+        Some(text) if text.starts_with(WRITTEN_BY) => "outdated",
+        Some(_) => anyhow::bail!(
+            "{} holds rules of your own: move them to another .rules file, then set up again",
+            rule.display()
+        ),
+        None => "missing",
+    })
+}
+
 /// The sandbox rows: Claude Code's and Codex's, for each one that is installed.
 fn sandbox_items() -> Vec<Item> {
     let mut items = Vec::new();
@@ -870,10 +890,8 @@ fn sandbox_items() -> Vec<Item> {
         items.push(Item {
             what: SANDBOX_ACCESS.into(),
             agent: "codex".into(),
-            status: match legionctl_machine::sysroot::read_file(&codex_sandbox_rule()) {
-                Ok(Some(text)) if text == CODEX_SANDBOX_RULE => "current".into(),
-                Ok(Some(_)) => "outdated".into(),
-                Ok(None) => "missing".into(),
+            status: match codex_rule_state() {
+                Ok(state) => state.into(),
                 Err(e) => format!("{e:#}"),
             },
             path: codex_sandbox_rule().display().to_string(),
@@ -900,9 +918,7 @@ fn let_sandboxes_run_legionctl() -> Result<Vec<String>> {
         }
     }
     let rule = codex_sandbox_rule();
-    if codex_bin().is_some()
-        && legionctl_machine::sysroot::read_file(&rule)?.as_deref() != Some(CODEX_SANDBOX_RULE)
-    {
+    if codex_bin().is_some() && codex_rule_state()? != "current" {
         std::fs::create_dir_all(rule.parent().context("the rule file has no folder")?)?;
         std::fs::write(&rule, CODEX_SANDBOX_RULE)?;
         done.push(format!(
