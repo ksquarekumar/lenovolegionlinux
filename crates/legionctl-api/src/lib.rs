@@ -653,6 +653,8 @@ operations! {
     /// Remove the worktree of this session's dossier; the branch and the dossier stay. Refuses uncommitted changes
     /// unless `--force`, and a folder in another dossier's workspace.
     workspace_close / WorkspaceClose = "workspace.close", Session, CloseIn => Lines;
+    /// Forget a workspace whose folder is gone, as doctor offers it; its branch stays.
+    workspace_forget / WorkspaceForget = "workspace.forget", Workspace, ForgetIn => Lines;
     /// Make the repository's agent image (`localhost/<repo>/legionctl-agent:latest`) for sessions `--in container`:
     /// the repository's own image (else `session.container.base`) plus git, Node.js, the agents and a static legionctl;
     /// with `--as vm`, its VM disk (`session.vm.base` with the same), for sessions `--in vm`.

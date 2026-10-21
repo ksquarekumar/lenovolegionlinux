@@ -9903,3 +9903,110 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
     let (out, error) = live.run("dossier.active", &json!({"session": "codex-review-live"}));
     assert!(!error && out.to_string().contains("review-live"), "{out}");
 }
+
+/// The record of a workspace whose worktree is gone is forgotten at the operator's start when its branch is merged
+/// into its base or gone; doctor offers Forget for one whose branch has commits the base does not have, and Forget
+/// keeps that branch (plan#todo-227: doctor listed 41 "the worktree ... is missing; open the workspace again" lines
+/// for merged topics). A workspace whose worktree is there is never forgotten, merged or not.
+#[test]
+fn records_of_gone_worktrees_are_forgotten_when_merged_and_doctor_offers_forget_for_the_rest() {
+    let home = home("gonews");
+    let op = operator_in("gonews", &home);
+    let repo = repository(&home);
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let ok = |op: &Operator, cwd: &Path, args: &[&str]| {
+        let o = op.run(cwd, &env, args, "");
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    ok(&op, &repo, &["dossier", "use", "port"]);
+    let topic = |name: &str| home.join(format!("worktrees/repo/port--{name}"));
+    for name in ["merged", "unmerged", "deleted", "kept"] {
+        ok(&op, &repo, &["workspace", "open", "--topic", name]);
+        write(&topic(name).join(format!("{name}.txt")), name);
+        ok(
+            &op,
+            &topic(name),
+            &["workspace", "checkpoint", &format!("work {name}")],
+        );
+    }
+    // merged and kept go into main; the worktrees of merged, unmerged and deleted go by hand; deleted's branch too
+    for name in ["merged", "kept"] {
+        git(
+            &home,
+            &repo,
+            &[
+                "merge",
+                "--quiet",
+                "--no-edit",
+                &format!("legionctl/port--{name}"),
+            ],
+        );
+    }
+    for name in ["merged", "unmerged", "deleted"] {
+        git(
+            &home,
+            &repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                topic(name).to_str().unwrap(),
+            ],
+        );
+    }
+    git(&home, &repo, &["branch", "-D", "legionctl/port--deleted"]);
+
+    drop(op);
+    let op = operator_in("gonews", &home);
+    let listed = ok(&op, &repo, &["workspace", "list"]);
+    assert!(
+        listed.contains("port--unmerged") && listed.contains("port--kept"),
+        "{listed}"
+    );
+    assert!(
+        !listed.contains("port--merged") && !listed.contains("port--deleted"),
+        "{listed}"
+    );
+    let doctor = String::from_utf8_lossy(&op.run(&repo, &env, &["doctor"], "").stdout).into_owned();
+    let unmerged = topic("unmerged");
+    let want = format!(
+        "workspace {}: its folder is gone, and its branch legionctl/port--unmerged has 1 commit that main does not \
+         have (fix: legionctl workspace forget {})",
+        unmerged.display(),
+        unmerged.display()
+    );
+    assert!(doctor.contains(&want), "{doctor}");
+    assert!(!doctor.contains("open the workspace again"), "{doctor}");
+
+    let forgot = ok(
+        &op,
+        &repo,
+        &["workspace", "forget", unmerged.to_str().unwrap()],
+    );
+    assert!(
+        forgot.contains("forgot the workspace") && forgot.contains("legionctl/port--unmerged kept"),
+        "{forgot}"
+    );
+    assert!(!ok(&op, &repo, &["workspace", "list"]).contains("port--unmerged"));
+    assert_eq!(
+        git(
+            &home,
+            &repo,
+            &["log", "-1", "--format=%s", "legionctl/port--unmerged"]
+        ),
+        "work unmerged"
+    );
+    let doctor = String::from_utf8_lossy(&op.run(&repo, &env, &["doctor"], "").stdout).into_owned();
+    assert!(
+        !doctor.contains("port--unmerged") && !doctor.contains("its folder is gone"),
+        "{doctor}"
+    );
+}

@@ -700,6 +700,66 @@ impl Dossiers {
         Ok(lines)
     }
 
+    /// The commits of `ws` that its base does not have, when its worktree is gone: none while it is there (or for a
+    /// plain folder); 0 when its branch is merged into its base, or gone with the branch or the repository.
+    ///
+    /// # Errors
+    /// git cannot count the commits (its base is gone).
+    pub fn gone_unmerged(&self, ws: &Workspace) -> Result<Option<u32>> {
+        if ws.is_folder() || ws.path.join(".git").exists() {
+            return Ok(None);
+        }
+        let branch = format!("refs/heads/{}", ws.branch);
+        if !ws.repo.is_dir()
+            || git(&ws.repo, &["rev-parse", "--verify", "--quiet", &branch]).is_err()
+        {
+            return Ok(Some(0));
+        }
+        let count = git(
+            &ws.repo,
+            &["rev-list", "--count", &format!("{}..{branch}", ws.base)],
+        )?;
+        Ok(Some(count.trim().parse()?))
+    }
+
+    /// Forget the record of `ws`, whose worktree is gone; its branch stays.
+    ///
+    /// # Errors
+    /// The worktree is still there, or the database write fails.
+    pub fn forget(&self, ws: &Workspace) -> Result<String> {
+        ensure!(
+            self.gone_unmerged(ws)?.is_some(),
+            "the workspace {} is still there: close it with legionctl workspace close",
+            ws.path.display()
+        );
+        self.db().execute(
+            "UPDATE workspaces SET closed = ?1 WHERE path = ?2 AND closed IS NULL",
+            params![now(), ws.path.to_string_lossy()],
+        )?;
+        Ok(format!(
+            "forgot the workspace {} (branch {} kept)",
+            ws.path.display(),
+            ws.branch
+        ))
+    }
+
+    /// Forget each workspace whose worktree is gone and whose branch is merged into its base or gone (the operator's
+    /// start): one line per workspace forgotten, or kept because git could not tell.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn forget_merged_gone_workspaces(&self) -> Result<Vec<String>> {
+        let mut lines = Vec::new();
+        for ws in self.workspaces(None)? {
+            match self.gone_unmerged(&ws) {
+                Ok(Some(0)) => lines.push(self.forget(&ws)?),
+                Ok(_) => {}
+                Err(e) => lines.push(format!("kept the workspace {}: {e:#}", ws.path.display())),
+            }
+        }
+        Ok(lines)
+    }
+
     /// Remove the worktree; the branch stays until it is merged, and the dossier stays. `dry_run` makes the same
     /// checks and tells what close would do.
     ///

@@ -325,6 +325,12 @@ pub struct CloseIn {
     pub session: SessionId,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ForgetIn {
+    /// The workspace's folder, as doctor and `workspace list` name it.
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct SetupApplyIn {

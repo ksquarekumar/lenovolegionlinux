@@ -3753,6 +3753,41 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "workspace.forget": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The workspace's folder, as doctor and `workspace list` name it."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "ForgetIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "workspace.pack": {
     "class": "workspace",
     "internal": false,

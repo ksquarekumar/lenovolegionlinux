@@ -20,8 +20,8 @@ use legionctl_api::{
 use legionctl_api::{
     AccountIn, AccountLoginIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath,
     CloseIn, ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation, Findings,
-    GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState, MergeIn,
-    PowerApplyIn, PowerSource, ProfileIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
+    ForgetIn, GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState,
+    MergeIn, PowerApplyIn, PowerSource, ProfileIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
     RunnableGrant, RunnablesCheck, RunnablesCheckIn, RunnablesShowIn, ServiceIn, SetupApplyIn,
     SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
     WorkspaceOpenIn, WorkspaceStatus, Workspaces,
@@ -1306,12 +1306,13 @@ fn not_run(name: &str, e: &anyhow::Error) -> legionctl_api::Finding {
 
 /// The agent side of `doctor`: a Claude Code plugin of another build (Codex's: its setup rows), stale dossier bindings, workspaces that drifted
 /// from their record.
-fn agent_findings() -> Result<Vec<String>> {
+fn agent_findings() -> Result<Vec<legionctl_api::Finding>> {
     let mut w = legionctl_core::plugin::findings(&home());
     if legionctl_core::migrate::pending() {
         w.push(legionctl_core::migrate::state(&Db::open_default()?));
-        return Ok(w);
+        return Ok(w.into_iter().map(state).collect());
     }
+    let mut gone = Vec::new();
     let store = dossiers()?;
     w.extend(store.sync_registry()?);
     // the checks of a repository once, from a dossier's own workspace: not again for each topic worktree and dossier
@@ -1330,6 +1331,29 @@ fn agent_findings() -> Result<Vec<String>> {
         {
             w.extend(store.check_findings(&ws.path));
         }
+        if let Some(ahead) = store.gone_unmerged(&ws)? {
+            let branch = match ahead {
+                0 => format!("its branch {} is merged into {}", ws.branch, ws.base),
+                1 => format!(
+                    "its branch {} has 1 commit that {} does not have",
+                    ws.branch, ws.base
+                ),
+                n => format!(
+                    "its branch {} has {n} commits that {} does not have",
+                    ws.branch, ws.base
+                ),
+            };
+            let path = ws.path.display().to_string();
+            gone.push(legionctl_api::Finding {
+                text: format!("workspace {path}: its folder is gone, and {branch}"),
+                actions: vec![crate::resources::action(
+                    "Forget",
+                    "workspace.forget",
+                    serde_json::json!({ "path": path }),
+                )?],
+            });
+            continue;
+        }
         let status = store.workspace_status(&ws)?;
         for drift in &status.drift {
             w.push(format!("workspace {}: {drift}", ws.path.display()));
@@ -1345,7 +1369,7 @@ fn agent_findings() -> Result<Vec<String>> {
     // workspaces of one repository give its findings once
     let mut seen = std::collections::BTreeSet::new();
     w.retain(|f| seen.insert(f.clone()));
-    Ok(w)
+    Ok(w.into_iter().map(state).chain(gone).collect())
 }
 
 /// The operator's JOURNAL entry before a compaction of `session`: what it recorded of the session (status changes of
@@ -2172,14 +2196,13 @@ impl Engine for Operator {
                     .collect::<Result<_>>()?,
             });
         }
-        for (name, found) in [
-            ("agents and workspaces", agent_findings()),
-            ("operator fault", crate::faults::findings()),
-        ] {
-            match found {
-                Ok(found) => findings.extend(found.into_iter().map(state)),
-                Err(e) => findings.push(not_run(name, &e)),
-            }
+        match agent_findings() {
+            Ok(found) => findings.extend(found),
+            Err(e) => findings.push(not_run("agents and workspaces", &e)),
+        }
+        match crate::faults::findings() {
+            Ok(found) => findings.extend(found.into_iter().map(state)),
+            Err(e) => findings.push(not_run("operator fault", &e)),
         }
         Ok(Findings { findings })
     }
@@ -2910,6 +2933,18 @@ impl Engine for Operator {
         )?;
         Ok(Lines {
             lines: vec![store.close(&ws, input.force, input.dry_run)?],
+        })
+    }
+
+    fn workspace_forget(&self, _: &Ctx, input: ForgetIn) -> Result<Lines> {
+        let store = dossiers()?;
+        let ws = store
+            .workspaces(None)?
+            .into_iter()
+            .find(|w| w.path == std::path::Path::new(&input.path))
+            .ok_or_else(|| coded(Code::NotFound, format!("no workspace {}", input.path)))?;
+        Ok(Lines {
+            lines: vec![store.forget(&ws)?],
         })
     }
 

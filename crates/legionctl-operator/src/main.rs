@@ -159,19 +159,28 @@ async fn run() -> Result<()> {
                 Ok(()) => faults::works("registry"),
                 Err(e) => faults::failed("registry", "the dossier registry is not settled", &e),
             }
-            // the dossier locks of agents that ended while the operator was off
+            // the dossier locks of agents that ended, and the workspaces of merged topics whose folders went, while the
+            // operator was off
             let freed =
                 legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), None)
                     .and_then(|r| {
                         let store = legionctl_core::dossier::Dossiers::open(&r.config.dossier)?;
-                        for line in store.free_ended_locks()? {
+                        for line in store
+                            .free_ended_locks()?
+                            .into_iter()
+                            .chain(store.forget_merged_gone_workspaces()?)
+                        {
                             eprintln!("operator: {line}");
                         }
                         Ok(())
                     });
             match freed {
                 Ok(()) => faults::works("ended"),
-                Err(e) => faults::failed("ended", "the dossiers of ended agents stay locked", &e),
+                Err(e) => faults::failed(
+                    "ended",
+                    "the dossiers of ended agents stay locked, or old workspaces stay listed",
+                    &e,
+                ),
             }
         }
     })
