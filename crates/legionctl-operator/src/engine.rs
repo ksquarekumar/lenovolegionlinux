@@ -1772,7 +1772,8 @@ fn blocking_reason(
         ));
     }
     Ok(place
-        .filter(|p| config.workspace.nudge && p.workspace.is_none() && p.main_dirty)
+        // a repository with no commit cannot have the workspace that the block would ask for
+        .filter(|p| config.workspace.nudge && p.workspace.is_none() && p.main_dirty && p.committed)
         .map(|p| {
             format!(
                 "legionctl: the main checkout {} has changes but dossier {} has no workspace there. Open one with the \
@@ -1885,6 +1886,9 @@ fn start_lines(
                 ),
                 Err(e) => lines.push(format!("legionctl workspace drift unknown: {e:#}")),
             }
+        }
+        Some((p, None)) if resolved.config.workspace.nudge && !p.committed => {
+            lines.push(format!("legionctl: {}", legionctl_core::workspace::no_commit_yet(&p.repo)));
         }
         Some((p, None)) if resolved.config.workspace.nudge => lines.push(format!(
             "legionctl: no workspace for {} yet. Before code changes, open one with the legionctl MCP tool \

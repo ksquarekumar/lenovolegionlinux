@@ -255,11 +255,27 @@ fn changes(path: &Path) -> Result<(u32, u32, u32, u32)> {
     Ok(counts)
 }
 
+/// The repository has a commit: a workspace needs one for its base.
+fn committed(repo: &Path) -> bool {
+    git(repo, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok()
+}
+
+/// What the agent hears in a repository with no commit (F3, feedbacks/0001 item 3).
+#[must_use]
+pub fn no_commit_yet(repo: &Path) -> String {
+    format!(
+        "{} has no commit yet: make a first commit, then open a workspace",
+        repo.display()
+    )
+}
+
 /// What the hooks need to nudge the agent about the workspace of `dossier` where it works (`dir`).
 #[derive(Debug, Clone)]
 pub struct Place {
     pub repo: PathBuf,
     pub workspace: Option<Workspace>,
+    /// The repository has a commit, so a workspace can be opened.
+    pub committed: bool,
     /// The main checkout has uncommitted changes (someone worked there instead of in a workspace).
     pub main_dirty: bool,
 }
@@ -287,6 +303,7 @@ impl Dossiers {
         };
         Ok(Some(Place {
             workspace,
+            committed: committed(&repo),
             main_dirty: staged + unstaged + untracked + conflicted > 0,
             repo,
         }))
@@ -420,9 +437,24 @@ impl Dossiers {
         {
             return Ok(open);
         }
+        ensure!(committed(&repo), no_commit_yet(&repo));
         let base = match base {
             Some(b) => {
                 ensure!(!b.starts_with('-'), "base must be a git ref, not an option");
+                ensure!(
+                    git(
+                        &repo,
+                        &[
+                            "rev-parse",
+                            "--verify",
+                            "--quiet",
+                            &format!("{b}^{{commit}}")
+                        ]
+                    )
+                    .is_ok(),
+                    "the base {b} names no commit in {}",
+                    repo.display()
+                );
                 b.to_string()
             }
             None => match git(&repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {

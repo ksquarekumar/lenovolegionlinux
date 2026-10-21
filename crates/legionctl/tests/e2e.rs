@@ -2676,6 +2676,58 @@ fn repository(home: &Path) -> PathBuf {
     repo
 }
 
+/// F3 (feedbacks/0001 item 3): a repository with no commit cannot have a workspace yet. `workspace open` tells the
+/// agent to make a first commit (not git's "invalid reference: main"), session start tells it the same, and Stop does
+/// not block on the files of the main checkout: the agent cannot open the workspace that Stop would ask for. In a
+/// repository with commits, a `--base` that names no commit is named as such, not as a missing first commit.
+#[test]
+fn a_repository_with_no_commit_asks_for_a_first_commit_and_stop_does_not_block() {
+    let (op, home) = operator("first-commit");
+    let repo = repository(&home);
+    let fresh = home.join("fresh");
+    std::fs::create_dir_all(&fresh).unwrap();
+    git(&home, &fresh, &["init", "--quiet"]);
+    write(&fresh.join("README.md"), "not committed yet\n");
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let hook = |event: &str| {
+        let o = op.run(
+            &fresh,
+            &[],
+            &["hook", event],
+            &claude_hook(event, &json!({"session_id": "s1", "cwd": fresh})),
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    assert!(
+        op.run(&fresh, &env, &["dossier", "use", "port"], "")
+            .status
+            .success()
+    );
+    let first = format!(
+        "{} has no commit yet: make a first commit, then open a workspace",
+        fresh.display()
+    );
+    let open = op.run(&fresh, &env, &["workspace", "open"], "");
+    let why = String::from_utf8_lossy(&open.stderr);
+    assert!(!open.status.success() && why.contains(&first), "{why}");
+    assert!(hook("session-start").contains(&first));
+    assert_eq!(
+        hook("stop"),
+        "",
+        "no block for a workspace that cannot exist"
+    );
+
+    let open = op.run(&repo, &env, &["workspace", "open", "--base", "nowhere"], "");
+    let why = String::from_utf8_lossy(&open.stderr);
+    assert!(
+        !open.status.success() && why.contains("the base nowhere names no commit"),
+        "{why}"
+    );
+}
+
 #[test]
 fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_repository() {
     let (op, home) = operator("workspace");
