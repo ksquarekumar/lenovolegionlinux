@@ -9807,3 +9807,99 @@ fn a_codex_run_reaches_legionctls_tools_with_the_cleared_environment_codex_gives
         "{text}"
     );
 }
+
+/// The dossier locks of agents that ended are freed with no manual step (plan#todo-227 AOS-4, F10): agency-os had 14
+/// locks of ended Codex review runs, bound through their MCP servers under names of their own, that stayed for 12 h.
+/// A bind records the MCP server that made it; when that process is gone the lock is stale, the next bind of the
+/// dossier takes it, and the next operator start frees it. A lock of an older build (no process recorded) is freed when
+/// no MCP server that started before it still runs. A live lock, and a fresh one of the CLI, are never freed.
+#[test]
+fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start() {
+    let home = home("locks");
+    let op = operator_in("locks", &home);
+    let bind = |mcp: &mut Mcp, dossier: &str, session: &str| {
+        let (out, error) = mcp.run("dossier.use", &json!({"name": dossier, "session": session}));
+        assert!(!error, "{out}");
+    };
+    let locks = |op: &Operator| -> Vec<(String, bool)> {
+        let out = op.run(&home, &[], &["dossier", "locks", "--json"], "");
+        serde_json::from_slice::<Vec<Value>>(&out.stdout)
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["dossier"].as_str().unwrap().to_string(),
+                    l["stale"] == true,
+                )
+            })
+            .collect()
+    };
+    let env = [("HOME", home.to_str().unwrap())];
+    let mut ended = Mcp::start(&op, None, &env, &[]);
+    let mut live = Mcp::start(&op, None, &env, &[]);
+    let mut gone_while_off = Mcp::start(&op, None, &env, &[]);
+    bind(&mut ended, "review-ended", "codex-review-ended");
+    bind(&mut live, "review-live", "codex-review-live");
+    bind(&mut gone_while_off, "review-off", "codex-review-off");
+    // locks of an older build: no process recorded; one made before any MCP server that runs now, one after the live one
+    sql(
+        &home,
+        "INSERT INTO bindings (session, tool, dossier, acquired, updated) VALUES \
+         ('old-ended', 'mcp', 'review-old-ended', 1000, strftime('%s', 'now')), \
+         ('old-live', 'mcp', 'review-old-live', strftime('%s', 'now') + 1, strftime('%s', 'now'))",
+    );
+    drop(ended);
+    assert_eq!(
+        locks(&op),
+        [
+            ("review-ended".to_string(), true),
+            ("review-live".into(), false),
+            ("review-off".into(), false),
+            ("review-old-ended".into(), true),
+            ("review-old-live".into(), false),
+        ]
+    );
+
+    // the next bind of the dossier takes the ended run's lock; a live run's lock is refused, fresh or not
+    let take = |op: &Operator, dossier: &str| {
+        op.run(
+            &home,
+            &[
+                ("LEGIONCTL_SESSION", "s2"),
+                ("HOME", home.to_str().unwrap()),
+            ],
+            &["dossier", "use", dossier],
+            "",
+        )
+    };
+    let taken = take(&op, "review-ended");
+    assert!(
+        taken.status.success()
+            && String::from_utf8_lossy(&taken.stdout)
+                .contains("review-ended was held by session codex-review-ended (stale)"),
+        "{taken:?}"
+    );
+    let refused = take(&op, "review-live");
+    assert!(
+        !refused.status.success()
+            && String::from_utf8_lossy(&refused.stderr)
+                .contains("is in use by session codex-review-live"),
+        "{refused:?}"
+    );
+
+    // the operator starts again after a run ended while it was off: that lock and the old one go, the rest stay
+    drop(gone_while_off);
+    drop(op);
+    let op = operator_in("locks", &home);
+    assert_eq!(
+        locks(&op),
+        [
+            ("review-ended".to_string(), false),
+            ("review-live".into(), false),
+            ("review-old-live".into(), false),
+        ]
+    );
+    // the live run still works in its dossier after the restart
+    let (out, error) = live.run("dossier.active", &json!({"session": "codex-review-live"}));
+    assert!(!error && out.to_string().contains("review-live"), "{out}");
+}

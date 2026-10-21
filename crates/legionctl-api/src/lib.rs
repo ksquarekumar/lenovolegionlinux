@@ -253,6 +253,9 @@ pub struct Ctx {
     /// workspace. No operation has its own repository or project path field (the guard test
     /// `no_operation_takes_its_own_project_folder`).
     pub folder: Option<PathBuf>,
+    /// The process that made the call (the peer of the operator's socket), when the operator knows it: an agent's MCP
+    /// server, which runs as long as its agent, holds the dossier it binds.
+    pub caller: Option<u32>,
 }
 
 impl Ctx {

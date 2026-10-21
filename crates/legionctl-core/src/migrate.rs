@@ -407,7 +407,13 @@ fn live_bindings(old_db: &Path, stale: i64) -> Result<Vec<String>> {
     for row in rows {
         let (session, dossier, updated, scoped, inside) = row?;
         let scoped = scoped.zip(inside);
-        if crate::dossier::live(stale, (&session, updated, scoped), now)? {
+        // a binding of the old layout has no holder recorded: the time and its scope tell
+        if crate::dossier::live(
+            stale,
+            (&session, updated, scoped),
+            crate::dossier::Holder::Unknown,
+            now,
+        )? {
             live.push(format!("session {session} holds dossier {dossier}"));
         }
     }

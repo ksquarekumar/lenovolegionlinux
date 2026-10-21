@@ -36,6 +36,27 @@ pub fn activated_listener() -> Result<tokio::net::UnixListener> {
     Ok(tokio::net::UnixListener::from_std(listener)?)
 }
 
+/// The process at the other end of a call's connection.
+#[derive(Clone, Copy)]
+pub struct Peer(Option<u32>);
+
+impl
+    axum::extract::connect_info::Connected<
+        axum::serve::IncomingStream<'_, tokio::net::UnixListener>,
+    > for Peer
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, tokio::net::UnixListener>) -> Peer {
+        Peer(
+            stream
+                .io()
+                .peer_cred()
+                .ok()
+                .and_then(|c| c.pid())
+                .and_then(|pid| u32::try_from(pid).ok()),
+        )
+    }
+}
+
 pub fn router(operator: Arc<Operator>) -> axum::Router {
     axum::Router::new()
         .route("/v1/ops", get(list))
@@ -486,6 +507,7 @@ async fn metrics(
 
 async fn call(
     State(operator): State<Arc<Operator>>,
+    axum::extract::ConnectInfo(Peer(caller)): axum::extract::ConnectInfo<Peer>,
     Path(name): Path<String>,
     headers: HeaderMap,
     Json(input): Json<Value>,
@@ -495,14 +517,14 @@ async fn call(
         API_HEADER,
         axum::http::HeaderValue::from_static(api_fingerprint()),
     );
-    let (status, body) = Box::pin(run(operator, name, &headers, input, &mut reply)).await;
+    let (status, body) = Box::pin(run(operator, (name, caller), &headers, input, &mut reply)).await;
     (status, reply, body)
 }
 
 /// Run one call; a call the record keeps puts its call id into the `reply` headers.
 async fn run(
     operator: Arc<Operator>,
-    name: String,
+    (name, caller): (String, Option<u32>),
     headers: &HeaderMap,
     mut input: Value,
     reply: &mut HeaderMap,
@@ -537,6 +559,7 @@ async fn run(
             .to_string(),
         folder,
         principal,
+        caller,
     };
     // the call record is the record of its own begin and end
     let audit = op
@@ -592,7 +615,9 @@ async fn run(
         }
     }
     match answer {
-        Ok(output) if name == op::ResourcesAct::NAME => routed(operator, headers, output).await,
+        Ok(output) if name == op::ResourcesAct::NAME => {
+            routed(operator, (headers, caller), output).await
+        }
         Ok(output) => (StatusCode::OK, Json(output)),
         Err(error) => refusal(&error),
     }
@@ -659,7 +684,7 @@ fn tag(reply: &mut HeaderMap, id: &str) {
 /// input check, its approval and its event, and its output goes back inside the route.
 async fn routed(
     operator: Arc<Operator>,
-    headers: &HeaderMap,
+    (headers, caller): (&HeaderMap, Option<u32>),
     route: Value,
 ) -> (StatusCode, Json<Value>) {
     let mut acted: Acted = match serde_json::from_value(route) {
@@ -674,7 +699,7 @@ async fn routed(
     inner.remove(CALL_HEADER);
     let (status, Json(output)) = Box::pin(run(
         operator,
-        acted.op.clone(),
+        (acted.op.clone(), caller),
         &inner,
         acted.input.clone(),
         &mut HeaderMap::new(),

@@ -159,6 +159,20 @@ async fn run() -> Result<()> {
                 Ok(()) => faults::works("registry"),
                 Err(e) => faults::failed("registry", "the dossier registry is not settled", &e),
             }
+            // the dossier locks of agents that ended while the operator was off
+            let freed =
+                legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), None)
+                    .and_then(|r| {
+                        let store = legionctl_core::dossier::Dossiers::open(&r.config.dossier)?;
+                        for line in store.free_ended_locks()? {
+                            eprintln!("operator: {line}");
+                        }
+                        Ok(())
+                    });
+            match freed {
+                Ok(()) => faults::works("ended"),
+                Err(e) => faults::failed("ended", "the dossiers of ended agents stay locked", &e),
+            }
         }
     })
     .await;
@@ -196,7 +210,10 @@ async fn run() -> Result<()> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     // a stop waits for no open request or event stream: their clients see the connection end (todo-125)
     tokio::select! {
-        served = axum::serve(listener, server::router(operator)) => Ok(served?),
+        served = axum::serve(
+            listener,
+            server::router(operator).into_make_service_with_connect_info::<server::Peer>(),
+        ) => Ok(served?),
         failed = supervise(modules) => failed,
         _ = term.recv() => Ok(()),
     }

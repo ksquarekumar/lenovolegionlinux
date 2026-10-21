@@ -42,6 +42,17 @@ macro_rules! annotations {
 }
 pub(crate) use annotations;
 
+/// v17 -> v18: the process that holds each dossier binding (an agent's MCP server), which tells whether its agent
+/// still runs (plan#todo-227 AOS-4), and the events by time, which `events --since/--until` reads (AOS-6).
+macro_rules! binding_holders {
+    () => {
+        "ALTER TABLE bindings ADD COLUMN holder_pid INTEGER;
+     ALTER TABLE bindings ADD COLUMN holder_started INTEGER;
+     CREATE INDEX events_ts ON events (ts);"
+    };
+}
+pub(crate) use binding_holders;
+
 /// The rows that span dossiers (design 23, E1, decision 1), in the operator's database: the bindings, the workspaces,
 /// the sessions and the dossier registry. Rows name a dossier by its current name; a rename changes them in one
 /// transaction, and `dossier_names` keeps each old name for the references outside (planning links, events).
@@ -651,7 +662,61 @@ impl Dossiers {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        live(self.stale_after(), (session, updated, scoped), now)
+        let holder = self
+            .db
+            .conn()
+            .query_row(
+                "SELECT holder_pid, holder_started, tool, acquired FROM bindings WHERE session = ?1 AND released IS NULL",
+                [session],
+                |r| {
+                    Ok(match (r.get(0)?, r.get(1)?, r.get::<_, String>(2)?) {
+                        (Some(pid), Some(started), _) => Holder::Process(pid, started),
+                        (_, _, tool) if tool == "mcp" => Holder::McpBefore(r.get(3)?),
+                        _ => Holder::Unknown,
+                    })
+                },
+            )
+            .optional()?
+            .unwrap_or(Holder::Unknown);
+        live(self.stale_after(), (session, updated, scoped), holder, now)
+    }
+
+    /// Record process `pid` (an agent's MCP server) as the holder of `session`'s binding: the binding lives while
+    /// that process runs.
+    ///
+    /// # Errors
+    /// The process's start cannot be read, or the database write fails.
+    pub fn hold(&self, session: &str, pid: u32) -> Result<()> {
+        if let Some(started) = process_started(pid)? {
+            self.db.conn().execute(
+                "UPDATE bindings SET holder_pid = ?1, holder_started = ?2 WHERE session = ?3 AND released IS NULL",
+                params![pid, started, session],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Release every binding whose session ended (the operator's start): one line per lock freed.
+    ///
+    /// # Errors
+    /// A holder's state cannot be read, or the database write fails.
+    pub fn free_ended_locks(&self) -> Result<Vec<String>> {
+        let mut freed = Vec::new();
+        for lock in self.locks()?.into_iter().filter(|l| l.stale) {
+            // a binding refreshed since it was read is live again
+            let released = self.db.conn().execute(
+                "UPDATE bindings SET released = ?1 WHERE session = ?2 AND dossier = ?3 AND updated = ?4 \
+                 AND released IS NULL",
+                params![now(), lock.session, lock.dossier, lock.updated],
+            )?;
+            if released > 0 {
+                freed.push(format!(
+                    "freed dossier {}: its session {} ended",
+                    lock.dossier, lock.session
+                ));
+            }
+        }
+        Ok(freed)
     }
 
     /// Count a reply of `session` on `dossier` that ended with the workspace content `work`: the reply counts when
@@ -1740,26 +1805,100 @@ pub(crate) fn real(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// The process that holds a binding.
+#[derive(Clone, Copy)]
+pub enum Holder {
+    /// The process recorded with the binding: its id and start (seconds since the epoch).
+    Process(u32, i64),
+    /// A binding that an older build made through an MCP server (none recorded), at this time: its server started
+    /// before it.
+    McpBefore(i64),
+    /// None known (a binding of the CLI or a hook).
+    Unknown,
+}
+
 /// Whether the session that holds a binding last refreshed at `updated` is still live: active within `stale_after`
-/// seconds (each hook call and dossier write refreshes it), and for a session legionctl started in a scope
-/// (`scoped`: the session row's scoped and inside), that scope still runs. A minute of grace covers the time between
-/// the bind and the client's `systemd-run`.
+/// seconds (each hook call and dossier write refreshes it); for a session legionctl started in a scope (`scoped`: the
+/// session row's scoped and inside), that scope still runs; else its `holder` process still runs. A minute of grace
+/// covers the time between the bind and the client's `systemd-run`.
 ///
 /// # Errors
-/// The scope's state cannot be read: the session may run, so it is not taken as gone.
+/// The scope's state, or the processes, cannot be read: the session may run, so it is not taken as gone.
 pub(crate) fn live(
     stale_after: i64,
     (session, updated, scoped): (&str, i64, Option<(bool, String)>),
+    holder: Holder,
     now: i64,
 ) -> Result<bool> {
     if now - updated > stale_after {
         return Ok(false);
     }
-    match scoped {
-        Some((true, inside)) => Ok(now - updated <= 60
-            || crate::session::active(session, crate::session::Inside::from_db(&inside))?),
-        _ => Ok(true),
+    if let Some((true, inside)) = scoped {
+        return Ok(now - updated <= 60
+            || crate::session::active(session, crate::session::Inside::from_db(&inside))?);
     }
+    Ok(match holder {
+        Holder::Process(pid, started) => process_started(pid)? == Some(started),
+        Holder::McpBefore(acquired) => mcp_servers_started()?.iter().any(|s| *s <= acquired),
+        Holder::Unknown => true,
+    })
+}
+
+/// When process `pid` started, in seconds since the epoch; none when it is gone.
+///
+/// # Errors
+/// /proc cannot be read for another reason.
+fn process_started(pid: u32) -> Result<Option<i64>> {
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("reading /proc/{pid}/stat")),
+    };
+    // the fields after the command's closing parenthesis; starttime is field 22 of the whole line
+    let ticks: i64 = stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().nth(19))
+        .and_then(|t| t.parse().ok())
+        .with_context(|| format!("/proc/{pid}/stat has no start time: {stat}"))?;
+    let boot: i64 = std::fs::read_to_string("/proc/stat")?
+        .lines()
+        .find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok())
+        .context("/proc/stat has no btime")?;
+    let hz = i64::try_from(rustix::param::clock_ticks_per_second())?;
+    Ok(Some(boot + ticks / hz))
+}
+
+/// When each running `legionctl mcp` (an agent's MCP server) started, in seconds since the epoch.
+///
+/// # Errors
+/// /proc cannot be read.
+fn mcp_servers_started() -> Result<Vec<i64>> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut started = Vec::new();
+    for entry in std::fs::read_dir("/proc")? {
+        let Some(pid) = entry?
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        // a process that ends while it is read is not a server
+        let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        let mut args = cmdline.split(|b| *b == 0);
+        let program = args
+            .next()
+            .map(|a| Path::new(std::ffi::OsStr::from_bytes(a)));
+        if program.and_then(Path::file_name) == Some(std::ffi::OsStr::new("legionctl"))
+            && args.next() == Some(b"mcp".as_slice())
+            && let Some(s) = process_started(pid)?
+        {
+            started.push(s);
+        }
+    }
+    Ok(started)
 }
 
 /// A new dossier id: `dsr-` and a ULID (48 bits of milliseconds, 80 random bits, Crockford base32), so ids sort by

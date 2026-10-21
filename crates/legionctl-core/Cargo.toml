@@ -20,7 +20,7 @@ base64 = "0.22.1"
 serde_path_to_error = "0.1.20"
 # wait4: the CPU, memory and IO profile of a check run (design 23, E2 rule 5)
 libc = "0.2.190"
-rustix = { version = "1.1.5", features = ["fs"] }
+rustix = { version = "1.1.5", features = ["fs", "param"] }
 rusqlite.workspace = true
 toml_edit = "0.25.15"
 similar = "3.2.0"

@@ -3164,13 +3164,19 @@ impl Engine for Operator {
                 lines: vec![format!("your dossier: {}", input.name)],
             });
         }
-        let lines = dossiers()?.bind(
-            session(&input.session)?,
+        let store = dossiers()?;
+        let id = session(&input.session)?;
+        let lines = store.bind(
+            id,
             &ctx.actor,
             &input.name,
             input.steal,
             Some(&place_of(ctx.folder()?)),
         )?;
+        // an agent's MCP server runs as long as its agent: the binding ends with it (Codex review runs never release)
+        if let (Some(pid), "mcp") = (ctx.caller, ctx.actor.as_str()) {
+            store.hold(id, pid)?;
+        }
         Ok(Lines { lines })
     }
 
