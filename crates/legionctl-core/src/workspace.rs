@@ -82,12 +82,7 @@ fn main_ready(ws: &Workspace, base: &str) -> Result<()> {
         ws.repo.display(),
         ws.base
     );
-    let (staged, unstaged, _, conflicted) = changes(&ws.repo, false)?;
-    ensure!(
-        staged + unstaged + conflicted == 0,
-        "the main checkout {} has uncommitted changes; the fast-forward would touch them",
-        ws.repo.display()
-    );
+    refuse_dirty_main(&ws.repo)?;
     let now = git(&ws.repo, &["rev-parse", &ws.base])?;
     ensure!(
         now == base,
@@ -237,11 +232,11 @@ pub fn repo_of(dir: &Path) -> Result<Option<PathBuf>> {
         .context("the repository has no main checkout")
 }
 
-/// Count the entries of `git status --porcelain` by kind: (staged, unstaged, untracked, conflicted), also in each
-/// submodule. `workspace`: every file that is not committed counts, also one that the repository's own settings
+/// The entries of `git status --porcelain` (`XY path`), also of each submodule, with each path from the top of `path`.
+/// `workspace`: every file that is not committed, also one that the repository's own settings
 /// (`status.showUntrackedFiles`, a submodule's `ignore`) hide, because a merge ships only commits; else (the main
-/// checkout) a submodule's untracked files do not count, because a fast-forward cannot touch them (F4).
-fn changes(path: &Path, workspace: bool) -> Result<(u32, u32, u32, u32)> {
+/// checkout) a submodule's untracked files are left out, because a fast-forward cannot touch them (F4).
+fn status(path: &Path, workspace: bool) -> Result<Vec<String>> {
     let args: &[&str] = if workspace {
         &[
             "status",
@@ -252,23 +247,33 @@ fn changes(path: &Path, workspace: bool) -> Result<(u32, u32, u32, u32)> {
     } else {
         &["status", "--porcelain=v1", "--ignore-submodules=untracked"]
     };
-    let mut lines = git(path, args)?;
+    let mut entries: Vec<String> = git(path, args)?.lines().map(String::from).collect();
     // `--ignore-submodules` does not reach a nested submodule, whose own `ignore = all` hides it: each one is read
     if path.join(".gitmodules").exists() {
-        lines.push('\n');
-        lines.push_str(&git(
+        let each = format!("echo \"#$displaypath\"; git {}", args.join(" "));
+        let mut submodule = String::new();
+        for line in git(
             path,
-            &[
-                "submodule",
-                "foreach",
-                "--quiet",
-                "--recursive",
-                &format!("git {}", args.join(" ")),
-            ],
-        )?);
+            &["submodule", "foreach", "--quiet", "--recursive", &each],
+        )?
+        .lines()
+        {
+            match line.strip_prefix('#') {
+                Some(at) => submodule = format!("{at}/"),
+                None if line.len() > 3 => {
+                    entries.push(format!("{}{submodule}{}", &line[..3], &line[3..]));
+                }
+                None => {}
+            }
+        }
     }
+    Ok(entries)
+}
+
+/// The entries of [`status`] by kind: (staged, unstaged, untracked, conflicted).
+fn changes(path: &Path, workspace: bool) -> Result<(u32, u32, u32, u32)> {
     let mut counts = (0, 0, 0, 0);
-    for line in lines.lines() {
+    for line in status(path, workspace)? {
         let code: Vec<char> = line.chars().take(2).collect();
         let [x, y] = code[..] else { continue };
         if x == '?' {
@@ -281,6 +286,32 @@ fn changes(path: &Path, workspace: bool) -> Result<(u32, u32, u32, u32)> {
         }
     }
     Ok(counts)
+}
+
+/// Refuse a merge while the main checkout has a tracked change, which the fast-forward would touch: name each file,
+/// and for Claude Code's `.claude/settings.json` (the permissions that the user allows at a prompt go there) say where
+/// they can go instead. Nothing is changed (F5, feedbacks/0001 item 5).
+fn refuse_dirty_main(repo: &Path) -> Result<()> {
+    let files: Vec<String> = status(repo, false)?
+        .iter()
+        .filter(|line| !line.starts_with("??"))
+        .map(|line| line[3..].to_string())
+        .collect();
+    if files.is_empty() {
+        return Ok(());
+    }
+    let settings = if files.iter().any(|f| f == ".claude/settings.json") {
+        " Claude Code writes the permissions that you allow at a prompt into .claude/settings.json: commit them, or \
+         keep them in .claude/settings.local.json (Claude Code's file for your own settings, not for git)."
+    } else {
+        ""
+    };
+    bail!(
+        "the main checkout {} has uncommitted changes that the fast-forward would touch: {}. Commit them or move them away, then \
+         merge again.{settings}",
+        repo.display(),
+        files.join(", ")
+    )
 }
 
 /// The repository has a commit: a workspace needs one for its base.

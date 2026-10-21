@@ -2918,6 +2918,58 @@ fn the_main_checkout_check_skips_untracked_submodule_files_and_sees_hidden_track
     assert_eq!(subject(), "add one");
 }
 
+/// F5 (feedbacks/0001 item 5): Claude Code writes the permissions that the user allows at a prompt into the main
+/// checkout's tracked `.claude/settings.json`, and the merge is refused for it. The refusal names each changed file
+/// (also one in a submodule), says where such permissions can go instead, and gives no command that drops the user's
+/// change; the file's bytes and the index stay as they were.
+#[test]
+fn a_merge_refused_for_the_main_checkout_names_its_changed_files() {
+    let (op, home) = operator("merge-dirty-main");
+    let repo = repository(&home);
+    submodules(&home, &repo);
+    let settings = repo.join(".claude/settings.json");
+    write(&settings, "{\"permissions\": {\"allow\": []}}\n");
+    git(&home, &repo, &["add", "."]);
+    git(&home, &repo, &["commit", "--quiet", "-m", "settings"]);
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let run = |args: &[&str]| op.run(&repo, &env, args, "");
+    assert!(run(&["dossier", "use", "port"]).status.success());
+    assert!(run(&["workspace", "open"]).status.success());
+    write(
+        &home.join("worktrees/repo/port/one.txt"),
+        "the dossier's work\n",
+    );
+    assert!(
+        run(&["workspace", "checkpoint", "add one"])
+            .status
+            .success()
+    );
+
+    let granted = "{\"permissions\": {\"allow\": [\"Bash(make test)\"]}}\n";
+    write(&settings, granted);
+    git(&home, &repo, &["add", ".claude/settings.json"]);
+    write(&repo.join("vendor/lib/in/lib.rs"), "pub fn changed() {}\n");
+    let before = git(&home, &repo, &["status", "--porcelain"]);
+    let refused = run(&["workspace", "merge"]);
+    let why = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !refused.status.success()
+            && why.contains(".claude/settings.json")
+            && why.contains("vendor/lib/in/lib.rs")
+            && why.contains(".claude/settings.local.json"),
+        "{why}"
+    );
+    for drop in ["git checkout", "git restore", "git reset", "git stash"] {
+        assert!(!why.contains(drop), "{drop}: {why}");
+    }
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), granted);
+    assert_eq!(git(&home, &repo, &["status", "--porcelain"]), before);
+    assert_eq!(git(&home, &repo, &["log", "-1", "--format=%s"]), "settings");
+}
+
 #[test]
 fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_repository() {
     let (op, home) = operator("workspace");
