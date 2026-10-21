@@ -72,33 +72,15 @@ pub struct Operator {
     pub held: Vec<Scratch>,
 }
 
-/// The operator's HOME: the test's (it must be a scratch folder), else its runtime folder. A config file puts
-/// `workspace.root` there, first in the lowest layer the test has (its machine's `/etc/legionctl` when it has a
-/// stand-in machine root, else the user's layer), so the test's own files win: no test makes worktrees or thread
-/// folders in the user's real workspace root (CI run 39189528444 made /data/worktrees/threads/thread-1).
+/// The operator's HOME: the test's (it must be a scratch folder), else its runtime folder. The shipped
+/// `workspace.root` is under it, so no test makes worktrees or thread folders in the user's real folders (CI run
+/// 39189528444 made /data/worktrees/threads/thread-1 when that was the default).
 fn scratch_home(env: &[(&str, OsString)], runtime: &Path) -> PathBuf {
     let home = env
         .iter()
         .find(|(k, _)| *k == "HOME")
         .map_or_else(|| runtime.to_path_buf(), |(_, h)| PathBuf::from(h));
     scratch_only(&home);
-    let var = |name: &str| {
-        env.iter()
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| PathBuf::from(v))
-    };
-    let config = match var("LEGIONCTL_SYSROOT") {
-        Some(root) => root.join("etc/legionctl"),
-        None => var("XDG_CONFIG_HOME")
-            .unwrap_or_else(|| home.join(".config"))
-            .join("legionctl"),
-    };
-    scratch_only(&config);
-    std::fs::write(
-        config.join("00-test-root.jsonc"),
-        serde_json::json!({"workspace": {"root": home.join("worktrees")}}).to_string(),
-    )
-    .unwrap();
     home
 }
 

@@ -291,14 +291,14 @@ fn a_broken_value_is_a_health_finding(lab: &Lab) {
     .unwrap();
     let root = row(&lab.op, "workspace.root");
     assert_eq!(
-        root["value"], "/data/worktrees",
+        root["value"], "~/.local/share/legionctl/worktrees",
         "the last good value applies"
     );
     let finding = root["finding"].as_str().unwrap().to_string();
     assert_eq!(
         finding,
         "Working copies folder: legionctl cannot write or make /proc/copies. Give your user write access to it, \
-         or change the setting. Until then legionctl uses /data/worktrees."
+         or change the setting. Until then legionctl uses ~/.local/share/legionctl/worktrees."
     );
     let doctor: Value = serde_json::from_slice(&lab.op.cli(&["doctor", "--json"]).stdout).unwrap();
     let health = doctor["findings"]
