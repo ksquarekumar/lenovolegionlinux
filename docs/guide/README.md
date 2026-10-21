@@ -229,6 +229,36 @@ legionctl boot install           # then restart once
 Caution: install `systemd-ukify` and `sbsigntools` before `boot install`. A missing tool stops the install at its
 step.
 
+## Settings
+
+Settings are JSONC files in layers. Each layer overrides the layers before it:
+
+1. the built-in defaults;
+2. this computer: `/etc/legionctl`;
+3. you: `~/.config/legionctl`;
+4. the repository: its `.legionctl` folder in git;
+5. you, for one repository: `~/.config/legionctl/repos/<repo>/`, outside git.
+
+```bash
+legionctl config layers                                # each layer, its folder and files, and problems
+legionctl config settings --key workspace.nudge        # the value and the layer that set it
+legionctl config set checks.required '["lint"]' --scope user-repo
+```
+
+Your folder for one repository holds the same files as `.legionctl`: config files, `checks.jsonc` and
+`capabilities/`. It takes only the settings that a project can set. A setting for you everywhere (for example
+`gateway.port`) is ignored there, and `config layers` shows one line about it.
+
+`<repo>` is the name that git gives the repository: the folder name of the parent of
+`git rev-parse --git-common-dir`. Usually this is the folder name of the main checkout, so the main checkout and each
+of its worktrees use the same folder. Two special cases:
+
+- A checkout made with `git init --separate-git-dir <folder>/<name>.git` gets the name of `<folder>`.
+- Each submodule gets the name `modules`.
+
+When two repositories that legionctl knows have the same name, they share one folder. `config layers` and `doctor`
+then show one line that names both paths. To keep them apart, rename the folder of one main checkout.
+
 ## Safety
 
 | Class | Who approves | Examples |
