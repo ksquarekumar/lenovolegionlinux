@@ -893,13 +893,15 @@ const OLD_DEFAULTS: [(&str, &str); 1] = [("workspace.root", "/data/worktrees")];
 
 /// The upgrade of the settings (at the operator's start): a default that changed is written into your own layer with
 /// its old value, when you set none (no layer but the defaults sets it) and your work is there (an open workspace
-/// under it), through the one writer and its history, so nothing moves. The lines of what it kept.
+/// under it), through the one writer and its history, so nothing moves. The old value is a path of this machine, read
+/// through its root (`LEGIONCTL_SYSROOT`) as legionctl reads the machine's other paths. The lines of what it kept.
 ///
 /// # Errors
 /// The workspaces or the settings cannot be read or written.
 pub fn upgrade(resolved: &Resolved, store: &crate::dossier::Dossiers) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for (key, old) in OLD_DEFAULTS {
+        let old = legionctl_machine::sysroot::SysRoot::from_env().path(old);
         let set = resolved
             .trace
             .get(key)
@@ -907,13 +909,19 @@ pub fn upgrade(resolved: &Resolved, store: &crate::dossier::Dossiers) -> Result<
         let there = store
             .workspaces(None)?
             .iter()
-            .any(|w| w.path.starts_with(old));
+            .any(|w| w.path.starts_with(&old));
         if set || !there {
             continue;
         }
-        set_mine(resolved, "upgrade", key, Value::String(old.into()))?;
+        set_mine(
+            resolved,
+            "upgrade",
+            key,
+            Value::String(old.display().to_string()),
+        )?;
         out.push(format!(
-            "kept {key} = {old} for you: your workspaces are there"
+            "kept {key} = {} for you: your workspaces are there",
+            old.display()
         ));
     }
     Ok(out)

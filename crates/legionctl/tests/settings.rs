@@ -1010,22 +1010,33 @@ fn a_sets_forbidden_git_command_binds_only_the_sessions_that_hold_the_set() {
 
 /// The default folder of the working copies is under the home now; an upgrade keeps the old default for a user whose
 /// workspaces are there, through the one writer and its history, so nothing moves; a user with no workspace there, or
-/// with a folder of their own, keeps what they have.
+/// with a folder of their own, keeps what they have. Each home has its own machine root (`LEGIONCTL_SYSROOT`), so the
+/// old default `/data/worktrees` is a folder of the test, not of the computer that runs it (the CI runner has none).
 #[test]
 fn an_upgrade_keeps_the_old_working_copies_folder_where_the_workspaces_are() {
     let start = |home: &Path, tag: &str| {
-        Operator::start(tag, &[("HOME", OsString::from(home.as_os_str()))])
+        Operator::start(
+            tag,
+            &[
+                ("HOME", OsString::from(home.as_os_str())),
+                ("LEGIONCTL_SYSROOT", home.join("root").into_os_string()),
+            ],
+        )
     };
     let root = |op: &Operator| row(op, "workspace.root");
+    // a workspace of the user's in the old default folder of their machine
     let open_workspace = |home: &Path| {
+        let old_root = home.join("root/data/worktrees");
+        std::fs::create_dir_all(old_root.join("r/d")).unwrap();
         let added = Command::new("python3")
             .args([
                 "-c",
                 "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
                  c.execute(\"INSERT INTO workspaces (dossier, repo, path, branch, base, opened) VALUES \
-                 ('d', '/r', '/data/worktrees/r/d', 'legionctl/d', 'main', 1)\"); c.commit()",
+                 ('d', '/r', ?, 'legionctl/d', 'main', 1)\", (sys.argv[2],)); c.commit()",
             ])
             .arg(home.join(".local/state/legionctl/operator.db"))
+            .arg(old_root.join("r/d"))
             .status()
             .unwrap();
         assert!(added.success());
@@ -1058,7 +1069,11 @@ fn an_upgrade_keeps_the_old_working_copies_folder_where_the_workspaces_are() {
     let kept = root(&op);
     assert_eq!(
         (kept["value"].clone(), kept["from"].clone()),
-        (json!("/data/worktrees"), json!("user"))
+        (
+            json!(old.join("root/data/worktrees").display().to_string()),
+            json!("user")
+        ),
+        "{kept:#}"
     );
     let history: Value = serde_json::from_str(&op.ok(&["config", "history", "--json"])).unwrap();
     assert_eq!(history["items"].as_array().unwrap().len(), 1, "{history:#}");
