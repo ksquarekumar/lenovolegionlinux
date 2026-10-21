@@ -120,10 +120,18 @@ type Answer = Box<dyn std::any::Any + Send>;
 /// The statements of a control write.
 type Statements = Box<dyn FnOnce(&Connection) -> Result<Answer> + Send>;
 
+/// Why a control write has no answer: its own error (with its code, such as Conflict), or the batch's transaction
+/// failed (busy: it waited out the lock), or it did not run.
+enum Failed {
+    Job(anyhow::Error),
+    Busy,
+    Batch(String),
+}
+
 /// A write of control state through [`Db::queued`]: its statements, and where its answer goes.
 struct ControlWrite {
     run: Statements,
-    ack: std::sync::mpsc::Sender<std::result::Result<Answer, (bool, String)>>,
+    ack: std::sync::mpsc::Sender<std::result::Result<Answer, Failed>>,
 }
 
 /// The one writer of each database's control state in this process (the call record): the jobs that came in during
@@ -156,7 +164,14 @@ fn control_writer(path: &Path) -> std::sync::mpsc::Sender<ControlWrite> {
                             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                         for job in jobs.by_ref() {
                             let ran = tx.savepoint().and_then(|mut sp| {
-                                let answer = (job.run)(&sp);
+                                // a job that panics is that job's failure: the writer goes on with the others
+                                let answer =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        (job.run)(&sp)
+                                    }))
+                                    .unwrap_or_else(|_| {
+                                        Err(anyhow::anyhow!("the control write failed"))
+                                    });
                                 if answer.is_ok() {
                                     sp.commit()?;
                                 } else {
@@ -177,17 +192,21 @@ fn control_writer(path: &Path) -> std::sync::mpsc::Sender<ControlWrite> {
                     });
                     acks.extend(jobs.map(|job| (job.ack, None)));
                     let failed = ran.err().map(|e| {
-                        (
-                            crate::error::message_of(&e).contains("busy for"),
-                            format!("{e:#}"),
-                        )
+                        if crate::error::message_of(&e).contains("busy for") {
+                            None
+                        } else {
+                            Some(format!("{e:#}"))
+                        }
                     });
                     for (ack, answer) in acks {
                         let _ = ack.send(match (&failed, answer) {
-                            (Some(why), _) => Err(why.clone()),
+                            (Some(None), _) => Err(Failed::Busy),
+                            (Some(Some(why)), _) => Err(Failed::Batch(why.clone())),
                             (None, Some(Ok(value))) => Ok(value),
-                            (None, Some(Err(e))) => Err((false, format!("{e:#}"))),
-                            (None, None) => Err((false, "the control write did not run".into())),
+                            (None, Some(Err(e))) => Err(Failed::Job(e)),
+                            (None, None) => {
+                                Err(Failed::Batch("the control write did not run".into()))
+                            }
                         });
                     }
                 }
@@ -668,13 +687,15 @@ impl Db {
                 .downcast::<T>()
                 .map(|v| *v)
                 .map_err(|_| anyhow::anyhow!("the control writer answered another type")),
+            // the job's own error, with its code
+            Err(Failed::Job(e)) => Err(e),
             // the same error as a direct write that waited out the lock, which error::message_of says in one plain
             // sentence
-            Err((true, _)) => Err(anyhow::Error::new(rusqlite::Error::SqliteFailure(
+            Err(Failed::Busy) => Err(anyhow::Error::new(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
                 None,
             ))),
-            Err((false, text)) => Err(anyhow::anyhow!("{text}")),
+            Err(Failed::Batch(text)) => Err(anyhow::anyhow!("{text}")),
         }
     }
 
@@ -1120,6 +1141,64 @@ fn make(path: &Path, schema: &Schema) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A control write that fails keeps its own error and its code, one that panics fails alone, and the writer goes
+    /// on with the next ones (EV-review-17: a panic stopped the writer for the process's life, and Conflict came back
+    /// as Failed).
+    #[test]
+    fn a_failed_or_panicked_control_write_fails_alone_with_its_own_error() {
+        let dir = crate::scratch::Scratch::new(format!(
+            "/var/tmp/legionctl-db-failed-{}",
+            std::process::id()
+        ));
+        let db = Db::open(&dir.join("operator.db"), OPERATOR).unwrap();
+        let refused = db
+            .queued(|_| -> Result<()> {
+                Err(crate::error::coded(crate::error::Code::Conflict, "in use"))
+            })
+            .unwrap_err();
+        assert_eq!(
+            crate::error::code_of(&refused),
+            crate::error::Code::Conflict,
+            "{refused:#}"
+        );
+        let panicked = db
+            .queued(|_| -> Result<()> { panic!("a job's bug") })
+            .unwrap_err();
+        assert_eq!(format!("{panicked:#}"), "the control write failed");
+        let next = db.queued(|conn| {
+            conn.execute(
+                "INSERT INTO gateway_usage (ts, account, model, tokens_in, tokens_out, cached, status, ms) \
+                 VALUES (1, 'a', 'm', 1, 1, 0, 200, 1)",
+                [],
+            )?;
+            Ok(())
+        });
+        assert!(next.is_ok(), "{next:?}");
+        let rows: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM gateway_usage", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    /// A write that waits out the lock under what it did says what it did first, then the plain sentence.
+    #[test]
+    fn a_busy_write_says_what_it_did_and_the_plain_sentence() {
+        let busy = anyhow::Error::new(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        ));
+        assert_eq!(
+            crate::error::message_of(&busy),
+            "other writes kept the legionctl database busy for 5 s; try again"
+        );
+        let named = busy.context("writing a named record");
+        assert_eq!(
+            crate::error::message_of(&named),
+            "writing a named record: other writes kept the legionctl database busy for 5 s; try again"
+        );
+    }
 
     /// Many writers of control state at once (synchronous FULL, on a disk that syncs): 300 threads, each with its
     /// connection, start and end 4 calls in the call record. Each write lands, none waits out the busy timeout (with

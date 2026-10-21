@@ -81,11 +81,7 @@ fn scratch_home(env: &[(&str, OsString)], runtime: &Path) -> PathBuf {
         .iter()
         .find(|(k, _)| *k == "HOME")
         .map_or_else(|| runtime.to_path_buf(), |(_, h)| PathBuf::from(h));
-    assert!(
-        home.starts_with("/var/tmp") || home.starts_with(std::env::temp_dir()),
-        "the operator's HOME {} is not a test's scratch folder",
-        home.display()
-    );
+    scratch_only(&home);
     let var = |name: &str| {
         env.iter()
             .find(|(k, _)| *k == name)
@@ -97,13 +93,30 @@ fn scratch_home(env: &[(&str, OsString)], runtime: &Path) -> PathBuf {
             .unwrap_or_else(|| home.join(".config"))
             .join("legionctl"),
     };
-    std::fs::create_dir_all(&config).unwrap();
+    scratch_only(&config);
     std::fs::write(
         config.join("00-test-root.jsonc"),
         serde_json::json!({"workspace": {"root": home.join("worktrees")}}).to_string(),
     )
     .unwrap();
     home
+}
+
+/// `dir` (made when it is not there) is inside a test's scratch folder (under /var/tmp or the temp folder) once `..`
+/// and symbolic links are resolved: the harness never writes into the user's own folders.
+fn scratch_only(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let real = std::fs::canonicalize(dir).unwrap();
+    let inside = [PathBuf::from("/var/tmp"), std::env::temp_dir()]
+        .iter()
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .any(|root| real.starts_with(&root) && real != root);
+    assert!(
+        inside,
+        "{} ({}) is not in a test's scratch folder",
+        dir.display(),
+        real.display()
+    );
 }
 
 impl Operator {

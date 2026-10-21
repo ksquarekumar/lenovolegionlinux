@@ -106,8 +106,12 @@ pub fn message_of(error: &anyhow::Error) -> String {
     if busy {
         // the database's own text says the same in its terms; what was done comes first
         // SQLite's own error has its code as its source: no words of what was done
-        let what = if error.chain().count() > 1 && error.downcast_ref::<rusqlite::Error>().is_none()
-        {
+        // (the outermost error: downcast_ref of anyhow looks below its context too)
+        let outer_is_sqlite = error
+            .chain()
+            .next()
+            .is_some_and(|e| e.downcast_ref::<rusqlite::Error>().is_some());
+        let what = if error.chain().count() > 1 && !outer_is_sqlite {
             format!("{error}: ")
         } else {
             String::new()
