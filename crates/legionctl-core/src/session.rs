@@ -1150,7 +1150,9 @@ fn claude_settings(config: &Config, grant: &crate::runnables::Grant) -> serde_js
         .map(|command| format!("Bash({command}:*)"))
         .collect();
     let mut settings = serde_json::json!({ "permissions": { "deny": deny } });
-    if let Some(harness) = &manifest.harness {
+    // a project that owns its harness gets no settings of legionctl's harness set, only the denies
+    let owned = config.project.owns.contains(&crate::config::Area::Harness);
+    if let (Some(harness), false) = (&manifest.harness, owned) {
         merge_json(&mut settings, &harness.settings);
     }
     settings
@@ -1401,7 +1403,7 @@ fn grant_mounts(
 /// The granted harness's variables (into `env`: what turns its telemetry and updates off, and its own) and the
 /// arguments after its command.
 fn harness_parts(
-    manifest: &crate::runnables::Manifest,
+    (manifest, owned): (&crate::runnables::Manifest, bool),
     env: &mut Vec<(String, String)>,
 ) -> Vec<String> {
     let mut args = Vec::new();
@@ -1413,7 +1415,10 @@ fn harness_parts(
             args.extend(t.args.iter().cloned());
         }
         env.extend(harness.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-        args.extend(harness.args.iter().cloned());
+        // its options set the harness's own settings (Codex's -c): none for a project that owns its harness
+        if !owned {
+            args.extend(harness.args.iter().cloned());
+        }
     }
     args
 }
@@ -1907,7 +1912,8 @@ impl Dossiers {
             ("LEGIONCTL_SESSION".to_string(), id.clone()),
             ("LEGIONCTL_TOKEN".to_string(), token.to_string()),
         ];
-        let harness_args = harness_parts(manifest, &mut env);
+        let owned = config.project.owns.contains(&crate::config::Area::Harness);
+        let harness_args = harness_parts((manifest, owned), &mut env);
         codex_bound_home(&mut mounts, &mut env, &id, (who.account, who.tools))?;
         team_role(&mut mounts, &mut env, &id, (who.agent, who.member))?;
         if let Some(skills) = skills {

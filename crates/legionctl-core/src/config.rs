@@ -47,6 +47,8 @@ pub struct Config {
     pub views: ViewsConfig,
     /// What agents may and may not do: operations, toolsets, brokered tools, git and shell commands.
     pub actions: crate::actions::ActionsConfig,
+    /// What a project manages itself (its `.legionctl` only, after the user allowed the file).
+    pub project: ProjectConfig,
     /// The capability sets of the layers (`<layer>/capabilities/*.jsonc`), filled by [`resolve`].
     #[serde(skip)]
     #[schemars(skip)]
@@ -65,6 +67,100 @@ pub struct ViewsConfig {
     /// rlcd's pick counts from this probability on.
     #[schemars(range(min = 0.0, max = 1.0))]
     pub rlcd_min: f64,
+}
+
+/// What a project manages itself: legionctl leaves these areas to it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectConfig {
+    pub owns: Vec<Area>,
+}
+
+/// An area that a project may manage itself.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Area {
+    /// The agent harness's settings: a session gets no settings of legionctl's harness set (Claude Code's settings,
+    /// Codex's `-c` options); the git gate's and the forbidden commands' denies stay.
+    Harness,
+    /// The skills a session gets (`session.skills`).
+    Skills,
+    /// The checks: no nudge about missing checks.
+    Checks,
+    /// The working copies: no nudge to open a workspace.
+    Workspace,
+    /// The notes: no nudge to keep the dossier.
+    Dossier,
+    /// The reminders: none is given in the project.
+    Reminders,
+}
+
+impl Area {
+    /// The area's word, as a file names it.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Area::Harness => "harness",
+            Area::Skills => "skills",
+            Area::Checks => "checks",
+            Area::Workspace => "workspace",
+            Area::Dossier => "dossier",
+            Area::Reminders => "reminders",
+        }
+    }
+
+    /// The settings that legionctl turns off for an owned area, and the value each gets.
+    fn turns_off(self, value: &Value) -> Vec<(String, Value)> {
+        match self {
+            Area::Harness => Vec::new(),
+            Area::Skills => vec![("session.skills".into(), Value::Null)],
+            Area::Checks => vec![("checks.nudge".into(), Value::Bool(false))],
+            Area::Workspace => vec![("workspace.nudge".into(), Value::Bool(false))],
+            Area::Dossier => vec![
+                ("dossier.nudge".into(), Value::Array(Vec::new())),
+                ("dossier.nudge_turns".into(), Value::from(0)),
+            ],
+            Area::Reminders => value["reminders"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(id, _)| (format!("reminders.{id}.enabled"), Value::Bool(false)))
+                .collect(),
+        }
+    }
+}
+
+/// The areas that the project owns (its `project.owns`, once the user allowed its file) turn their settings off: in
+/// the value and in the trace, as the file that owns them set them, so every reader and `config explain` agree.
+fn leave_owned_areas(value: &mut Value, trace: &mut BTreeMap<String, Vec<Setting>>) {
+    let Some(source) = trace
+        .get("project.owns")
+        .and_then(|sets| sets.last())
+        .map(|s| s.source.clone())
+    else {
+        return;
+    };
+    let owns: Vec<Area> =
+        serde_json::from_value(value["project"]["owns"].clone()).unwrap_or_default();
+    for area in owns {
+        for (key, off) in area.turns_off(value) {
+            let parts: Vec<&str> = key.split('.').collect();
+            let mut at = &mut *value;
+            for part in &parts[..parts.len() - 1] {
+                at = &mut at[*part];
+            }
+            at[parts[parts.len() - 1]] = off.clone();
+            trace.entry(key).or_default().push(Setting {
+                source: Source {
+                    layer: source.layer.clone(),
+                    file: format!("{} (project.owns {})", source.file, area.word()),
+                },
+                value: off,
+            });
+        }
+    }
 }
 
 /// The desktop app (`legionctl-app`).
@@ -482,7 +578,7 @@ pub struct Meta {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
-    /// Workspaces live in `<root>/<repo>/<dossier>`.
+    /// Workspaces live in `<root>/<repo>/<dossier>`; `~/` is the home (made absolute when the config resolves).
     pub root: PathBuf,
     /// Tell the agent to open a workspace: at session start when there is none, and before a reply ends when it
     /// changed the main checkout instead.
@@ -1094,8 +1190,10 @@ pub fn resolve_quiet(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         &mut problems,
     );
     let mut value = Value::Object(merged);
+    leave_owned_areas(&mut value, &mut trace);
     let held = hold_unusable(&mut value, &trace);
     let mut config = typed(&value, &trace)?;
+    config.workspace.root = expand_home(&config.workspace.root.to_string_lossy())?;
     let mut unapproved = unapproved;
     let mut set_layers = vec![("system", system_dir.clone()), ("user", user_dir.clone())];
     set_layers.extend(repo_dir.iter().map(|d| ("repo", d.clone())));

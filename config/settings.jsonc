@@ -102,6 +102,8 @@
   "actions.allow": {"label": "Allowed actions", "help": "Actions that agents can do without a question, such as a tool set or a tool of a tool server.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools", "runnables", "settings-actions"]},
   "actions.forbid": {"label": "Forbidden actions", "help": "Actions that agents can never do, such as a git command or an operation.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["session", "tools", "runnables", "settings-actions"], "union": true},
 
+  "project.owns": {"label": "Areas the project manages", "help": "What the project manages itself, so legionctl leaves it alone: its harness settings, skills, checks, working copies, notes or reminders.", "scope": ["project"], "class": "powerful", "restart": "none", "affects": ["session", "code", "workspace", "dossier", "reminders"]},
+
   "app.agent": {"label": "App agent", "help": "The agent that the app uses when you do not choose one.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["thread"]},
 
   "rlcd.backend": {"label": "Fast decision model", "help": "The fast decision model that legionctl uses.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["rlcd"]},

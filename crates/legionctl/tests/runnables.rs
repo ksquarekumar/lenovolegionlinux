@@ -748,3 +748,47 @@ fn a_repository_settings_file_may_name_its_schema() {
         text(&typo)
     );
 }
+
+/// A project that manages its own harness (`project.owns: ["harness"]`, once the user allowed its file) gets no
+/// settings of legionctl's harness set in its sessions: Claude Code's settings file has the git gate's denies and no
+/// sandbox setting, and Codex starts with no sandbox option of legionctl; its telemetry and update switches stay.
+#[test]
+fn a_project_that_owns_its_harness_gets_only_the_denies() {
+    let lab = Lab::new("ownharness", &[], &[], None);
+    lab.agents(&json!({"claude": ["claude", "--settings", "{settings}"], "codex": ["codex"]}));
+    let file = lab.repo.join(".legionctl/project.jsonc");
+    write(&file, r#"{ "project": { "owns": ["harness"] } }"#);
+    trust::allow(&lab.home, &file);
+    let claude = launch(&lab.start("claude", "own-claude", &[]));
+    let settings: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            lab.op
+                .runtime
+                .join("legionctl/sessions")
+                .join(claude["id"].as_str().unwrap())
+                .join("claude-settings.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings.get("sandbox"), None, "{settings:#}");
+    assert!(
+        settings["permissions"]["deny"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Bash(git push:*)")),
+        "{settings:#}"
+    );
+    let codex = launch(&lab.start("codex", "own-codex", &[]));
+    let agent: Vec<&str> = codex["agent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    let at = agent.iter().position(|a| *a == "codex").unwrap();
+    assert_eq!(
+        agent[at..],
+        ["codex", "-c", "check_for_update_on_startup=false"]
+    );
+}

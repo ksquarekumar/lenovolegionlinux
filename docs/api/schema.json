@@ -14076,6 +14076,46 @@
     "output": {
       "type": "object",
       "properties": {
+        "owned": {
+          "type": "array",
+          "items": {
+            "description": "An area that a project may manage itself.",
+            "oneOf": [
+              {
+                "description": "The agent harness's settings: a session gets no settings of legionctl's harness set (Claude Code's settings,\nCodex's `-c` options); the git gate's and the forbidden commands' denies stay.",
+                "type": "string",
+                "const": "harness"
+              },
+              {
+                "description": "The skills a session gets (`session.skills`).",
+                "type": "string",
+                "const": "skills"
+              },
+              {
+                "description": "The checks: no nudge about missing checks.",
+                "type": "string",
+                "const": "checks"
+              },
+              {
+                "description": "The working copies: no nudge to open a workspace.",
+                "type": "string",
+                "const": "workspace"
+              },
+              {
+                "description": "The notes: no nudge to keep the dossier.",
+                "type": "string",
+                "const": "dossier"
+              },
+              {
+                "description": "The reminders: none is given in the project.",
+                "type": "string",
+                "const": "reminders"
+              }
+            ]
+          },
+          "description": "The areas that the project manages itself (`project.owns`): legionctl leaves them alone.",
+          "default": []
+        },
         "items": {
           "type": "array",
           "items": {

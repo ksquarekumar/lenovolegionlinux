@@ -1082,6 +1082,86 @@ fn applies_once_allowed(op: &Operator, home: &Path, repo: &Path) {
     );
 }
 
+/// A project that manages an area itself (`project.owns`, once the user allowed its file) gets no reminders or nudges
+/// of that area: beside a plain project, where the agent hears the reminders, the workspace nudge and the missing
+/// checks, an agent in a project that owns reminders, workspace and checks hears none of them; `config settings`
+/// names the areas.
+#[test]
+fn a_project_that_owns_an_area_gets_no_reminders_or_nudges_of_it() {
+    let (op, home) = operator("owns");
+    write(
+        &home.join(".gitconfig"),
+        "[user]\n  name = Test\n  email = test@example.com\n[init]\n  defaultBranch = main\n",
+    );
+    let project = |name: &str| {
+        let repo = home.join(name);
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&home, &repo, &["init", "--quiet"]);
+        write(&repo.join("README.md"), "repo\n");
+        git(&home, &repo, &["add", "."]);
+        git(&home, &repo, &["commit", "--quiet", "-m", "start"]);
+        repo
+    };
+    let (plain, owner) = (project("plain"), project("owner"));
+    let file = owner.join(".legionctl/project.jsonc");
+    write(
+        &file,
+        r#"{ "project": { "owns": ["reminders", "workspace", "checks"] } }"#,
+    );
+    trust::allow(&home, &file);
+    let hear = |repo: &Path, session: &str, event: &str| {
+        let bound = op.run(
+            repo,
+            &[
+                ("HOME", home.to_str().unwrap()),
+                ("LEGIONCTL_SESSION", session),
+            ],
+            &["dossier", "use", session],
+            "",
+        );
+        assert!(
+            bound.status.success(),
+            "{}",
+            String::from_utf8_lossy(&bound.stderr)
+        );
+        let out = op.run(
+            repo,
+            &[("HOME", home.to_str().unwrap())],
+            &["hook", event],
+            &claude_hook(event, &json!({"cwd": repo, "session_id": session})),
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let start = hear(&plain, "plain-s", "session-start");
+    let prompt = hear(&plain, "plain-s", "prompt");
+    assert!(
+        start.contains("no workspace for")
+            && start.contains("legionctl code checks detect")
+            && prompt.contains("Reminder:"),
+        "a plain project hears them:\n{start}\n{prompt}"
+    );
+    let start = hear(&owner, "owner-s", "session-start");
+    let prompt = hear(&owner, "owner-s", "prompt");
+    for word in ["no workspace for", "checks", "Reminder:"] {
+        assert!(
+            !start.contains(word) && !prompt.contains(word),
+            "{word} in an owning project:\n{start}\n{prompt}"
+        );
+    }
+    let listed = op.run(
+        &owner,
+        &[("HOME", home.to_str().unwrap())],
+        &["config", "settings", "--key", "project.owns"],
+        "",
+    );
+    assert!(
+        String::from_utf8_lossy(&listed.stdout)
+            .contains("This project manages its own reminders, workspace, checks: legionctl leaves them alone."),
+        "{}",
+        String::from_utf8_lossy(&listed.stdout)
+    );
+}
+
 #[test]
 fn config_layers_merge_in_order_and_etc_locks_win() {
     let (op, home) = operator("config");
@@ -4757,8 +4837,8 @@ fn a_container_session_reaches_its_granted_connections_through_the_gateway_tunne
         .to_string(),
     );
     write(
-        &home.join(".config/legionctl/runnables.jsonc"),
-        r#"{ "runnables": { "allow+": ["service"] } }"#,
+        &home.join(".config/legionctl/actions.jsonc"),
+        r#"{ "actions": { "allow+": [{ "pattern": "toolset:service", "reason": "test" }] } }"#,
     );
     // Python's HTTP client through the session's HTTPS_PROXY, as an agent's client does: a granted host, then another
     let probe = format!(

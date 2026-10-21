@@ -20,8 +20,10 @@
   },
 
   "workspace": {
-    // Workspaces (a dossier's operating directory in a repository) live in <root>/<repo>/<dossier>.
-    "root": "/data/worktrees",
+    // Workspaces (a dossier's operating directory in a repository) live in <root>/<repo>/<dossier>; "~/" is the home.
+    // Before 2026-10-19 the default was /data/worktrees: an upgrade keeps it in your settings when your workspaces are
+    // there, so nothing moves.
+    "root": "~/.local/share/legionctl/worktrees",
     // Tell the agent to open one: at session start when the dossier has none in this repository, and before a reply
     // ends when the main checkout has changes (decided 2026-10-13: a nudge, not a write block).
     "nudge": true
@@ -393,6 +395,11 @@
       { "pattern": "git:reflog expire", "reason": "It deletes the record of old commits." }
     ]
   },
+
+  // What a project manages itself (only its .legionctl sets it, after you allow the file): areas from harness (no
+  // settings of legionctl's harness set in its sessions; the git and forbidden-command denies stay), skills, checks,
+  // workspace, dossier and reminders (no reminders or nudges of that area in the project).
+  "project": { "owns": [] },
 
   // The desktop app (legionctl-app).
   "app": {

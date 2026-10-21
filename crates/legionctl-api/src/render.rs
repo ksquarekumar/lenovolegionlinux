@@ -984,6 +984,13 @@ impl Render for Explanation {
 impl Render for SettingsView {
     fn text(&self) -> String {
         let mut out = Vec::new();
+        if !self.owned.is_empty() {
+            let words: Vec<&str> = self.owned.iter().map(|a| a.word()).collect();
+            out.push(format!(
+                "This project manages its own {}: legionctl leaves them alone.",
+                words.join(", ")
+            ));
+        }
         let mut module = "";
         for row in &self.items {
             if row.setting.module != module {

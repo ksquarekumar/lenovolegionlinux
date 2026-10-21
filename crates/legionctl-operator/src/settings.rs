@@ -199,6 +199,7 @@ fn rows(resolved: Resolved, input: &SettingsIn) -> Result<SettingsView> {
         });
     }
     Ok(SettingsView {
+        owned: resolved.config.project.owns.clone(),
         items,
         problems: resolved.problems,
     })

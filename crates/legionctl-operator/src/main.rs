@@ -150,6 +150,9 @@ async fn run() -> Result<()> {
                         for finding in store.sync_registry()? {
                             eprintln!("operator: {finding}");
                         }
+                        for kept in legionctl_core::settings::upgrade(&r, &store)? {
+                            eprintln!("operator: {kept}");
+                        }
                         Ok(())
                     });
             match settled {

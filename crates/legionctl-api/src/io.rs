@@ -67,6 +67,9 @@ pub struct SettingsIn {
 /// Every setting with its value now and where that value comes from (DESIGN-20).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SettingsView {
+    /// The areas that the project manages itself (`project.owns`): legionctl leaves them alone.
+    #[serde(default)]
+    pub owned: Vec<legionctl_core::config::Area>,
     pub items: Vec<SettingRow>,
     pub problems: Vec<String>,
 }

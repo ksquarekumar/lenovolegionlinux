@@ -906,6 +906,89 @@ fn a_sets_forbidden_git_command_binds_only_the_sessions_that_hold_the_set() {
     assert!(without.status.success(), "{}", text(&without));
 }
 
+/// The default folder of the working copies is under the home now; an upgrade keeps the old default for a user whose
+/// workspaces are there, through the one writer and its history, so nothing moves; a user with no workspace there, or
+/// with a folder of their own, keeps what they have.
+#[test]
+fn an_upgrade_keeps_the_old_working_copies_folder_where_the_workspaces_are() {
+    let start = |home: &Path, tag: &str| {
+        Operator::start(tag, &[("HOME", OsString::from(home.as_os_str()))])
+    };
+    let root = |op: &Operator| row(op, "workspace.root");
+    let open_workspace = |home: &Path| {
+        let added = Command::new("python3")
+            .args([
+                "-c",
+                "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
+                 c.execute(\"INSERT INTO workspaces (dossier, repo, path, branch, base, opened) VALUES \
+                 ('d', '/r', '/data/worktrees/r/d', 'legionctl/d', 'main', 1)\"); c.commit()",
+            ])
+            .arg(home.join(".local/state/legionctl/operator.db"))
+            .status()
+            .unwrap();
+        assert!(added.success());
+    };
+
+    // a new user: the folder under the home, made absolute
+    let fresh =
+        Scratch::new(std::env::temp_dir().join(format!("lc-up-new-{}", std::process::id())));
+    let op = start(&fresh, "up-new");
+    let new = root(&op);
+    assert_eq!(
+        (new["value"].clone(), new["from"].clone()),
+        (
+            json!("~/.local/share/legionctl/worktrees"),
+            json!("defaults")
+        )
+    );
+    let explained = op.ok(&["config", "settings", "--key", "workspace.root"]);
+    assert!(
+        explained.contains("~/.local/share/legionctl/worktrees"),
+        "{explained}"
+    );
+    drop(op);
+
+    // a user whose workspaces are at the old default: kept for them, with its history row
+    let old = Scratch::new(std::env::temp_dir().join(format!("lc-up-old-{}", std::process::id())));
+    start(&old, "up-old1").ok(&["config", "history"]);
+    open_workspace(&old);
+    let op = start(&old, "up-old2");
+    let kept = root(&op);
+    assert_eq!(
+        (kept["value"].clone(), kept["from"].clone()),
+        (json!("/data/worktrees"), json!("user"))
+    );
+    let history: Value = serde_json::from_str(&op.ok(&["config", "history", "--json"])).unwrap();
+    assert_eq!(history["items"].as_array().unwrap().len(), 1, "{history:#}");
+    assert_eq!(history["items"][0]["by"], "upgrade");
+    drop(op);
+    start(&old, "up-old3").ok(&["config", "history"]);
+    let history: Value =
+        serde_json::from_str(&start(&old, "up-old4").ok(&["config", "history", "--json"])).unwrap();
+    assert_eq!(
+        history["items"].as_array().unwrap().len(),
+        1,
+        "once: {history:#}"
+    );
+
+    // a user with a folder of their own keeps it
+    let own = Scratch::new(std::env::temp_dir().join(format!("lc-up-own-{}", std::process::id())));
+    std::fs::create_dir_all(own.join(".config/legionctl")).unwrap();
+    std::fs::write(
+        own.join(".config/legionctl/mine.jsonc"),
+        format!(
+            r#"{{"workspace": {{"root": "{}"}}}}"#,
+            own.join("copies").display()
+        ),
+    )
+    .unwrap();
+    start(&own, "up-own1").ok(&["config", "history"]);
+    open_workspace(&own);
+    let op = start(&own, "up-own2");
+    assert_eq!(root(&op)["value"], own.join("copies").display().to_string());
+    assert_eq!(settings(&op, &["--changed"]).len(), 1, "nothing written");
+}
+
 /// Changes that run at the same time never lose each other (review/16 B10): each takes the layer's lock, writes its
 /// own temporary file and renames it. Before, two writers read the same file and the second rename dropped the first
 /// one's key. The operations that change settings for you (reminders, hooks) go the same way, with their history;
