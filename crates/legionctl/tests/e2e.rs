@@ -8995,10 +8995,62 @@ fn the_processes_of_a_test_end_when_it_panics_and_when_its_binary_is_killed() {
     }
 }
 
+/// An agent session whose grant was kept before a capability set's forbidden commands became `actions.forbid` entries
+/// (71bded2: the grant's manifest has `host.forbidden_commands`) keeps working after the upgrade: the v19 -> v20 step
+/// takes the old key out of each kept grant. Before, every call of such a session failed with "the call record: unknown
+/// field `forbidden_commands`" (the installed r40x build, 952 kept grants).
+#[test]
+fn an_agent_session_with_a_grant_from_before_the_upgrade_still_works() {
+    let home = home("oldgrant");
+    let db = home.join(".local/state/legionctl/operator.db");
+    operator_in("oldgrant", &home).ok(&["events"]);
+    let old = json!({
+        "runnable": "session:old-1",
+        "requested": ["probe"],
+        "parent": null,
+        "sets": [{"name": "probe", "version": 1, "layer": "user", "file": "probe.jsonc"}],
+        "manifest": {"name": "session:old-1", "host": {"privileges": [], "devices": [], "forbidden_commands": ["cargo publish"]}}
+    });
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute(
+        "INSERT INTO facts (entity, attribute, value, scope, scope_id, source, evidence, confidence, valid_from,
+            recorded_from) VALUES ('runnable:session:old-1', 'manifest', ?1, 'global', '', 'rule', '{}', 1.0, 1, 1)",
+        [old.to_string()],
+    )
+    .unwrap();
+    conn.pragma_update(None, "user_version", 19).unwrap();
+    drop(conn);
+    let op = operator_in("oldgrant2", &home);
+    let h = home.to_str().unwrap();
+    let out = op.run(
+        &home,
+        &[("HOME", h), ("CLAUDE_CODE_SESSION_ID", "old-1")],
+        &["dossier", "list"],
+        "",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let kept: String = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT value FROM facts WHERE entity = 'runnable:session:old-1' ORDER BY id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        !kept.contains("forbidden_commands") && kept.contains("\"privileges\""),
+        "{kept}"
+    );
+}
+
 /// todo-122, as on 2026-10-15: the user's operator.db at v10 while an operator of another build runs (a stand-in that
 /// holds `operator.lock` with that build's fingerprint). An operator of this build does not start, and the file stays
 /// at v10 without a backup. After the other operator stopped, this one starts: it keeps the v10 file in
-/// `operator.db.v10.bak`, then takes the database to v19 with its rows (the MCP tool call log into the call record).
+/// `operator.db.v10.bak`, then takes the database to v20 with its rows (the MCP tool call log into the call record).
 #[test]
 fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_database() {
     let home = home("holder");
@@ -9075,7 +9127,7 @@ fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_data
     let op = operator_in("holder", &home);
     let events = op.ok(&["events", "--json"]);
     assert!(events.contains("kept.v10"), "{events}");
-    assert_eq!(version(&db), 19);
+    assert_eq!(version(&db), 20);
     assert_eq!(version(&bak), 10, "the backup is the v10 file");
     the_old_tool_log_is_in_the_call_record(&op);
     let kept: String = rusqlite::Connection::open(&bak)

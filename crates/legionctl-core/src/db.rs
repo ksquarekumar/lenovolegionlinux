@@ -257,14 +257,15 @@ pub struct Schema {
     pub steps: &'static [(i64, &'static str)],
 }
 
-/// The operator database at v19: the steps of v1-v10 merged into one (todo-68, after the first full release install),
+/// The operator database at v20: the steps of v1-v10 merged into one (todo-68, after the first full release install),
 /// then the rows that span dossiers and the threads (design 23, E1 decision 1; they were in `workspace.db`), then the
 /// pools (design 23, P6b: members that run, effects), then the rlcd decisions (todo-138), then the facts (DESIGN-10),
 /// then each session's granted connections (DESIGN-13), then the call record (DESIGN/22 rule 3), then the folder of
 /// each call and of each agent session (DESIGN-20 rule 7), then the settings history (DESIGN-14), then the processes
-/// that hold each dossier binding and the events by time (plan#todo-227).
+/// that hold each dossier binding and the events by time (plan#todo-227), then the stored grants without the capability
+/// sets' old `host.forbidden_commands` (now `actions.forbid` entries).
 pub const OPERATOR: &Schema = &Schema {
-    version: 19,
+    version: 20,
     steps: &[
         (
             10,
@@ -281,6 +282,14 @@ pub const OPERATOR: &Schema = &Schema {
         (16, crate::calls::folders!()),
         (17, crate::settings::tables!()),
         (18, crate::dossier::binding_holders!()),
+        // a grant kept before the forbidden commands of a set became actions.forbid entries (71bded2) failed to parse,
+        // and with it every call of its agent session: its manifest loses the old key; the entries bind at each call
+        (
+            19,
+            "UPDATE facts SET value = json_remove(value, '$.manifest.host.forbidden_commands')
+             WHERE entity LIKE 'runnable:session:%' AND attribute = 'manifest'
+               AND json_type(value, '$.manifest.host.forbidden_commands') IS NOT NULL;",
+        ),
     ],
     sql: concat!(
         "CREATE TABLE events (
