@@ -9808,11 +9808,38 @@ fn a_codex_run_reaches_legionctls_tools_with_the_cleared_environment_codex_gives
     );
 }
 
+/// `legionctl mcp` with `global` options first (`-C <folder>`), under an agent of its own: a shell that runs it, then
+/// waits, as Claude Code or Codex runs its MCP server. The whole group stops with the [`Mcp`].
+fn mcp_under_agent(operator: &Operator, env: &[(&str, &str)], global: &[&str]) -> Mcp {
+    Mcp::over(
+        operator,
+        env,
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#""$0" "$@" mcp; sleep 600"#)
+            .arg(env!("CARGO_BIN_EXE_legionctl"))
+            .args(global),
+    )
+}
+
+/// The MCP server under the agent of [`mcp_under_agent`] ends; its agent runs on.
+fn server_ends(mcp: &mut Mcp) {
+    let agent = mcp.child.id();
+    let children = std::fs::read_to_string(format!("/proc/{agent}/task/{agent}/children")).unwrap();
+    let server = children
+        .split_whitespace()
+        .next()
+        .expect("the agent runs its MCP server");
+    assert!(Command::new("kill").arg(server).status().unwrap().success());
+}
+
 /// The dossier locks of agents that ended are freed with no manual step (plan#todo-227 AOS-4, F10): agency-os had 14
 /// locks of ended Codex review runs, bound through their MCP servers under names of their own, that stayed for 12 h.
-/// A bind records the MCP server that made it; when that process is gone the lock is stale, the next bind of the
-/// dossier takes it, and the next operator start frees it. A lock of an older build (no process recorded) is freed when
-/// no MCP server that started before it still runs. A live lock, and a fresh one of the CLI, are never freed.
+/// A bind through an MCP server records its agent (the server's parent); a minute after the last refresh with that
+/// agent gone, the lock is stale, the next bind of the dossier takes it, and the next operator start frees it. An
+/// agent whose MCP server starts again keeps its lock. A lock of an older build (no agent recorded) is freed when no
+/// MCP server that started before it still runs (`legionctl -C <folder> mcp` counts). A live lock, and a fresh one of
+/// the CLI, are never freed.
 #[test]
 fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start() {
     let home = home("locks");
@@ -9834,14 +9861,18 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
             })
             .collect()
     };
+    // past the minute of grace after the last refresh
+    let age = || sql(&home, "UPDATE bindings SET updated = updated - 120");
     let env = [("HOME", home.to_str().unwrap())];
-    let mut ended = Mcp::start(&op, None, &env, &[]);
-    let mut live = Mcp::start(&op, None, &env, &[]);
-    let mut gone_while_off = Mcp::start(&op, None, &env, &[]);
+    let mut ended = mcp_under_agent(&op, &env, &[]);
+    let mut live = mcp_under_agent(&op, &env, &["-C", home.to_str().unwrap()]);
+    let mut gone_while_off = mcp_under_agent(&op, &env, &[]);
+    let mut restarted = mcp_under_agent(&op, &env, &[]);
     bind(&mut ended, "review-ended", "codex-review-ended");
     bind(&mut live, "review-live", "codex-review-live");
     bind(&mut gone_while_off, "review-off", "codex-review-off");
-    // locks of an older build: no process recorded; one made before any MCP server that runs now, one after the live one
+    bind(&mut restarted, "review-restarted", "claude-restarted");
+    // locks of an older build: no agent recorded; one made before any MCP server that runs now, one after the live one
     sql(
         &home,
         "INSERT INTO bindings (session, tool, dossier, acquired, updated) VALUES \
@@ -9849,6 +9880,10 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
          ('old-live', 'mcp', 'review-old-live', strftime('%s', 'now') + 1, strftime('%s', 'now'))",
     );
     drop(ended);
+    server_ends(&mut restarted);
+    // within the minute after its bind, an ended run's lock still holds (its agent may be one resumed with its id)
+    assert!(locks(&op).contains(&("review-ended".to_string(), false)));
+    age();
     assert_eq!(
         locks(&op),
         [
@@ -9857,6 +9892,7 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
             ("review-off".into(), false),
             ("review-old-ended".into(), true),
             ("review-old-live".into(), false),
+            ("review-restarted".into(), false),
         ]
     );
 
@@ -9897,6 +9933,7 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
             ("review-ended".to_string(), false),
             ("review-live".into(), false),
             ("review-old-live".into(), false),
+            ("review-restarted".into(), false),
         ]
     );
     // the live run still works in its dossier after the restart
@@ -9914,8 +9951,8 @@ fn holds_text(value: &Value, text: &str) -> bool {
     }
 }
 
-/// Five agent tool events whose command holds \u0001, a newline and an ANSI escape, and a dossier's create: the ids of
-/// the five (they come back as sent) and their kind, and the whole log as `events --json` prints it.
+/// Five agent tool events whose command holds \u0001, a newline and an ANSI escape, and a dossier's create and rename:
+/// the ids of the five (they come back as sent) and their kind, and the whole log as `events --json` prints it.
 fn five_tool_events_with_control_characters(
     op: &Operator,
     home: &Path,
@@ -9938,6 +9975,7 @@ fn five_tool_events_with_control_characters(
         );
     }
     op.ok(&["dossier", "create", "evfilter"]);
+    op.ok(&["dossier", "rename", "evfilter", "evfilter-renamed"]);
     // serde_json, as Python's json, refuses a raw control character in a string
     let all: Value =
         serde_json::from_str(&op.ok(&["events", "--json", "--limit", "1000"])).unwrap();
@@ -10008,25 +10046,35 @@ fn events_filter_by_time_window_and_kind_in_the_query_and_page_through_the_match
         ids(&page(&["--since", "2000", "--until", "4000"])).len(),
         2 + others
     );
+    // two kinds over [2000, 2501): our event at 2000 and every other event of either kind at 2500, none of a third
     let by_two = page(&[
         "--kind",
         &kind,
         "--kind",
         "dossier.create",
         "--since",
-        "2500",
+        "2000",
         "--until",
         "2501",
     ]);
-    let creates = items
+    let mut want: Vec<i64> = items
         .iter()
-        .filter(|e| e["kind"] == "dossier.create")
-        .count();
-    assert_eq!(
-        (by_two["items"].as_array().unwrap().len(), creates > 0),
-        (creates, true),
-        "{by_two:#}"
+        .filter(|e| {
+            !ours.contains(&e["id"].as_i64().unwrap())
+                && (e["kind"] == kind.as_str() || e["kind"] == "dossier.create")
+        })
+        .map(|e| e["id"].as_i64().unwrap())
+        .chain([ours[1]])
+        .collect();
+    want.sort_unstable();
+    assert!(
+        items.iter().any(|e| e["kind"] == "dossier.create")
+            && items
+                .iter()
+                .any(|e| e["kind"] != "dossier.create" && e["kind"] != kind.as_str()),
+        "the log has a third kind to leave out: {all:#}"
     );
+    assert_eq!(ids(&by_two), want);
     // a local time as the user reads a clock: the same window
     let local = |ts: i64| {
         let out = Command::new("date")
@@ -10055,6 +10103,46 @@ fn events_filter_by_time_window_and_kind_in_the_query_and_page_through_the_match
     );
 }
 
+/// Topic workspaces merged, unmerged, deleted and kept of dossier `port` in `repo`, each with one commit: merged and kept
+/// go into main; the worktrees of merged, unmerged and deleted go by hand, and deleted's branch too.
+fn topics_whose_worktrees_went(ok: &dyn Fn(&Path, &[&str]) -> String, home: &Path, repo: &Path) {
+    let topic = |name: &str| home.join(format!("worktrees/repo/port--{name}"));
+    for name in ["merged", "unmerged", "deleted", "kept"] {
+        ok(repo, &["workspace", "open", "--topic", name]);
+        write(&topic(name).join(format!("{name}.txt")), name);
+        ok(
+            &topic(name),
+            &["workspace", "checkpoint", &format!("work {name}")],
+        );
+    }
+    // merged and kept go into main; the worktrees of merged, unmerged and deleted go by hand; deleted's branch too
+    for name in ["merged", "kept"] {
+        git(
+            home,
+            repo,
+            &[
+                "merge",
+                "--quiet",
+                "--no-edit",
+                &format!("legionctl/port--{name}"),
+            ],
+        );
+    }
+    for name in ["merged", "unmerged", "deleted"] {
+        git(
+            home,
+            repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                topic(name).to_str().unwrap(),
+            ],
+        );
+    }
+    git(home, repo, &["branch", "-D", "legionctl/port--deleted"]);
+}
+
 /// The record of a workspace whose worktree is gone is forgotten at the operator's start when its branch is merged
 /// into its base or gone; doctor offers Forget for one whose branch has commits the base does not have, and Forget
 /// keeps that branch (plan#todo-227: doctor listed 41 "the worktree ... is missing; open the workspace again" lines
@@ -10078,42 +10166,24 @@ fn records_of_gone_worktrees_are_forgotten_when_merged_and_doctor_offers_forget_
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
     ok(&op, &repo, &["dossier", "use", "port"]);
+    topics_whose_worktrees_went(&|cwd, args| ok(&op, cwd, args), &home, &repo);
     let topic = |name: &str| home.join(format!("worktrees/repo/port--{name}"));
-    for name in ["merged", "unmerged", "deleted", "kept"] {
-        ok(&op, &repo, &["workspace", "open", "--topic", name]);
-        write(&topic(name).join(format!("{name}.txt")), name);
-        ok(
-            &op,
-            &topic(name),
-            &["workspace", "checkpoint", &format!("work {name}")],
-        );
-    }
-    // merged and kept go into main; the worktrees of merged, unmerged and deleted go by hand; deleted's branch too
-    for name in ["merged", "kept"] {
-        git(
-            &home,
-            &repo,
-            &[
-                "merge",
-                "--quiet",
-                "--no-edit",
-                &format!("legionctl/port--{name}"),
-            ],
-        );
-    }
-    for name in ["merged", "unmerged", "deleted"] {
-        git(
-            &home,
-            &repo,
-            &[
-                "worktree",
-                "remove",
-                "--force",
-                topic(name).to_str().unwrap(),
-            ],
-        );
-    }
-    git(&home, &repo, &["branch", "-D", "legionctl/port--deleted"]);
+    // a record whose folder cannot be read is not gone: kept, and doctor says why
+    let locked = home.join("locked");
+    std::fs::create_dir_all(locked.join("wt")).unwrap();
+    sql(
+        &home,
+        &format!(
+            "INSERT INTO workspaces (dossier, repo, path, branch, base, opened, topic) VALUES \
+             ('port', '{}', '{}', 'legionctl/port--locked', 'main', 1, 'locked')",
+            repo.display(),
+            locked.join("wt").display()
+        ),
+    );
+    let mode = |m: u32| {
+        std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(m)).unwrap();
+    };
+    mode(0o000);
 
     drop(op);
     let op = operator_in("gonews", &home);
@@ -10126,6 +10196,10 @@ fn records_of_gone_worktrees_are_forgotten_when_merged_and_doctor_offers_forget_
         !listed.contains("port--merged") && !listed.contains("port--deleted"),
         "{listed}"
     );
+    assert!(
+        listed.contains(&locked.join("wt").display().to_string()),
+        "{listed}"
+    );
     let doctor = String::from_utf8_lossy(&op.run(&repo, &env, &["doctor"], "").stdout).into_owned();
     let unmerged = topic("unmerged");
     let want = format!(
@@ -10136,6 +10210,12 @@ fn records_of_gone_worktrees_are_forgotten_when_merged_and_doctor_offers_forget_
     );
     assert!(doctor.contains(&want), "{doctor}");
     assert!(!doctor.contains("open the workspace again"), "{doctor}");
+    assert!(
+        doctor.contains(&format!("workspace {}: ", locked.join("wt").display()))
+            && doctor.contains(&format!("cannot read {}", locked.join("wt/.git").display())),
+        "{doctor}"
+    );
+    mode(0o755);
 
     let forgot = ok(
         &op,
@@ -10156,8 +10236,5 @@ fn records_of_gone_worktrees_are_forgotten_when_merged_and_doctor_offers_forget_
         "work unmerged"
     );
     let doctor = String::from_utf8_lossy(&op.run(&repo, &env, &["doctor"], "").stdout).into_owned();
-    assert!(
-        !doctor.contains("port--unmerged") && !doctor.contains("its folder is gone"),
-        "{doctor}"
-    );
+    assert!(!doctor.contains("port--unmerged"), "{doctor}");
 }

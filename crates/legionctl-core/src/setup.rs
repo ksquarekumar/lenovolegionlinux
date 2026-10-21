@@ -786,17 +786,18 @@ fn claude_plugin_item() -> Option<Item> {
 /// The setup row of legionctl in the agents' sandboxes (plan#todo-227 AOS-5).
 pub const SANDBOX_ACCESS: &str = "sandbox access";
 
-/// Claude Code's Bash sandbox: `legionctl` runs outside it (on Linux it blocks every Unix socket, the operator's too,
-/// unless all are allowed), and git reads ~/.gitconfig in it (a project may deny reads of `~/.*`). Lists merge with the
-/// project's.
-const CLAUDE_SANDBOX: [(&str, &str); 2] = [
-    ("sandbox.excludedCommands", "legionctl *"),
-    ("sandbox.filesystem.allowRead", "~/.gitconfig"),
+/// Claude Code's Bash sandbox (the list's keys under `sandbox`, and the entry): `legionctl` runs outside it (on Linux it
+/// blocks every Unix socket, the operator's too, unless all are allowed), still after the user's permission, as each
+/// excluded command; git reads ~/.gitconfig in it (a project may deny reads of `~/.*`). Lists merge with the project's.
+const CLAUDE_SANDBOX: [(&[&str], &str); 2] = [
+    (&["excludedCommands"], "legionctl *"),
+    (&["filesystem", "allowRead"], "~/.gitconfig"),
 ];
 
-/// Codex's command rule: `legionctl` runs outside its sandbox, which denies every connection when its network is off.
-const CODEX_SANDBOX_RULE: &str = "# Written by `legionctl setup apply`: legionctl runs outside Codex's sandbox (its operator decides what an agent may do)\n\
-prefix_rule(pattern = [\"legionctl\"], decision = \"allow\")\n";
+/// Codex's command rule: `legionctl` runs outside its sandbox, which denies every connection when its network is off,
+/// after the user allows it (some legionctl commands start programs of their own: `run`, `session start`).
+const CODEX_SANDBOX_RULE: &str = "# Written by `legionctl setup apply`: Codex asks you before it runs legionctl outside its sandbox\n\
+prefix_rule(pattern = [\"legionctl\"], decision = \"prompt\")\n";
 
 fn claude_settings() -> PathBuf {
     home().join(".claude/settings.json")
@@ -806,30 +807,48 @@ fn codex_sandbox_rule() -> PathBuf {
     home().join(".codex/rules/legionctl.rules")
 }
 
-/// The entries of [`CLAUDE_SANDBOX`] that ~/.claude/settings.json lacks.
+/// The `sandbox` object of ~/.claude/settings.json with the entries of [`CLAUDE_SANDBOX`] it lacks; none when it has
+/// them all.
 ///
 /// # Errors
 /// The file cannot be read or is not JSON.
-fn claude_sandbox_missing() -> Result<Vec<(&'static str, Vec<serde_json::Value>)>> {
+fn claude_sandbox_missing() -> Result<Option<serde_json::Value>> {
     let path = claude_settings();
     let text = legionctl_machine::sysroot::read_file(&path)?.unwrap_or_else(|| "{}".into());
     let settings: serde_json::Value = serde_json::from_str(&text)
         .with_context(|| format!("{} is not valid JSON; fix it before setup", path.display()))?;
-    Ok(CLAUDE_SANDBOX
-        .iter()
-        .filter_map(|(key, entry)| {
-            let pointer = format!("/{}", key.replace('.', "/"));
-            let mut list = settings
-                .pointer(&pointer)
-                .and_then(serde_json::Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            (!list.iter().any(|v| v == entry)).then(|| {
-                list.push((*entry).into());
-                (*key, list)
-            })
-        })
-        .collect())
+    let mut sandbox = settings
+        .get("sandbox")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut changed = false;
+    for (keys, entry) in CLAUDE_SANDBOX {
+        let mut node = &mut sandbox;
+        let place = format!(
+            "{}: sandbox.{} is not a list in objects; fix it before setup",
+            path.display(),
+            keys.join(".")
+        );
+        for key in keys {
+            node = node
+                .as_object_mut()
+                .with_context(|| place.clone())?
+                .entry(*key)
+                .or_insert_with(|| {
+                    if key == keys.last().unwrap_or(key) {
+                        serde_json::json!([])
+                    } else {
+                        serde_json::json!({})
+                    }
+                });
+        }
+        let list = node.as_array_mut().with_context(|| place.clone())?;
+        if !list.iter().any(|v| v == entry) {
+            list.push(entry.into());
+            changed = true;
+        }
+    }
+    Ok(changed.then_some(sandbox))
 }
 
 /// The sandbox rows: Claude Code's and Codex's, for each one that is installed.
@@ -840,8 +859,8 @@ fn sandbox_items() -> Vec<Item> {
             what: SANDBOX_ACCESS.into(),
             agent: "claude-code".into(),
             status: match claude_sandbox_missing() {
-                Ok(missing) if missing.is_empty() => "current".into(),
-                Ok(_) => "missing".into(),
+                Ok(None) => "current".into(),
+                Ok(Some(_)) => "missing".into(),
                 Err(e) => format!("{e:#}"),
             },
             path: claude_settings().display().to_string(),
@@ -871,11 +890,9 @@ fn sandbox_items() -> Vec<Item> {
 fn let_sandboxes_run_legionctl() -> Result<Vec<String>> {
     let mut done = Vec::new();
     if claude_bin().is_some() {
-        let missing = claude_sandbox_missing()?;
-        for (key, list) in &missing {
-            crate::agents::set(&claude_settings(), key, list.clone().into(), false)?;
-        }
-        if !missing.is_empty() {
+        // one write: one backup of the file as it was
+        if let Some(sandbox) = claude_sandbox_missing()? {
+            crate::agents::set(&claude_settings(), "sandbox", sandbox, false)?;
             done.push(format!(
                 "{SANDBOX_ACCESS}: legionctl runs outside Claude Code's sandbox ({})",
                 claude_settings().display()

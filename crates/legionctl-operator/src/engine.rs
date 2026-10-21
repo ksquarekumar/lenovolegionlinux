@@ -1353,7 +1353,14 @@ fn agent_findings() -> Result<Vec<legionctl_api::Finding>> {
         {
             w.extend(store.check_findings(&ws.path));
         }
-        if let Some(ahead) = store.gone_unmerged(&ws)? {
+        let unmerged = match store.gone_unmerged(&ws) {
+            Ok(unmerged) => unmerged,
+            Err(e) => {
+                w.push(format!("workspace {}: {e:#}", ws.path.display()));
+                continue;
+            }
+        };
+        if let Some(ahead) = unmerged {
             let branch = match ahead {
                 0 => format!("its branch {} is merged into {}", ws.branch, ws.base),
                 1 => format!(
@@ -3231,7 +3238,7 @@ impl Engine for Operator {
             input.steal,
             Some(&place_of(ctx.folder()?)),
         )?;
-        // an agent's MCP server runs as long as its agent: the binding ends with it (Codex review runs never release)
+        // the agent of the MCP server holds the binding: it ends with that agent (Codex review runs never release)
         if let (Some(pid), "mcp") = (ctx.caller, ctx.actor.as_str()) {
             store.hold(id, pid)?;
         }

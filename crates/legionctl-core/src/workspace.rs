@@ -704,15 +704,21 @@ impl Dossiers {
     /// plain folder); 0 when its branch is merged into its base, or gone with the branch or the repository.
     ///
     /// # Errors
-    /// git cannot count the commits (its base is gone).
+    /// A folder cannot be read, or git fails (its base is gone).
     pub fn gone_unmerged(&self, ws: &Workspace) -> Result<Option<u32>> {
-        if ws.is_folder() || ws.path.join(".git").exists() {
+        // a folder that cannot be read is not gone: the error says why
+        let exists = |path: &Path| {
+            path.try_exists()
+                .with_context(|| format!("cannot read {}", path.display()))
+        };
+        if ws.is_folder() || exists(&ws.path.join(".git"))? {
             return Ok(None);
         }
+        if !exists(&ws.repo)? {
+            return Ok(Some(0));
+        }
         let branch = format!("refs/heads/{}", ws.branch);
-        if !ws.repo.is_dir()
-            || git(&ws.repo, &["rev-parse", "--verify", "--quiet", &branch]).is_err()
-        {
+        if git(&ws.repo, &["for-each-ref", "--format=%(refname)", &branch])?.is_empty() {
             return Ok(Some(0));
         }
         let count = git(
@@ -727,19 +733,27 @@ impl Dossiers {
     /// # Errors
     /// The worktree is still there, or the database write fails.
     pub fn forget(&self, ws: &Workspace) -> Result<String> {
-        ensure!(
-            self.gone_unmerged(ws)?.is_some(),
-            "the workspace {} is still there: close it with legionctl workspace close",
-            ws.path.display()
-        );
+        let unmerged = self.gone_unmerged(ws)?.with_context(|| {
+            format!(
+                "the workspace {} is still there: close it with legionctl workspace close",
+                ws.path.display()
+            )
+        })?;
         self.db().execute(
             "UPDATE workspaces SET closed = ?1 WHERE path = ?2 AND closed IS NULL",
             params![now(), ws.path.to_string_lossy()],
         )?;
+        let branch = if unmerged == 0 {
+            format!(
+                "its branch {} is merged into {} or gone",
+                ws.branch, ws.base
+            )
+        } else {
+            format!("branch {} kept", ws.branch)
+        };
         Ok(format!(
-            "forgot the workspace {} (branch {} kept)",
-            ws.path.display(),
-            ws.branch
+            "forgot the workspace {} ({branch})",
+            ws.path.display()
         ))
     }
 

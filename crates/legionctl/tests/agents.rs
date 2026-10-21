@@ -1861,6 +1861,17 @@ fn sandbox_rows(lab: &Lab) -> Vec<(String, String, String)> {
         .collect()
 }
 
+/// The one backup that legionctl made of the settings file `settings`, as JSON.
+fn only_backup(settings: &Path) -> Value {
+    let backups: Vec<_> = std::fs::read_dir(settings.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.to_string_lossy().contains("settings.json.legionctl-"))
+        .collect();
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    serde_json::from_str(&std::fs::read_to_string(&backups[0]).unwrap()).unwrap()
+}
+
 /// A host agent with its sandbox on reaches legionctl (plan#todo-227 AOS-5): Claude Code's Bash sandbox blocks the
 /// operator's socket on Linux and agency-os's project settings block ~/.gitconfig; Codex's sandbox denies every
 /// connect when its network is off. `setup apply` runs `legionctl` outside both sandboxes (Claude Code's
@@ -1930,11 +1941,14 @@ fn setup_apply_lets_sandboxed_agents_run_legionctl_and_keeps_the_users_own_sandb
         serde_json::from_str::<Value>(&std::fs::read_to_string(&settings).unwrap()).unwrap(),
         merged
     );
+    // Codex asks the user first: some legionctl commands start programs of their own (run, session start)
     assert_eq!(
         std::fs::read_to_string(&rules).unwrap(),
-        "# Written by `legionctl setup apply`: legionctl runs outside Codex's sandbox (its operator decides what an agent may do)\n\
-         prefix_rule(pattern = [\"legionctl\"], decision = \"allow\")\n"
+        "# Written by `legionctl setup apply`: Codex asks you before it runs legionctl outside its sandbox\n\
+         prefix_rule(pattern = [\"legionctl\"], decision = \"prompt\")\n"
     );
+    // one write, so one backup: the file as the user had it
+    assert_eq!(only_backup(&settings), own);
     assert_eq!(rows(), want("current", "current"));
     assert!(!apply().contains("sandbox access"), "written once");
 

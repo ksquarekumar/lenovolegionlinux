@@ -11,9 +11,11 @@ description: Set up ctx and legionctl for Claude Code and Codex (plugins, skills
    `session.acp_packages`, into ~/.bun; bun runs them), and ~/.config/environment.d/99-legionctl.conf (~/.local/bin,
    ~/.cargo/bin and bun's global folder ~/.bun/bin before the PATH of the systemd user manager, so the operator's
    checks find the user's tools after the next login; headless runs get these folders at once), the legionctl plugin
-   of Claude Code from the package folder, the OSD extension of GNOME Shell, and clauth (the account engine: `cargo
-   install clauth --version ~0.17 --locked` when missing, its daemon as the user unit `legionctl-clauth.service`, its
-   MCP server in Claude Code). Then run `setup.apply`.
+   of Claude Code from the package folder, the sandbox access of the agents (in ~/.claude/settings.json
+   `sandbox.excludedCommands` gets `legionctl *` and `sandbox.filesystem.allowRead` gets `~/.gitconfig`, with a backup
+   of the file; ~/.codex/rules/legionctl.rules lets Codex run `legionctl` outside its sandbox), the OSD extension of
+   GNOME Shell, and clauth (the account engine: `cargo install clauth --version ~0.17 --locked` when missing, its
+   daemon as the user unit `legionctl-clauth.service`, its MCP server in Claude Code). Then run `setup.apply`.
 3. If ctx is not installed, tell the user to run `legionctl setup apply --install-ctx` in a terminal.
 4. If only a service is off, run `setup.turn-on` with that service (`legionctl-system` or `legionctl-operator`). It
    turns on only that service, also when ctx is missing; polkit asks the user for `legionctl-system`. `setup.apply`

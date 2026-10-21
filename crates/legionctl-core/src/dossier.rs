@@ -42,8 +42,9 @@ macro_rules! annotations {
 }
 pub(crate) use annotations;
 
-/// v17 -> v18: the process that holds each dossier binding (an agent's MCP server), which tells whether its agent
-/// still runs (plan#todo-227 AOS-4), and the events by time, which `events --since/--until` reads (AOS-6).
+/// v17 -> v18: the process that holds each dossier binding (the agent of the MCP server that bound it: its id and start
+/// in clock ticks since the epoch), which tells whether that agent still runs (plan#todo-227 AOS-4), and the events by
+/// time, which `events --since/--until` reads (AOS-6).
 macro_rules! binding_holders {
     () => {
         "ALTER TABLE bindings ADD COLUMN holder_pid INTEGER;
@@ -681,19 +682,22 @@ impl Dossiers {
         live(self.stale_after(), (session, updated, scoped), holder, now)
     }
 
-    /// Record process `pid` (an agent's MCP server) as the holder of `session`'s binding: the binding lives while
-    /// that process runs.
+    /// Record the agent of the MCP server `pid` (its parent: Claude Code, Codex) as the holder of `session`'s binding:
+    /// the binding lives while that agent runs, also when its MCP server starts again.
     ///
     /// # Errors
-    /// The process's start cannot be read, or the database write fails.
+    /// The processes cannot be read, or the database write fails.
     pub fn hold(&self, session: &str, pid: u32) -> Result<()> {
-        if let Some(started) = process_started(pid)? {
+        let Some(agent) = process_parent(pid)? else {
+            return Ok(());
+        };
+        if let Some(started) = process_started(agent)? {
             let session = session.to_string();
             // through the control writer, as the bind before it
             self.db.queued(move |tx| {
                 tx.execute(
                     "UPDATE bindings SET holder_pid = ?1, holder_started = ?2 WHERE session = ?3 AND released IS NULL",
-                    params![pid, started, session],
+                    params![agent, started, session],
                 )?;
                 Ok(())
             })?;
@@ -1817,7 +1821,7 @@ pub(crate) fn real(path: &Path) -> PathBuf {
 /// The process that holds a binding.
 #[derive(Clone, Copy)]
 pub enum Holder {
-    /// The process recorded with the binding: its id and start (seconds since the epoch).
+    /// The process recorded with the binding: its id and start ([`process_started`]).
     Process(u32, i64),
     /// A binding that an older build made through an MCP server (none recorded), at this time: its server started
     /// before it.
@@ -1828,8 +1832,9 @@ pub enum Holder {
 
 /// Whether the session that holds a binding last refreshed at `updated` is still live: active within `stale_after`
 /// seconds (each hook call and dossier write refreshes it); for a session legionctl started in a scope (`scoped`: the
-/// session row's scoped and inside), that scope still runs; else its `holder` process still runs. A minute of grace
-/// covers the time between the bind and the client's `systemd-run`.
+/// session row's scoped and inside), that scope still runs; else its `holder` process still runs. A minute of grace after
+/// the last refresh covers the time between the bind and the client's `systemd-run`, or the record of a new holder
+/// (an agent resumed with the same session).
 ///
 /// # Errors
 /// The scope's state, or the processes, cannot be read: the session may run, so it is not taken as gone.
@@ -1847,42 +1852,90 @@ pub(crate) fn live(
             || crate::session::active(session, crate::session::Inside::from_db(&inside))?);
     }
     Ok(match holder {
-        Holder::Process(pid, started) => process_started(pid)? == Some(started),
-        Holder::McpBefore(acquired) => mcp_servers_started()?.iter().any(|s| *s <= acquired),
+        Holder::Process(pid, started) => {
+            now - updated <= 60 || process_started(pid)? == Some(started)
+        }
+        Holder::McpBefore(acquired) => {
+            let hz = i64::try_from(rustix::param::clock_ticks_per_second())?;
+            mcp_servers_started()?
+                .iter()
+                .any(|s| *s <= acquired.saturating_mul(hz))
+        }
         Holder::Unknown => true,
     })
 }
 
-/// When process `pid` started, in seconds since the epoch; none when it is gone.
+/// The fields of `/proc/<pid>/stat` after the command's closing parenthesis (field 3 on); none when the process is gone.
+///
+/// # Errors
+/// /proc cannot be read for another reason.
+fn process_stat(pid: u32) -> Result<Option<Vec<String>>> {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => Ok(Some(
+            stat.rsplit_once(')')
+                .with_context(|| format!("/proc/{pid}/stat has no command: {stat}"))?
+                .1
+                .split_whitespace()
+                .map(String::from)
+                .collect(),
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading /proc/{pid}/stat")),
+    }
+}
+
+/// When process `pid` started, in clock ticks since the epoch (the boot time and the start since boot: a process id
+/// that the system gives again belongs to a later start); none when it is gone.
 ///
 /// # Errors
 /// /proc cannot be read for another reason.
 fn process_started(pid: u32) -> Result<Option<i64>> {
-    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(stat) => stat,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).with_context(|| format!("reading /proc/{pid}/stat")),
+    let Some(fields) = process_stat(pid)? else {
+        return Ok(None);
     };
-    // the fields after the command's closing parenthesis; starttime is field 22 of the whole line
-    let ticks: i64 = stat
-        .rsplit_once(')')
-        .and_then(|(_, rest)| rest.split_whitespace().nth(19))
+    // starttime is field 22 of the whole line
+    let ticks: i64 = fields
+        .get(19)
         .and_then(|t| t.parse().ok())
-        .with_context(|| format!("/proc/{pid}/stat has no start time: {stat}"))?;
+        .with_context(|| format!("/proc/{pid}/stat has no start time"))?;
     let boot: i64 = std::fs::read_to_string("/proc/stat")?
         .lines()
         .find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok())
         .context("/proc/stat has no btime")?;
     let hz = i64::try_from(rustix::param::clock_ticks_per_second())?;
-    Ok(Some(boot + ticks / hz))
+    Ok(Some(boot * hz + ticks))
 }
 
-/// When each running `legionctl mcp` (an agent's MCP server) started, in seconds since the epoch.
+/// The parent of process `pid`; none when it is gone.
+///
+/// # Errors
+/// /proc cannot be read for another reason.
+fn process_parent(pid: u32) -> Result<Option<u32>> {
+    let Some(fields) = process_stat(pid)? else {
+        return Ok(None);
+    };
+    // ppid is field 4 of the whole line
+    Ok(Some(
+        fields
+            .get(1)
+            .and_then(|p| p.parse().ok())
+            .with_context(|| format!("/proc/{pid}/stat has no parent"))?,
+    ))
+}
+
+/// When each running `legionctl ... mcp` of this operator (an agent's MCP server; options may come first) started
+/// ([`process_started`]).
 ///
 /// # Errors
 /// /proc cannot be read.
 fn mcp_servers_started() -> Result<Vec<i64>> {
     use std::os::unix::ffi::OsStrExt as _;
+    // a server of this operator: its runtime folder (where it finds the socket) is this one's
+    let own = std::env::var_os("XDG_RUNTIME_DIR").map(|d| {
+        let mut entry = b"XDG_RUNTIME_DIR=".to_vec();
+        entry.extend_from_slice(d.as_bytes());
+        entry
+    });
     let mut started = Vec::new();
     for entry in std::fs::read_dir("/proc")? {
         let Some(pid) = entry?
@@ -1901,7 +1954,12 @@ fn mcp_servers_started() -> Result<Vec<i64>> {
             .next()
             .map(|a| Path::new(std::ffi::OsStr::from_bytes(a)));
         if program.and_then(Path::file_name) == Some(std::ffi::OsStr::new("legionctl"))
-            && args.next() == Some(b"mcp".as_slice())
+            && args.any(|a| a == b"mcp")
+            && std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| {
+                env.split(|b| *b == 0)
+                    .find(|e| e.starts_with(b"XDG_RUNTIME_DIR="))
+                    == own.as_deref()
+            })
             && let Some(s) = process_started(pid)?
         {
             started.push(s);

@@ -9,7 +9,8 @@ use crate::common::Operator;
 use crate::common::process::Kill;
 
 pub struct Mcp {
-    child: Kill,
+    /// The process the harness started: the server, or the agent that runs it.
+    pub child: Kill,
     out: BufReader<std::process::ChildStdout>,
     next: u64,
 }
@@ -24,11 +25,21 @@ impl Mcp {
     ) -> Mcp {
         let here = std::env::current_dir().unwrap();
         let cwd = cwd.unwrap_or(&here);
-        let mut child = Kill::spawn(
+        Self::over(
+            operator,
+            env,
             Command::new(env!("CARGO_BIN_EXE_legionctl"))
                 .arg("mcp")
                 .args(args)
-                .current_dir(cwd)
+                .current_dir(cwd),
+        )
+    }
+
+    /// `command` (an MCP server, or a process that runs one) with only `env` and the operator's runtime folder, as an
+    /// agent's harness starts it, initialized.
+    pub fn over(operator: &Operator, env: &[(&str, &str)], command: &mut Command) -> Mcp {
+        let mut child = Kill::spawn(
+            command
                 .env_clear()
                 .env("XDG_RUNTIME_DIR", &operator.runtime)
                 .envs(env.iter().copied())
