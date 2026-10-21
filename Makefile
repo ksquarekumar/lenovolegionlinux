@@ -109,16 +109,17 @@ stray-tests: ## list legionctl test processes that run for more than STRAY_SECON
 ci: lint rust-lint js-lint validate test stray-tests ## what CI runs
 
 CI_LOCAL_IMAGE := legionctl-ci-local:ubuntu-24.04
+export CI_LOCAL_JOB ?= make tools && make ci
 
 .PHONY: ci-local
-ci-local: ## make ci in a container shaped like the GitHub runner (Ubuntu 24.04, its packages and cgroup, no user systemd); a test that runs past 15 min stops the run
+ci-local: ## make ci in a container shaped like the GitHub runner (Ubuntu 24.04, its packages, a job cgroup, no user systemd; the host's pids, cgroups, /var/tmp and docker, as the job's containers are siblings); a test that runs past 15 min stops the run; CI_LOCAL_JOB='<command>' runs another job there
 	docker build -q -t $(CI_LOCAL_IMAGE) --build-arg UID=$$(id -u) --build-arg GID=$$(id -g) tests/ci-local
-	mkdir -p "$$HOME/.cargo/registry" /var/tmp/legionctl-test-cache
-	docker run --rm --privileged --cgroupns=private --user root \
-	  --group-add "$$(stat -c %g /var/run/docker.sock)" -v /var/run/docker.sock:/var/run/docker.sock \
+	mkdir -p "$$HOME/.cargo/registry"
+	docker run --rm --privileged --cgroupns=host --pid=host --user root -v /var/run/docker.sock:/var/run/docker.sock \
+	  --tmpfs /tmp:exec -v /var/tmp:/var/tmp -e CI_LOCAL_JOB --ulimit nofile=65536:65536 \
 	  -v "$(CURDIR):$(CURDIR)" -w "$(CURDIR)" -e CARGO_TARGET_DIR="$(CURDIR)/target/ci-local" \
-	  -v "$$HOME/.cargo/registry:/home/runner/.cargo/registry" -v legionctl-ci-local-cache:/home/runner/.cache \
-	  -v /var/tmp/legionctl-test-cache:/var/tmp/legionctl-test-cache \
+	  -v "$$(git rev-parse --path-format=absolute --git-common-dir):$$(git rev-parse --path-format=absolute --git-common-dir)" \
+	  -e HOST_HOME="$$HOME" -v "$$HOME/.cargo/registry:$$HOME/.cargo/registry" -v legionctl-ci-local-cache:"$$HOME/.cache" \
 	  $(CI_LOCAL_IMAGE) tests/ci-local/run.sh
 
 .PHONY: kmod

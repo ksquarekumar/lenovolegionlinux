@@ -10328,8 +10328,13 @@ fn parallel_changes(tag: &str, n: usize) -> (Vec<String>, [i64; 5]) {
             .flat_map(|kind| (0..n).map(move |i| (kind, i)))
             .map(|(kind, i)| s.spawn(move || change(kind, i)))
             .collect();
-        let outs: Vec<_> = calls.into_iter().map(|t| t.join().unwrap()).collect();
+        let ended: Vec<_> = calls
+            .into_iter()
+            .map(std::thread::ScopedJoinHandle::join)
+            .collect();
+        // the flood stops first, also when a change failed: else the scope waits for it forever
         done.store(true, std::sync::atomic::Ordering::Relaxed);
+        let outs: Vec<_> = ended.into_iter().map(Result::unwrap).collect();
         let failed: Vec<String> = outs
             .into_iter()
             .filter(|o| !o.status.success())

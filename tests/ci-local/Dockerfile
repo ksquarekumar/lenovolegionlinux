@@ -23,3 +23,10 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c clippy,rus
     && curl -fsSL https://bun.sh/install | bash \
     && cargo install --locked cargo-machete@0.9.2 cargo-deny@0.20.2 \
     && rm -rf /home/runner/.cargo/registry
+# the runner image has the sqlite3 command (a test fills a database with it), docker's compose and buildx plugins and
+# Python's jsonschema (a test checks a settings file against its schema)
+USER root
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends sqlite3 \
+      docker-compose-v2 docker-buildx python3-jsonschema \
+    && rm -rf /var/lib/apt/lists/*
+USER runner
