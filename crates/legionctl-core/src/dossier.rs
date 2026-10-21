@@ -42,13 +42,15 @@ macro_rules! annotations {
 }
 pub(crate) use annotations;
 
-/// v17 -> v18: the process that holds each dossier binding (the agent of the MCP server that bound it: its id and start
-/// in clock ticks since the epoch), which tells whether that agent still runs (plan#todo-227 AOS-4), and the events by
-/// time, which `events --since/--until` reads (AOS-6).
+/// v17 -> v18: the processes that hold each dossier binding made through an MCP server (the server and its parent, the
+/// agent: id and start in clock ticks since the epoch), which tell whether that agent still runs (plan#todo-227
+/// AOS-4), and the events by time, which `events --since/--until` reads (AOS-6).
 macro_rules! binding_holders {
     () => {
         "ALTER TABLE bindings ADD COLUMN holder_pid INTEGER;
      ALTER TABLE bindings ADD COLUMN holder_started INTEGER;
+     ALTER TABLE bindings ADD COLUMN holder_parent_pid INTEGER;
+     ALTER TABLE bindings ADD COLUMN holder_parent_started INTEGER;
      CREATE INDEX events_ts ON events (ts);"
     };
 }
@@ -667,12 +669,15 @@ impl Dossiers {
             .db
             .conn()
             .query_row(
-                "SELECT holder_pid, holder_started, tool, acquired FROM bindings WHERE session = ?1 AND released IS NULL",
+                "SELECT holder_pid, holder_started, holder_parent_pid, holder_parent_started, tool, acquired FROM bindings \
+                 WHERE session = ?1 AND released IS NULL",
                 [session],
                 |r| {
-                    Ok(match (r.get(0)?, r.get(1)?, r.get::<_, String>(2)?) {
-                        (Some(pid), Some(started), _) => Holder::Process(pid, started),
-                        (_, _, tool) if tool == "mcp" => Holder::McpBefore(r.get(3)?),
+                    let server: Option<(u32, i64)> = r.get::<_, Option<u32>>(0)?.zip(r.get(1)?);
+                    let parent: Option<(u32, i64)> = r.get::<_, Option<u32>>(2)?.zip(r.get(3)?);
+                    Ok(match (server, r.get::<_, String>(4)?) {
+                        (Some(server), _) => Holder::Processes(server, parent),
+                        (None, tool) if tool == "mcp" => Holder::McpBefore(r.get(5)?),
                         _ => Holder::Unknown,
                     })
                 },
@@ -682,26 +687,36 @@ impl Dossiers {
         live(self.stale_after(), (session, updated, scoped), holder, now)
     }
 
-    /// Record the agent of the MCP server `pid` (its parent: Claude Code, Codex) as the holder of `session`'s binding:
-    /// the binding lives while that agent runs, also when its MCP server starts again.
+    /// Record the MCP server `pid` and its parent (the agent: Claude Code, Codex, or a wrapper) as the holders of
+    /// `session`'s binding: the binding lives while either runs, so a server that starts again keeps its agent's lock,
+    /// and a wrapper that ends keeps its server's.
     ///
     /// # Errors
     /// The processes cannot be read, or the database write fails.
     pub fn hold(&self, session: &str, pid: u32) -> Result<()> {
-        let Some(agent) = process_parent(pid)? else {
+        let Some(started) = process_started(pid)? else {
             return Ok(());
         };
-        if let Some(started) = process_started(agent)? {
-            let session = session.to_string();
-            // through the control writer, as the bind before it
-            self.db.queued(move |tx| {
-                tx.execute(
-                    "UPDATE bindings SET holder_pid = ?1, holder_started = ?2 WHERE session = ?3 AND released IS NULL",
-                    params![agent, started, session],
-                )?;
-                Ok(())
-            })?;
-        }
+        let parent = match process_parent(pid)? {
+            Some(parent) => process_started(parent)?.map(|s| (parent, s)),
+            None => None,
+        };
+        let session = session.to_string();
+        // through the control writer, as the bind before it
+        self.db.queued(move |tx| {
+            tx.execute(
+                "UPDATE bindings SET holder_pid = ?1, holder_started = ?2, holder_parent_pid = ?3, \
+                 holder_parent_started = ?4 WHERE session = ?5 AND released IS NULL",
+                params![
+                    pid,
+                    started,
+                    parent.map(|p| p.0),
+                    parent.map(|p| p.1),
+                    session
+                ],
+            )?;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -1821,8 +1836,9 @@ pub(crate) fn real(path: &Path) -> PathBuf {
 /// The process that holds a binding.
 #[derive(Clone, Copy)]
 pub enum Holder {
-    /// The process recorded with the binding: its id and start ([`process_started`]).
-    Process(u32, i64),
+    /// The processes recorded with the binding: the MCP server and its parent, each its id and start
+    /// ([`process_started`]).
+    Processes((u32, i64), Option<(u32, i64)>),
     /// A binding that an older build made through an MCP server (none recorded), at this time: its server started
     /// before it.
     McpBefore(i64),
@@ -1852,14 +1868,18 @@ pub(crate) fn live(
             || crate::session::active(session, crate::session::Inside::from_db(&inside))?);
     }
     Ok(match holder {
-        Holder::Process(pid, started) => {
-            now - updated <= 60 || process_started(pid)? == Some(started)
+        Holder::Processes(server, parent) => {
+            let runs = |(pid, started): (u32, i64)| -> Result<bool> {
+                Ok(process_started(pid)? == Some(started))
+            };
+            now - updated <= 60 || runs(server)? || parent.map(runs).transpose()? == Some(true)
         }
         Holder::McpBefore(acquired) => {
             let hz = i64::try_from(rustix::param::clock_ticks_per_second())?;
+            // started before the end of the second of the bind (acquired is whole seconds)
             mcp_servers_started()?
                 .iter()
-                .any(|s| *s <= acquired.saturating_mul(hz))
+                .any(|s| *s < acquired.saturating_add(1).saturating_mul(hz))
         }
         Holder::Unknown => true,
     })
@@ -1930,12 +1950,8 @@ fn process_parent(pid: u32) -> Result<Option<u32>> {
 /// /proc cannot be read.
 fn mcp_servers_started() -> Result<Vec<i64>> {
     use std::os::unix::ffi::OsStrExt as _;
-    // a server of this operator: its runtime folder (where it finds the socket) is this one's
-    let own = std::env::var_os("XDG_RUNTIME_DIR").map(|d| {
-        let mut entry = b"XDG_RUNTIME_DIR=".to_vec();
-        entry.extend_from_slice(d.as_bytes());
-        entry
-    });
+    // a server of this operator: its runtime folder (where it finds the socket) is this one's, as a path
+    let own = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     let mut started = Vec::new();
     for entry in std::fs::read_dir("/proc")? {
         let Some(pid) = entry?
@@ -1953,15 +1969,30 @@ fn mcp_servers_started() -> Result<Vec<i64>> {
         let program = args
             .next()
             .map(|a| Path::new(std::ffi::OsStr::from_bytes(a)));
-        if program.and_then(Path::file_name) == Some(std::ffi::OsStr::new("legionctl"))
-            && args.any(|a| a == b"mcp")
-            && std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| {
-                env.split(|b| *b == 0)
-                    .find(|e| e.starts_with(b"XDG_RUNTIME_DIR="))
-                    == own.as_deref()
-            })
-            && let Some(s) = process_started(pid)?
-        {
+        if program.and_then(Path::file_name) != Some(std::ffi::OsStr::new("legionctl")) {
+            continue;
+        }
+        // the command is the first word after the global options (`-C <folder>` takes one)
+        let mut command = None;
+        while let Some(arg) = args.next() {
+            if arg == b"-C" {
+                args.next();
+            } else if !arg.starts_with(b"-") {
+                command = Some(arg);
+                break;
+            }
+        }
+        if command != Some(b"mcp".as_slice()) {
+            continue;
+        }
+        // an environment it cannot read may be this operator's: counted, so no live binding goes
+        let ours = std::fs::read(format!("/proc/{pid}/environ")).map_or(true, |env| {
+            env.split(|b| *b == 0)
+                .find_map(|e| e.strip_prefix(b"XDG_RUNTIME_DIR="))
+                .map(|d| PathBuf::from(std::ffi::OsStr::from_bytes(d)))
+                == own
+        });
+        if ours && let Some(s) = process_started(pid)? {
             started.push(s);
         }
     }

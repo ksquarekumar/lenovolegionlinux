@@ -846,7 +846,7 @@ fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
     std::fs::remove_dir_all(&ws).unwrap();
     let gone = doctor();
     assert!(
-        gone.contains(&format!("the worktree {} is missing", ws.display())),
+        gone.contains(&format!("workspace {}: its folder is gone", ws.display())),
         "{gone}"
     );
 }

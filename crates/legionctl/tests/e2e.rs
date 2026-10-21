@@ -9833,11 +9833,38 @@ fn server_ends(mcp: &mut Mcp) {
     assert!(Command::new("kill").arg(server).status().unwrap().success());
 }
 
+/// `legionctl mcp` started by a wrapper that ends when the file `done` is there; the server runs on.
+fn mcp_under_wrapper(operator: &Operator, env: &[(&str, &str)], done: &Path) -> Mcp {
+    Mcp::over(
+        operator,
+        env,
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#""$0" mcp 0<&0 & while [ ! -e "$1" ]; do sleep 0.05; done"#)
+            .arg(env!("CARGO_BIN_EXE_legionctl"))
+            .arg(done),
+    )
+}
+
+/// The wrapper of [`mcp_under_wrapper`] ends (its server runs on).
+fn wrapper_ends(mcp: &mut Mcp, done: &Path) {
+    std::fs::write(done, "").unwrap();
+    // not wait(): it closes the server's input
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while mcp.child.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wrapper did not end"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// The dossier locks of agents that ended are freed with no manual step (plan#todo-227 AOS-4, F10): agency-os had 14
 /// locks of ended Codex review runs, bound through their MCP servers under names of their own, that stayed for 12 h.
 /// A bind through an MCP server records its agent (the server's parent); a minute after the last refresh with that
 /// agent gone, the lock is stale, the next bind of the dossier takes it, and the next operator start frees it. An
-/// agent whose MCP server starts again keeps its lock. A lock of an older build (no agent recorded) is freed when no
+/// agent whose MCP server starts again keeps its lock, and so does a server whose wrapper ended. A lock of an older build (no agent recorded) is freed when no
 /// MCP server that started before it still runs (`legionctl -C <folder> mcp` counts). A live lock, and a fresh one of
 /// the CLI, are never freed.
 #[test]
@@ -9864,23 +9891,30 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
     // past the minute of grace after the last refresh
     let age = || sql(&home, "UPDATE bindings SET updated = updated - 120");
     let env = [("HOME", home.to_str().unwrap())];
-    let mut ended = mcp_under_agent(&op, &env, &[]);
+    // the live run's server alone runs before the older build's live lock (a second apart each way: the lock has
+    // whole seconds), so only a server started with options first (`-C <folder>`) can keep that lock
     let mut live = mcp_under_agent(&op, &env, &["-C", home.to_str().unwrap()]);
-    let mut gone_while_off = mcp_under_agent(&op, &env, &[]);
-    let mut restarted = mcp_under_agent(&op, &env, &[]);
-    bind(&mut ended, "review-ended", "codex-review-ended");
     bind(&mut live, "review-live", "codex-review-live");
-    bind(&mut gone_while_off, "review-off", "codex-review-off");
-    bind(&mut restarted, "review-restarted", "claude-restarted");
-    // locks of an older build: no agent recorded; one made before any MCP server that runs now, one after the live one
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     sql(
         &home,
         "INSERT INTO bindings (session, tool, dossier, acquired, updated) VALUES \
          ('old-ended', 'mcp', 'review-old-ended', 1000, strftime('%s', 'now')), \
-         ('old-live', 'mcp', 'review-old-live', strftime('%s', 'now') + 1, strftime('%s', 'now'))",
+         ('old-live', 'mcp', 'review-old-live', strftime('%s', 'now'), strftime('%s', 'now'))",
     );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let mut ended = mcp_under_agent(&op, &env, &[]);
+    let mut gone_while_off = mcp_under_agent(&op, &env, &[]);
+    let mut restarted = mcp_under_agent(&op, &env, &[]);
+    let wrapper_done = home.join("wrapper-done");
+    let mut wrapped = mcp_under_wrapper(&op, &env, &wrapper_done);
+    bind(&mut ended, "review-ended", "codex-review-ended");
+    bind(&mut gone_while_off, "review-off", "codex-review-off");
+    bind(&mut restarted, "review-restarted", "claude-restarted");
+    bind(&mut wrapped, "review-wrapped", "codex-wrapped");
     drop(ended);
     server_ends(&mut restarted);
+    wrapper_ends(&mut wrapped, &wrapper_done);
     // within the minute after its bind, an ended run's lock still holds (its agent may be one resumed with its id)
     assert!(locks(&op).contains(&("review-ended".to_string(), false)));
     age();
@@ -9893,6 +9927,7 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
             ("review-old-ended".into(), true),
             ("review-old-live".into(), false),
             ("review-restarted".into(), false),
+            ("review-wrapped".into(), false),
         ]
     );
 
@@ -9934,6 +9969,7 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
             ("review-live".into(), false),
             ("review-old-live".into(), false),
             ("review-restarted".into(), false),
+            ("review-wrapped".into(), false),
         ]
     );
     // the live run still works in its dossier after the restart
