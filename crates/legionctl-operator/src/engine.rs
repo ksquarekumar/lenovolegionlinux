@@ -1362,7 +1362,10 @@ fn agent_findings() -> Result<Vec<legionctl_api::Finding>> {
         };
         if let Some(ahead) = unmerged {
             let branch = match ahead {
-                0 => format!("its branch {} is merged into {}", ws.branch, ws.base),
+                0 => format!(
+                    "its branch {} is merged into {} or gone",
+                    ws.branch, ws.base
+                ),
                 1 => format!(
                     "its branch {} has 1 commit that {} does not have",
                     ws.branch, ws.base

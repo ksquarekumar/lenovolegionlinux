@@ -1848,9 +1848,10 @@ pub enum Holder {
 
 /// Whether the session that holds a binding last refreshed at `updated` is still live: active within `stale_after`
 /// seconds (each hook call and dossier write refreshes it); for a session legionctl started in a scope (`scoped`: the
-/// session row's scoped and inside), that scope still runs; else its `holder` process still runs. A minute of grace after
-/// the last refresh covers the time between the bind and the client's `systemd-run`, or the record of a new holder
-/// (an agent resumed with the same session).
+/// session row's scoped and inside), that scope still runs; else its `holder` processes still run. A minute of grace after
+/// the last refresh covers the time between the bind and the client's `systemd-run`; ten minutes cover an agent whose
+/// recorded processes all went while it runs on (a resumed agent, or a wrapper that ended and a server that started
+/// again): its next prompt or dossier write refreshes the binding.
 ///
 /// # Errors
 /// The scope's state, or the processes, cannot be read: the session may run, so it is not taken as gone.
@@ -1872,7 +1873,9 @@ pub(crate) fn live(
             let runs = |(pid, started): (u32, i64)| -> Result<bool> {
                 Ok(process_started(pid)? == Some(started))
             };
-            now - updated <= 60 || runs(server)? || parent.map(runs).transpose()? == Some(true)
+            // shortcut: the recorded processes stand for the agent, which a chain of wrappers can hide; the session lock
+            // of topic overlay-liveness (EVIDENCE/review/17 T0) replaces this
+            now - updated <= 600 || runs(server)? || parent.map(runs).transpose()? == Some(true)
         }
         Holder::McpBefore(acquired) => {
             let hz = i64::try_from(rustix::param::clock_ticks_per_second())?;
@@ -1950,8 +1953,10 @@ fn process_parent(pid: u32) -> Result<Option<u32>> {
 /// /proc cannot be read.
 fn mcp_servers_started() -> Result<Vec<i64>> {
     use std::os::unix::ffi::OsStrExt as _;
-    // a server of this operator: its runtime folder (where it finds the socket) is this one's, as a path
-    let own = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    // a server of this operator: its runtime folder (where it finds the socket) is this one's, links resolved
+    let own = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(|d| std::fs::canonicalize(&d).with_context(|| format!("resolving {}", d.display())))
+        .transpose()?;
     let mut started = Vec::new();
     for entry in std::fs::read_dir("/proc")? {
         let Some(pid) = entry?
@@ -1985,12 +1990,17 @@ fn mcp_servers_started() -> Result<Vec<i64>> {
         if command != Some(b"mcp".as_slice()) {
             continue;
         }
-        // an environment it cannot read may be this operator's: counted, so no live binding goes
+        // an environment it cannot read, or a folder that does not resolve, may be this operator's: counted, so no
+        // live binding goes
         let ours = std::fs::read(format!("/proc/{pid}/environ")).map_or(true, |env| {
-            env.split(|b| *b == 0)
+            match env
+                .split(|b| *b == 0)
                 .find_map(|e| e.strip_prefix(b"XDG_RUNTIME_DIR="))
-                .map(|d| PathBuf::from(std::ffi::OsStr::from_bytes(d)))
-                == own
+            {
+                Some(dir) => std::fs::canonicalize(std::ffi::OsStr::from_bytes(dir))
+                    .map_or(true, |dir| Some(dir) == own),
+                None => own.is_none(),
+            }
         });
         if ours && let Some(s) = process_started(pid)? {
             started.push(s);

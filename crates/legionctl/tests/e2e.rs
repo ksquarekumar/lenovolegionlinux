@@ -981,7 +981,7 @@ fn an_agent_finds_describes_and_runs_operations_through_three_mcp_tools() {
     assert!(failed);
     assert_eq!(
         unknown["error"]["message"],
-        "No operation workspace_checkpoint. The closest: workspace.checkpoint, workspace.close, workspace.list."
+        "No operation workspace_checkpoint. The closest: workspace.checkpoint, workspace.close, workspace.forget."
     );
 
     skills_are_listed_with_their_plugin_folder(&mut mcp, &home);
@@ -8242,7 +8242,7 @@ fn the_processes_of_a_test_end_when_it_panics_and_when_its_binary_is_killed() {
 /// todo-122, as on 2026-10-15: the user's operator.db at v10 while an operator of another build runs (a stand-in that
 /// holds `operator.lock` with that build's fingerprint). An operator of this build does not start, and the file stays
 /// at v10 without a backup. After the other operator stopped, this one starts: it keeps the v10 file in
-/// `operator.db.v10.bak`, then takes the database to v18 with its rows (the MCP tool call log into the call record).
+/// `operator.db.v10.bak`, then takes the database to v19 with its rows (the MCP tool call log into the call record).
 #[test]
 fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_database() {
     let home = home("holder");
@@ -8319,7 +8319,7 @@ fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_data
     let op = operator_in("holder", &home);
     let events = op.ok(&["events", "--json"]);
     assert!(events.contains("kept.v10"), "{events}");
-    assert_eq!(version(&db), 18);
+    assert_eq!(version(&db), 19);
     assert_eq!(version(&bak), 10, "the backup is the v10 file");
     the_old_tool_log_is_in_the_call_record(&op);
     let kept: String = rusqlite::Connection::open(&bak)
@@ -9862,10 +9862,11 @@ fn wrapper_ends(mcp: &mut Mcp, done: &Path) {
 
 /// The dossier locks of agents that ended are freed with no manual step (plan#todo-227 AOS-4, F10): agency-os had 14
 /// locks of ended Codex review runs, bound through their MCP servers under names of their own, that stayed for 12 h.
-/// A bind through an MCP server records its agent (the server's parent); a minute after the last refresh with that
-/// agent gone, the lock is stale, the next bind of the dossier takes it, and the next operator start frees it. An
+/// A bind through an MCP server records the server and its agent (the server's parent); ten minutes after the last
+/// refresh with both gone, the lock is stale, the next bind of the dossier takes it, and the next operator start frees it. An
 /// agent whose MCP server starts again keeps its lock, and so does a server whose wrapper ended. A lock of an older build (no agent recorded) is freed when no
-/// MCP server that started before it still runs (`legionctl -C <folder> mcp` counts). A live lock, and a fresh one of
+/// MCP server of this operator that started before it still runs (`legionctl -C <folder> mcp`, and one that finds the
+/// socket through a link, count). A live lock, and a fresh one of
 /// the CLI, are never freed.
 #[test]
 fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start() {
@@ -9888,12 +9889,16 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
             })
             .collect()
     };
-    // past the minute of grace after the last refresh
-    let age = || sql(&home, "UPDATE bindings SET updated = updated - 120");
+    // past the grace after the last refresh
+    let age = || sql(&home, "UPDATE bindings SET updated = updated - 700");
     let env = [("HOME", home.to_str().unwrap())];
     // the live run's server alone runs before the older build's live lock (a second apart each way: the lock has
     // whole seconds), so only a server started with options first (`-C <folder>`) can keep that lock
-    let mut live = mcp_under_agent(&op, &env, &["-C", home.to_str().unwrap()]);
+    // it finds the socket through a link to the operator's runtime folder (as /var/run is one to /run)
+    let runtime_link = home.join("runtime-link");
+    std::os::unix::fs::symlink(&*op.runtime, &runtime_link).unwrap();
+    let linked = [env[0], ("XDG_RUNTIME_DIR", runtime_link.to_str().unwrap())];
+    let mut live = mcp_under_agent(&op, &linked, &["-C", home.to_str().unwrap()]);
     bind(&mut live, "review-live", "codex-review-live");
     std::thread::sleep(std::time::Duration::from_millis(1100));
     sql(
@@ -9915,7 +9920,7 @@ fn the_locks_of_ended_mcp_agents_are_freed_at_the_next_bind_and_operator_start()
     drop(ended);
     server_ends(&mut restarted);
     wrapper_ends(&mut wrapped, &wrapper_done);
-    // within the minute after its bind, an ended run's lock still holds (its agent may be one resumed with its id)
+    // within the grace after its bind, an ended run's lock still holds (its agent may be one resumed with its id)
     assert!(locks(&op).contains(&("review-ended".to_string(), false)));
     age();
     assert_eq!(
