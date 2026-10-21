@@ -5,6 +5,8 @@
 mod common;
 #[path = "common/desktop.rs"]
 mod desktop;
+#[path = "common/static_client.rs"]
+mod static_client;
 #[path = "common/tokens.rs"]
 mod tokens;
 
@@ -1133,6 +1135,46 @@ fn a_daemon_older_than_a_source_it_was_built_from_is_refused() {
     // built after it: accepted
     file.set_modified(changed).unwrap();
     assert_eq!(crate::common::fresh(&bin), bin);
+}
+
+/// F14 (plan#todo-225): the static client of `make static` was built in a container that saw this checkout at /src, so
+/// its dep-info names /src/<path>, which is not here: a client older than such a source ran in the container tests
+/// without notice. Now it is refused with the command that helps, and a client built after it is taken.
+#[test]
+fn a_static_client_older_than_a_source_it_was_built_from_is_refused() {
+    let source = "crates/legionctl/src/main.rs";
+    let changed = std::fs::metadata(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(source),
+    )
+    .unwrap()
+    .modified()
+    .unwrap();
+    let dir = Scratch::new(
+        std::env::temp_dir().join(format!("legionctl-stale-static-{}", std::process::id())),
+    );
+    let bin = dir.join("legionctl");
+    std::fs::write(
+        bin.with_extension("d"),
+        format!("/src/target/static/release/legionctl: /src/{source}\n"),
+    )
+    .unwrap();
+    let file = std::fs::File::create(&bin).unwrap();
+    file.set_modified(changed - std::time::Duration::from_secs(1))
+        .unwrap();
+    let refused =
+        std::panic::catch_unwind(|| crate::static_client::fresh_static(&bin)).unwrap_err();
+    let refused = refused.downcast_ref::<String>().unwrap();
+    assert!(
+        refused.starts_with(&format!(
+            "{} is older than this build: run make static first (",
+            bin.display()
+        )) && refused.ends_with(&format!("{source} changed)")),
+        "{refused}"
+    );
+    file.set_modified(changed).unwrap();
+    assert_eq!(crate::static_client::fresh_static(&bin), bin);
 }
 
 /// Safe mode: after repeated failures systemd runs `legionctl-system --safe`, which hands the machine to the

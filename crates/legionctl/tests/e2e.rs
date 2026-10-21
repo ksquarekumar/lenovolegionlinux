@@ -17,6 +17,8 @@ mod mcp;
 mod plain;
 #[path = "common/provider.rs"]
 mod provider;
+#[path = "common/static_client.rs"]
+mod static_client;
 #[path = "common/tokens.rs"]
 mod tokens;
 #[path = "common/trust.rs"]
@@ -5798,12 +5800,8 @@ fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf
                  grep -q old \"$HOME/.codex/auth.json\" && \
                  echo '{\"refresh\": \"new\"}' > \"$HOME/.codex/auth.json\" && echo CODEX_LOGIN_THROUGH; \
                  python3 ask-gateway.py";
-    let client =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/static/release/legionctl");
-    assert!(
-        client.is_file(),
-        "{} is missing: run `make static`",
-        client.display()
+    let client = static_client::fresh_static(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/static/release/legionctl"),
     );
     let repo = repository(home);
     std::fs::copy(

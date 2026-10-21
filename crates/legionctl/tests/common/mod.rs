@@ -22,10 +22,12 @@ pub fn sibling(name: &str) -> PathBuf {
 
 /// `bin`, when no source in its dep-info (`<bin>.d`, which cargo writes with each build) is newer than it.
 pub fn fresh(bin: &Path) -> PathBuf {
-    let missing = format!(
-        "{} is missing: run cargo build --profile test-fast first",
-        bin.display()
-    );
+    fresh_as(bin, None, "cargo build --profile test-fast")
+}
+
+/// [`fresh`] with each dep-info path under `seen.0` read under `seen.1`, and `rebuild` as the command that helps.
+pub fn fresh_as(bin: &Path, seen: Option<(&str, &Path)>, rebuild: &str) -> PathBuf {
+    let missing = format!("{} is missing: run {rebuild} first", bin.display());
     let built = std::fs::metadata(bin)
         .and_then(|m| m.modified())
         .expect(&missing);
@@ -37,12 +39,19 @@ pub fn fresh(bin: &Path) -> PathBuf {
         .split_once(": ")
         .unwrap_or_default();
     for source in sources.split_whitespace() {
+        let source = match seen.and_then(|(at, root)| {
+            Some(root.join(source.strip_prefix(at)?.trim_start_matches('/')))
+        }) {
+            Some(here) => here,
+            None => PathBuf::from(source),
+        };
         // a removed source changed the file that named it, which is still in the list
-        if let Ok(changed) = std::fs::metadata(source).and_then(|m| m.modified()) {
+        if let Ok(changed) = std::fs::metadata(&source).and_then(|m| m.modified()) {
             assert!(
                 changed <= built,
-                "{} is older than this build: run cargo build --profile test-fast first ({source} changed)",
-                bin.display()
+                "{} is older than this build: run {rebuild} first ({} changed)",
+                bin.display(),
+                source.display()
             );
         }
     }
