@@ -1747,6 +1747,13 @@ fn blocking_reason(
     if Event::from(input.event) != Event::Stop {
         return Ok(None);
     }
+    // Codex's caller sees only the run's last reply (SPIKE/03): a run that the gate holds ends with the gate's text
+    if let Some((repo, last)) = unbound.filter(|_| input.codex && config.dossier.gate) {
+        let gate = gate_message(resolved, repo, last, rebound)?;
+        return Ok(Some(format!(
+            "legionctl: end this reply with only this text, word for word: {gate}"
+        )));
+    }
     // before the reply ends, the agent (not the user) hears what is not set up, and sets it up first
     if config.dossier.nudge.contains(&Event::Stop) && unbound.is_some() {
         return Ok(Some(

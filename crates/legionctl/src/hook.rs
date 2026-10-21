@@ -85,6 +85,7 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
         again: input["stop_hook_active"] == true,
         source: input["source"].as_str().map(String::from),
         lead: lead.clone(),
+        codex: harness(input) == "codex",
     };
     let tool = &input["tool_input"];
     let path = tool["file_path"]

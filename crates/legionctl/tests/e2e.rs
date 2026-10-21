@@ -10579,7 +10579,8 @@ fn the_legionctl_hooks_answer_codexs_own_payloads() {
 /// which the lead holds, and blocked each prompt; Codex shows no reason for a blocked prompt (`hook: UserPromptSubmit
 /// Blocked`), so the caller saw only "no final message". Now the run reads the lead's dossier with no binding of its
 /// own, its prompts pass, and its shell's CLI acts for the run, not for the lead. A run whose lead has no dossier, or
-/// that has no lead, is gated, and its agent's reply is the gate's text (the one answer that reaches a caller).
+/// that has no lead, is gated: its prompt passes with the order to say only the gate's text, and its stop hook makes
+/// its reply end with that text (Codex's caller sees only the last reply).
 #[test]
 fn a_codex_run_from_a_lead_session_reads_the_leads_dossier_and_acts_as_itself() {
     let (op, home) = operator("codex-lead");
@@ -10673,6 +10674,15 @@ fn a_codex_run_from_a_lead_session_reads_the_leads_dossier_and_acts_as_itself() 
                 && gated.contains("works in dossier lead")
                 && gated.contains("/legionctl:dossier use <name>"),
             "{session}: {gated}"
+        );
+        // and its reply ends with that text, also when the agent did the task: its caller sees only that reply
+        let ended: Value = serde_json::from_str(&hook("stop", "stop.json", session, env)).unwrap();
+        assert_eq!(ended["decision"], "block", "{ended}");
+        let reason = ended["reason"].as_str().unwrap();
+        assert!(
+            reason.starts_with("legionctl: end this reply with only this text")
+                && reason.contains("/legionctl:dossier use <name>"),
+            "{ended}"
         );
     }
 }

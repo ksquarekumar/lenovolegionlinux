@@ -828,6 +828,10 @@ pub struct HookRunIn {
     /// `CLAUDE_CODE_SESSION_ID` it inherited); a session with no dossier of its own reads that session's.
     #[serde(default)]
     pub lead: Option<SessionId>,
+    /// The agent is Codex: its caller sees only the run's last reply, so a run that the dossier gate holds ends its
+    /// reply with the gate's text (stop event).
+    #[serde(default)]
+    pub codex: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

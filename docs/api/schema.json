@@ -4983,6 +4983,11 @@
           "format": "session",
           "description": "The agent session that started this one from its shell (Codex from a Claude Code session: the\n`CLAUDE_CODE_SESSION_ID` it inherited); a session with no dossier of its own reads that session's.",
           "default": null
+        },
+        "codex": {
+          "type": "boolean",
+          "description": "The agent is Codex: its caller sees only the run's last reply, so a run that the dossier gate holds ends its\nreply with the gate's text (stop event).",
+          "default": false
         }
       },
       "required": [
