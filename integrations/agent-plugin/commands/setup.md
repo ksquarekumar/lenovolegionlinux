@@ -13,12 +13,16 @@ description: Set up ctx and legionctl for Claude Code and Codex (plugins, skills
    checks find the user's tools after the next login; headless runs get these folders at once), the legionctl plugin
    of Claude Code from the package folder, the sandbox access of the agents at user level, so that no repository
    commits it (in ~/.claude/settings.json, with one backup of the file: `sandbox.excludedCommands` gets `legionctl *`,
-   `permissions.allow` gets `legionctl dossier` and `status` and git and rm in `workspace.root`, `sandbox.filesystem`
-   gets `~/.gitconfig` and legionctl's folders (`dossier.root`, `workspace.root`, its data, state and cache to write,
-   its config to read); ~/.codex/rules/legionctl.rules lets Codex run `legionctl dossier` and `status` outside its
-   sandbox with no prompt and asks the user before each other legionctl command; ~/.codex/config.toml gets the same
-   folders, and each repository's `.git` that has legionctl workspaces, in the custom permission profile that the
-   user or that repository names), the OSD extension of
+   `permissions.allow` gets `legionctl dossier` and `status`, `sandbox.filesystem` gets `~/.gitconfig` and
+   legionctl's folders (`dossier.root`, `workspace.root`, its data, state and cache to write, its config to read);
+   ~/.codex/rules/legionctl.rules lets Codex run `legionctl dossier` and `status` outside its sandbox with no prompt
+   and asks the user before each other legionctl command; ~/.codex/config.toml gets the same folders in the custom
+   permission profile that the user or a repository with legionctl workspaces names. Only the user's own layer for one
+   repository (`legionctl config set <key> true --scope user-repo` in that repository) adds more:
+   `workspace.claude_allows_git_rm` allows git -C, rm and rmdir in that repository's workspaces with no prompt (every
+   git subcommand, git push too), `workspace.codex_writes_git` lets Codex's sandbox write that repository's `.git`; a
+   repository's `.legionctl` cannot set them, and setup removes them for a repository that does not turn them on
+   (the row says outdated until then)), the OSD extension of
    GNOME Shell, and clauth (the account engine: `cargo install clauth --version ~0.17 --locked` when missing, its
    daemon as the user unit `legionctl-clauth.service`, its MCP server in Claude Code). Then run `setup.apply`.
 3. If ctx is not installed, tell the user to run `legionctl setup apply --install-ctx` in a terminal.

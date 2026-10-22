@@ -1302,7 +1302,10 @@ fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
             if i.status == legionctl_machine::system::OSD_BROKEN
                 || i.status == legionctl_core::plugin::CODEX_HOOKS_UNTRUSTED
                 || (i.what == setup::SANDBOX_ACCESS
-                    && !matches!(i.status.as_str(), "missing" | "not of this build"))
+                    && !matches!(
+                        i.status.as_str(),
+                        "missing" | "outdated" | "not of this build"
+                    ))
             {
                 return Ok(state(text));
             }

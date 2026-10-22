@@ -1867,7 +1867,7 @@
         },
         "value": {
           "type": "string",
-          "description": "JSON (`true`, `3`, `[\"a\"]`, `{\"k\": 1}`) or plain text. Not kept in the audit: it can be a token.",
+          "description": "JSON (`true`, `3`, `[\"a\"]`, `{\"k\": 1}`) or plain text; `null` removes the key. Not kept in the audit: it can be\na token.",
           "x-secret": true
         },
         "dry_run": {
@@ -14283,7 +14283,7 @@
                       "const": "project"
                     },
                     {
-                      "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set.",
+                      "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set, and the only place for a setting whose scope is this alone (what a repository\nmust not grant itself).",
                       "type": "string",
                       "const": "user-repo"
                     }
@@ -14511,10 +14511,10 @@
             {
               "type": "string",
               "const": "user-repo",
-              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
+              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set, and the only place for a setting whose scope is this alone (what a repository\nmust not grant itself)."
             }
           ],
-          "description": "For whom: user (you), project (the repository's settings, for everybody who works in it) or computer (every\nuser of this computer; the system asks for an administrator's password).",
+          "description": "For whom: user (you), project (the repository's settings, for everybody who works in it), user-repo (you, in\nthis repository only: ~/.config/legionctl/repos/<repo>) or computer (every user of this computer; the system\nasks for an administrator's password).",
           "default": "user"
         }
       },
@@ -14564,7 +14564,7 @@
                 {
                   "type": "string",
                   "const": "user-repo",
-                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
+                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set, and the only place for a setting whose scope is this alone (what a repository\nmust not grant itself)."
                 }
               ],
               "description": "A layer that a setting may be set in."
@@ -14640,7 +14640,7 @@
             {
               "type": "string",
               "const": "user-repo",
-              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
+              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set, and the only place for a setting whose scope is this alone (what a repository\nmust not grant itself)."
             }
           ],
           "description": "The layer to remove it from: user, project or computer.",
@@ -14692,7 +14692,7 @@
                 {
                   "type": "string",
                   "const": "user-repo",
-                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
+                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set, and the only place for a setting whose scope is this alone (what a repository\nmust not grant itself)."
                 }
               ],
               "description": "A layer that a setting may be set in."
@@ -14787,7 +14787,7 @@
             {
               "type": "string",
               "const": "user-repo",
-              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
+              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set, and the only place for a setting whose scope is this alone (what a repository\nmust not grant itself)."
             }
           ],
           "description": "For whom: user, project or computer.",
@@ -14840,7 +14840,7 @@
                 {
                   "type": "string",
                   "const": "user-repo",
-                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
+                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set, and the only place for a setting whose scope is this alone (what a repository\nmust not grant itself)."
                 }
               ],
               "description": "A layer that a setting may be set in."
@@ -14935,7 +14935,7 @@
             {
               "type": "string",
               "const": "user-repo",
-              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
+              "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set, and the only place for a setting whose scope is this alone (what a repository\nmust not grant itself)."
             }
           ],
           "description": "For whom: user, project or computer.",
@@ -14988,7 +14988,7 @@
                 {
                   "type": "string",
                   "const": "user-repo",
-                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
+                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set, and the only place for a setting whose scope is this alone (what a repository\nmust not grant itself)."
                 }
               ],
               "description": "A layer that a setting may be set in."
@@ -15091,7 +15091,7 @@
                 {
                   "type": "string",
                   "const": "user-repo",
-                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set."
+                  "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set, and the only place for a setting whose scope is this alone (what a repository\nmust not grant itself)."
                 }
               ],
               "description": "A layer that a setting may be set in."
@@ -15202,7 +15202,7 @@
                     "const": "project"
                   },
                   {
-                    "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set.",
+                    "description": "Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a\nsetting that a project may set, and the only place for a setting whose scope is this alone (what a repository\nmust not grant itself).",
                     "type": "string",
                     "const": "user-repo"
                   }

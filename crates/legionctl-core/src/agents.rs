@@ -202,7 +202,11 @@ fn json_set(text: &str, key: &[&str], value: serde_json::Value) -> Result<String
     let object = at
         .as_object_mut()
         .ok_or("the parent of the key is not an object")?;
-    object.insert(key[key.len() - 1].to_string(), value);
+    if value.is_null() {
+        object.remove(key[key.len() - 1]);
+    } else {
+        object.insert(key[key.len() - 1].to_string(), value);
+    }
     serde_json::to_string_pretty(&root)
         .map(|t| t + "\n")
         .map_err(|e| e.to_string())
@@ -212,14 +216,18 @@ fn toml_set(text: &str, key: &[&str], value: &serde_json::Value) -> Result<Strin
     let mut doc: toml_edit::DocumentMut = text
         .parse()
         .map_err(|e| format!("the file is not valid TOML: {e}"))?;
-    let item: toml_edit::Item = match value {
-        serde_json::Value::Object(_) | serde_json::Value::Null => {
-            return Err("give a TOML value: a string, number, boolean or list".into());
+    let item: Option<toml_edit::Item> = match value {
+        serde_json::Value::Object(_) => {
+            return Err(
+                "give a TOML value: a string, number, boolean or list (null removes the key)"
+                    .into(),
+            );
         }
+        serde_json::Value::Null => None,
         other => {
             let toml_text = format!("v = {other}");
             let parsed: toml_edit::DocumentMut = toml_text.parse().map_err(|e| format!("{e}"))?;
-            parsed["v"].clone()
+            Some(parsed["v"].clone())
         }
     };
     let mut at = doc.as_item_mut();
@@ -238,7 +246,10 @@ fn toml_set(text: &str, key: &[&str], value: &serde_json::Value) -> Result<Strin
     let table = at
         .as_table_like_mut()
         .ok_or("the parent of the key is not a table")?;
-    table.insert(key[key.len() - 1], item);
+    match item {
+        Some(item) => table.insert(key[key.len() - 1], item),
+        None => table.remove(key[key.len() - 1]),
+    };
     Ok(doc.to_string())
 }
 

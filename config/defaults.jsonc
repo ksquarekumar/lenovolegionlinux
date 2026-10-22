@@ -29,7 +29,13 @@
     "root": "~/.local/share/legionctl/worktrees",
     // Tell the agent to open one: at session start when the dossier has none in this repository, and before a reply
     // ends when the main checkout has changes (decided 2026-10-13: a nudge, not a write block).
-    "nudge": true
+    "nudge": true,
+    // Only your own layer for one repository (~/.config/legionctl/repos/<repo>) turns these on (feedbacks/0014):
+    // Claude Code runs git -C, rm, rm -r, rm -rf and rmdir in this repository's workspaces with no prompt, also
+    // outside its sandbox (the rule matches every git subcommand, push too);
+    "claude_allows_git_rm": false,
+    // Codex's sandbox writes this repository's .git, so that Codex commits in a workspace by itself.
+    "codex_writes_git": false
   },
 
   // Reminders that the hooks inject into agent sessions. Turn one on or off with "<id>": {"enabled": ...}.

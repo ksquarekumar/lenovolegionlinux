@@ -111,8 +111,9 @@ pub struct ConfigSetIn {
     /// The new value: text for a setting that takes text, else JSON (`5`, `true`, `["a", "b"]`).
     #[schemars(extend("x-setting-value" = "key"))]
     pub value: serde_json::Value,
-    /// For whom: user (you), project (the repository's settings, for everybody who works in it) or computer (every
-    /// user of this computer; the system asks for an administrator's password).
+    /// For whom: user (you), project (the repository's settings, for everybody who works in it), user-repo (you, in
+    /// this repository only: ~/.config/legionctl/repos/<repo>) or computer (every user of this computer; the system
+    /// asks for an administrator's password).
     #[serde(default = "for_you")]
     pub scope: legionctl_core::settings::Scope,
 }
@@ -1799,7 +1800,8 @@ pub struct AgentSetIn {
     pub scope: SettingsScope,
     /// Dotted key: `permissions.defaultMode`, `mcp_servers.ctx.command`.
     pub key: String,
-    /// JSON (`true`, `3`, `["a"]`, `{"k": 1}`) or plain text. Not kept in the audit: it can be a token.
+    /// JSON (`true`, `3`, `["a"]`, `{"k": 1}`) or plain text; `null` removes the key. Not kept in the audit: it can be
+    /// a token.
     #[schemars(extend("x-secret" = true))]
     pub value: String,
     /// Show the changed lines; write nothing.

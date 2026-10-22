@@ -246,8 +246,24 @@ legionctl config set checks.required '["lint"]' --scope user-repo
 ```
 
 Your folder for one repository holds the same files as `.legionctl`: config files, `checks.jsonc` and
-`capabilities/`. It takes only the settings that a project can set. A setting for you everywhere (for example
-`gateway.port`) is ignored there, and `config layers` shows one line about it.
+`capabilities/`. It takes the settings that a project can set, and the settings that only you can give one
+repository. A setting for you everywhere (for example `gateway.port`) is ignored there, and `config layers` shows one
+line about it.
+
+Only your folder for one repository can give that repository's agents more access. The repository's own `.legionctl`
+cannot, so a repository does not grant itself access. `legionctl setup apply` writes the access into the agents'
+user settings, and removes it again when you turn it off:
+
+- `workspace.claude_allows_git_rm`: Claude Code runs `git -C`, `rm` and `rmdir` in this repository's workspaces with no
+  question, also outside its sandbox. Caution: the rule allows every git command there, `git push` too.
+- `workspace.codex_writes_git`: Codex's sandbox can write this repository's `.git` folder, so Codex commits in a
+  workspace by itself. Without it, Codex commits with `legionctl workspace checkpoint`, which asks you first.
+
+```bash
+cd <main checkout>
+legionctl config set workspace.codex_writes_git true --scope user-repo
+legionctl setup apply
+```
 
 `<repo>` is the name that git gives the repository: the folder name of the parent of
 `git rev-parse --git-common-dir`. Usually this is the folder name of the main checkout, so the main checkout and each

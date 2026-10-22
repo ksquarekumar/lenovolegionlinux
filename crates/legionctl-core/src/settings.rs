@@ -33,7 +33,8 @@ pub enum Scope {
     /// The repository's `.legionctl`.
     Project,
     /// Your own layer for this repository, outside git (`~/.config/legionctl/repos/<repo>`): a place to write, for a
-    /// setting that a project may set.
+    /// setting that a project may set, and the only place for a setting whose scope is this alone (what a repository
+    /// must not grant itself).
     #[serde(rename = "user-repo")]
     UserRepo,
 }
@@ -627,9 +628,10 @@ pub fn validate(resolved: &Resolved, edit: &Edit) -> Result<&'static Setting> {
     let (scope, _) = resolved
         .declared(key)
         .unwrap_or_else(|| (setting.scope.clone(), setting.class));
-    // your layer for a repository takes what may differ per repository: what a project may set
+    // your layer for a repository takes what may differ per repository: what a project may set, and what only you
+    // set for one repository
     let fits = match edit.scope {
-        Scope::UserRepo => scope.contains(&Scope::Project),
+        Scope::UserRepo => scope.contains(&Scope::Project) || scope.contains(&Scope::UserRepo),
         other => scope.contains(&other),
     };
     if !fits {

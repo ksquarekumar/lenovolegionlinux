@@ -591,6 +591,10 @@ pub struct WorkspaceConfig {
     /// Tell the agent to open a workspace: at session start when there is none, and before a reply ends when it
     /// changed the main checkout instead.
     pub nudge: bool,
+    /// Claude Code runs git -C and rm in this repository's workspaces with no prompt (user-repo layer only).
+    pub claude_allows_git_rm: bool,
+    /// Codex's sandbox writes this repository's `.git` (user-repo layer only).
+    pub codex_writes_git: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -904,9 +908,12 @@ struct Merge<'a> {
     /// The defaults and /etc/legionctl may set `config` and locked keys.
     trusted: bool,
     locks: &'a [String],
-    /// The keys that this layer never sets: a repository's the settings with no project scope, yours and this
-    /// computer's the settings of a project only.
+    /// The keys that this layer never sets: a repository's the settings with no project scope, your layer for a
+    /// repository the settings with neither project nor user-repo scope, yours and this computer's the settings of a
+    /// project or a repository only.
     never: &'a [String],
+    /// The settings that only your layer for a repository sets (scope user-repo alone): their refusal names it.
+    user_repo_only: &'a [String],
     /// A repository layer file: the powerful settings and the user's answer to this content (none yet: `None`).
     approve: Option<(&'a [String], Option<bool>)>,
     /// The powerful settings this file set that wait for an answer.
@@ -939,7 +946,13 @@ impl Merge<'_> {
                 continue;
             }
             if removes(self.never) {
+                let only_yours = locked(self.user_repo_only, &path);
                 self.problems.push(match self.source.layer.as_str() {
+                    _ if only_yours => format!(
+                        "{}: {path} is set only in your own layer for one repository \
+                         (~/.config/legionctl/repos/<repo>); ignored",
+                        self.source.file
+                    ),
                     "repo" => format!(
                         "{}: {path} is not a project setting; ignored",
                         self.source.file
@@ -1062,12 +1075,15 @@ fn merge_layers(
                 source: &source,
                 trusted,
                 locks: &lists.locks,
-                // your layer for a repository sets what may differ per repository: what a project may set
+                // your layer for a repository sets what may differ per repository: what a project may set, and what
+                // only you set for one repository
                 never: match source.layer.as_str() {
-                    "repo" | "user-repo" => &lists.repo_never,
+                    "repo" => &lists.repo_never,
+                    "user-repo" => &lists.user_repo_never,
                     "defaults" => &[],
                     _ => &lists.project_only,
                 },
+                user_repo_only: &lists.user_repo_only,
                 approve: answer.map(|answer| (lists.approve.as_slice(), answer)),
                 held: Vec::new(),
                 trace,
@@ -1141,8 +1157,12 @@ struct TrustLists {
     approve: Vec<String>,
     /// Never set by a repository file.
     repo_never: Vec<String>,
-    /// Set only by a repository file.
+    /// Never set by your layer for a repository (~/.config/legionctl/repos/<repo>).
+    user_repo_never: Vec<String>,
+    /// Never set by your layer or this computer's: set only for a project or a repository.
     project_only: Vec<String>,
+    /// Set only by your layer for a repository.
+    user_repo_only: Vec<String>,
 }
 
 fn trust_lists(overrides: &BTreeMap<String, crate::settings::Override>) -> Result<TrustLists> {
@@ -1172,9 +1192,15 @@ fn trust_lists(overrides: &BTreeMap<String, crate::settings::Override>) -> Resul
         }
         if !scope.contains(&Scope::Project) {
             lists.repo_never.push(key.clone());
+            if !scope.contains(&Scope::UserRepo) {
+                lists.user_repo_never.push(key.clone());
+            }
         }
-        if scope == [Scope::Project] {
+        if !scope.contains(&Scope::Computer) && !scope.contains(&Scope::User) {
             lists.project_only.push(key.clone());
+        }
+        if scope == [Scope::UserRepo] {
+            lists.user_repo_only.push(key.clone());
         }
         if scope == [Scope::Computer] {
             lists.locks.push(key);

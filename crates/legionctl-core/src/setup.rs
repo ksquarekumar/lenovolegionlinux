@@ -800,10 +800,47 @@ fn legionctl_folders(config: &Config) -> Result<Vec<(PathBuf, bool)>> {
     ])
 }
 
+/// The commands that Claude Code runs with no prompt in the workspaces of a repository that opts in
+/// (`workspace.claude_allows_git_rm`).
+const WORKSPACE_COMMANDS: [&str; 5] = ["git -C", "rm", "rm -r", "rm -rf", "rmdir"];
+
+/// The main checkouts with legionctl workspaces, each with its workspace settings as they resolve there (its own
+/// layer `~/.config/legionctl/repos/<repo>` opts in to [`WORKSPACE_COMMANDS`] and to Codex writing its `.git`).
+///
+/// # Errors
+/// The workspace records cannot be read, or a repository's config does not resolve.
+fn workspace_repos(config: &Config) -> Result<Vec<(PathBuf, crate::config::WorkspaceConfig)>> {
+    let mut repos: Vec<PathBuf> = crate::dossier::Dossiers::open(&config.dossier)?
+        .workspaces(None)?
+        .into_iter()
+        .map(|w| w.repo)
+        .filter(|r| r.join(".git").is_dir())
+        .collect();
+    repos.sort();
+    repos.dedup();
+    repos
+        .into_iter()
+        .map(|repo| {
+            let workspace = crate::config::resolve(&crate::config::Dirs::from_env(), Some(&repo))?
+                .config
+                .workspace;
+            Ok((repo, workspace))
+        })
+        .collect()
+}
+
+/// Whether `entry` of Claude Code's permissions.allow is a [`WORKSPACE_COMMANDS`] rule in the workspaces: of one
+/// repository (`<root>/<repo>/*`), or of all (`<root>/*`, written by r471-r473 before feedbacks/0014).
+fn workspace_command_rule(entry: &str, root: &Path) -> bool {
+    WORKSPACE_COMMANDS.iter().any(|command| {
+        entry.starts_with(&format!("Bash({command} {}/", root.display())) && entry.ends_with("/*)")
+    })
+}
+
 /// Claude Code's user settings for legionctl, as (keys, entry) of lists, which merge with the project's: `legionctl`
 /// runs outside the Bash sandbox (on Linux it blocks every Unix socket, the operator's too), `legionctl dossier` and
-/// `status` with no prompt, git and rm in the workspaces with no prompt; git reads ~/.gitconfig (a project may deny
-/// reads of `~/.*`); the sandbox reads and writes [`legionctl_folders`].
+/// `status` with no prompt, [`WORKSPACE_COMMANDS`] with no prompt in the workspaces of each repository that opts in;
+/// git reads ~/.gitconfig (a project may deny reads of `~/.*`); the sandbox reads and writes [`legionctl_folders`].
 fn claude_entries(config: &Config) -> Result<Vec<(&'static [&'static str], String)>> {
     let allow: &[&str] = &["permissions", "allow"];
     let mut entries: Vec<(&'static [&'static str], String)> = vec![
@@ -816,8 +853,14 @@ fn claude_entries(config: &Config) -> Result<Vec<(&'static [&'static str], Strin
         (allow, "Bash(legionctl status *)".into()),
     ];
     let root = config.workspace.root.display();
-    for command in ["git -C", "rm", "rm -r", "rm -rf", "rmdir"] {
-        entries.push((allow, format!("Bash({command} {root}/*)")));
+    for (repo, workspace) in workspace_repos(config)? {
+        let Some(name) = repo.file_name().filter(|_| workspace.claude_allows_git_rm) else {
+            continue;
+        };
+        let name = name.to_string_lossy();
+        for command in WORKSPACE_COMMANDS {
+            entries.push((allow, format!("Bash({command} {root}/{name}/*)")));
+        }
     }
     for (folder, write) in legionctl_folders(config)? {
         let folder = folder.display().to_string();
@@ -905,18 +948,37 @@ fn codex_sandbox_rule() -> PathBuf {
     home().join(".codex/rules/legionctl.rules")
 }
 
-/// ~/.claude/settings.json's `sandbox` and `permissions` with the entries of [`claude_entries`] they lack; none when
-/// they have them all.
+/// ~/.claude/settings.json's `sandbox` and `permissions` with the entries of [`claude_entries`] they lack and without
+/// the workspace command rules of repositories that do not opt in, with the row's state: missing (an entry to add) or
+/// outdated (only rules to remove); none when they are current.
 ///
 /// # Errors
 /// The file cannot be read or is not JSON.
-fn claude_sandbox_missing(config: &Config) -> Result<Option<[serde_json::Value; 2]>> {
+fn claude_sandbox_changes(
+    config: &Config,
+) -> Result<Option<(&'static str, [serde_json::Value; 2])>> {
     let path = claude_settings();
     let text = legionctl_machine::sysroot::read_file(&path)?.unwrap_or_else(|| "{}".into());
     let mut settings: serde_json::Value = serde_json::from_str(&text)
         .with_context(|| format!("{} is not valid JSON; fix it before setup", path.display()))?;
+    let entries = claude_entries(config)?;
+    let mut removed = false;
+    if let Some(allow) = settings
+        .get_mut("permissions")
+        .and_then(|p| p.get_mut("allow"))
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        let before = allow.len();
+        allow.retain(|rule| {
+            rule.as_str().is_none_or(|rule| {
+                !workspace_command_rule(rule, &config.workspace.root)
+                    || entries.iter().any(|(_, entry)| entry == rule)
+            })
+        });
+        removed = allow.len() != before;
+    }
     let mut changed = false;
-    for (keys, entry) in claude_entries(config)? {
+    for (keys, entry) in entries {
         let place = format!(
             "{}: {} is not a list in objects; fix it before setup",
             path.display(),
@@ -942,7 +1004,15 @@ fn claude_sandbox_missing(config: &Config) -> Result<Option<[serde_json::Value; 
             changed = true;
         }
     }
-    Ok(changed.then(|| ["sandbox", "permissions"].map(|k| settings[k].clone())))
+    let state = match (changed, removed) {
+        (true, _) => "missing",
+        (false, true) => "outdated",
+        (false, false) => return Ok(None),
+    };
+    Ok(Some((
+        state,
+        ["sandbox", "permissions"].map(|k| settings[k].clone()),
+    )))
 }
 
 /// The state of legionctl's Codex rule file: current, missing, or not of this build (legionctl's own, which setup
@@ -965,14 +1035,15 @@ fn codex_rule_state() -> Result<&'static str> {
     })
 }
 
-/// The Codex permission profiles that legionctl's folders go into, each with the main checkouts whose `.git` it
-/// writes (a workspace's commits go there): the user's `default_permissions` gets every repository with legionctl
-/// workspaces, a repository's own `.codex/config.toml` profile its own. Codex merges a user entry into the project's
+/// The Codex permission profiles that legionctl's folders go into, each with the main checkouts with legionctl
+/// workspaces that it covers and whether that repository opts in to Codex writing its `.git` (a workspace's commits
+/// go there; `workspace.codex_writes_git`, feedbacks/0014): the user's `default_permissions` covers every such
+/// repository, a repository's own `.codex/config.toml` profile its own. Codex merges a user entry into the project's
 /// profile of the same name; a built-in profile (`:workspace`) takes no entries.
 ///
 /// # Errors
-/// A config file cannot be read or is not TOML, or the workspace records cannot be read.
-fn codex_profiles(config: &Config) -> Result<BTreeMap<String, Vec<PathBuf>>> {
+/// A config file cannot be read or is not TOML, or [`workspace_repos`] fails.
+fn codex_profiles(config: &Config) -> Result<BTreeMap<String, Vec<(PathBuf, bool)>>> {
     let profile = |table: &toml::Table| {
         table
             .get("default_permissions")
@@ -980,18 +1051,15 @@ fn codex_profiles(config: &Config) -> Result<BTreeMap<String, Vec<PathBuf>>> {
             .filter(|p| !p.starts_with(':'))
             .map(String::from)
     };
-    let mut repos: Vec<PathBuf> = crate::dossier::Dossiers::open(&config.dossier)?
-        .workspaces(None)?
+    let repos: Vec<(PathBuf, bool)> = workspace_repos(config)?
         .into_iter()
-        .map(|w| w.repo)
-        .filter(|r| r.join(".git").is_dir())
+        .map(|(repo, workspace)| (repo, workspace.codex_writes_git))
         .collect();
-    repos.dedup();
-    let mut profiles: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    let mut profiles: BTreeMap<String, Vec<(PathBuf, bool)>> = BTreeMap::new();
     if let Some(p) = profile(&codex_table()?) {
         profiles.insert(p, repos.clone());
     }
-    for repo in repos {
+    for (repo, writes_git) in repos {
         let file = repo.join(".codex/config.toml");
         let Some(text) = legionctl_machine::sysroot::read_file(&file)? else {
             continue;
@@ -1001,45 +1069,61 @@ fn codex_profiles(config: &Config) -> Result<BTreeMap<String, Vec<PathBuf>>> {
             .with_context(|| format!("{} is not valid TOML", file.display()))?;
         if let Some(p) = profile(&table) {
             let named = profiles.entry(p).or_default();
-            if !named.contains(&repo) {
-                named.push(repo);
+            if !named.iter().any(|(r, _)| *r == repo) {
+                named.push((repo, writes_git));
             }
         }
     }
     Ok(profiles)
 }
 
-/// The entries of ~/.codex/config.toml's `permissions.<profile>.filesystem` that legionctl's folders lack, as (keys,
-/// access). An entry that the user set to another access stays.
+/// The changes of ~/.codex/config.toml's `permissions.<profile>.filesystem`, as (keys, access; none removes the key):
+/// legionctl's folders and the `.git` of each repository that opts in, where they lack, and the `.git` write of a
+/// repository that does not opt in (r471-r473 wrote it for every repository with workspaces). An entry that the user
+/// set to another access stays.
 ///
 /// # Errors
 /// As [`codex_profiles`].
-fn codex_filesystem_missing(config: &Config) -> Result<Vec<([String; 4], &'static str)>> {
+fn codex_filesystem_changes(config: &Config) -> Result<Vec<([String; 4], Option<&'static str>)>> {
     let table = codex_table()?;
-    let mut missing = Vec::new();
+    let mut changes = Vec::new();
     for (profile, repos) in codex_profiles(config)? {
         let set = table
             .get("permissions")
             .and_then(|p| p.get(&profile))
             .and_then(|p| p.get("filesystem"));
+        let has = |key: &str| set.and_then(|s| s.get(key)).and_then(toml::Value::as_str);
+        let keys = |key: String| {
+            [
+                "permissions".into(),
+                profile.clone(),
+                "filesystem".into(),
+                key,
+            ]
+        };
         let folders = legionctl_folders(config)?
             .into_iter()
             .map(|(f, write)| (f, if write { "write" } else { "read" }))
-            .chain(repos.iter().map(|r| (r.join(".git"), "write")));
+            .chain(
+                repos
+                    .iter()
+                    .filter(|(_, writes)| *writes)
+                    .map(|(r, _)| (r.join(".git"), "write")),
+            );
         for (folder, access) in folders {
             let key = folder.display().to_string();
-            if set.and_then(|s| s.get(&key)).is_none() {
-                let keys = [
-                    "permissions".into(),
-                    profile.clone(),
-                    "filesystem".into(),
-                    key,
-                ];
-                missing.push((keys, access));
+            if has(&key).is_none() {
+                changes.push((keys(key), Some(access)));
+            }
+        }
+        for (repo, _) in repos.iter().filter(|(_, writes)| !writes) {
+            let key = repo.join(".git").display().to_string();
+            if has(&key) == Some("write") {
+                changes.push((keys(key), None));
             }
         }
     }
-    Ok(missing)
+    Ok(changes)
 }
 
 /// The sandbox rows: Claude Code's and Codex's, for each one that is installed.
@@ -1049,9 +1133,9 @@ fn sandbox_items(config: &Config) -> Vec<Item> {
         items.push(Item {
             what: SANDBOX_ACCESS.into(),
             agent: "claude-code".into(),
-            status: match claude_sandbox_missing(config) {
+            status: match claude_sandbox_changes(config) {
                 Ok(None) => "current".into(),
-                Ok(Some(_)) => "missing".into(),
+                Ok(Some((state, _))) => state.into(),
                 Err(e) => format!("{e:#}"),
             },
             path: claude_settings().display().to_string(),
@@ -1059,9 +1143,11 @@ fn sandbox_items(config: &Config) -> Vec<Item> {
     }
     if codex_bin().is_some() {
         let status = codex_rule_state().and_then(|rule| {
-            Ok(match (rule, codex_filesystem_missing(config)?.is_empty()) {
-                ("current", false) => "missing",
-                (rule, _) => rule,
+            let changes = codex_filesystem_changes(config)?;
+            Ok(match rule {
+                "current" if changes.iter().any(|(_, access)| access.is_some()) => "missing",
+                "current" if !changes.is_empty() => "outdated",
+                rule => rule,
             })
         });
         items.push(Item {
@@ -1085,7 +1171,7 @@ fn sandbox_items(config: &Config) -> Vec<Item> {
 fn let_sandboxes_run_legionctl(config: &Config) -> Result<Vec<String>> {
     let mut done = Vec::new();
     if claude_bin().is_some()
-        && let Some([sandbox, permissions]) = claude_sandbox_missing(config)?
+        && let Some((_, [sandbox, permissions])) = claude_sandbox_changes(config)?
     {
         let entries = [
             (vec!["sandbox"], sandbox),
@@ -1093,7 +1179,8 @@ fn let_sandboxes_run_legionctl(config: &Config) -> Result<Vec<String>> {
         ];
         crate::agents::set_all(&claude_settings(), &entries, false)?;
         done.push(format!(
-            "{SANDBOX_ACCESS}: legionctl runs outside Claude Code's sandbox, its folders and workspaces are open to it ({})",
+            "{SANDBOX_ACCESS}: legionctl runs outside Claude Code's sandbox, its folders and workspaces are open to it; \
+             git and rm run there with no prompt only for a repository that opts in ({})",
             claude_settings().display()
         ));
     }
@@ -1109,15 +1196,16 @@ fn let_sandboxes_run_legionctl(config: &Config) -> Result<Vec<String>> {
             rule.display()
         ));
     }
-    let missing = codex_filesystem_missing(config)?;
-    if !missing.is_empty() {
-        let entries: Vec<(Vec<&str>, serde_json::Value)> = missing
+    let changes = codex_filesystem_changes(config)?;
+    if !changes.is_empty() {
+        let entries: Vec<(Vec<&str>, serde_json::Value)> = changes
             .iter()
             .map(|(keys, access)| (keys.iter().map(String::as_str).collect(), (*access).into()))
             .collect();
         crate::agents::set_all(&codex_config(), &entries, false)?;
         done.push(format!(
-            "{SANDBOX_ACCESS}: legionctl's folders and workspaces are open to Codex's sandbox ({})",
+            "{SANDBOX_ACCESS}: legionctl's folders and workspaces are open to Codex's sandbox; it writes the .git \
+             only of a repository that opts in ({})",
             codex_config().display()
         ));
     }

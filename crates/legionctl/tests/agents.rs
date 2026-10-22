@@ -1924,8 +1924,8 @@ struct Folders {
 }
 
 /// A repository with a legionctl workspace whose Codex config names its own profile `repo`; the user's Codex config
-/// with the custom default profile `mine` (one entry of the user's, read) and an entry of the user's in `repo`; and
-/// the rule file that legionctl wrote before AOS-9.
+/// with the custom default profile `mine` (one entry of the user's, read), an entry of the user's in `repo` and the
+/// repository's `.git` write that r471-r473 put there; and the rule file that legionctl wrote before AOS-9.
 fn user_level_folders(lab: &Lab, rules: &Path) -> Folders {
     // a repository with a legionctl workspace, whose Codex config names its own profile
     let commit = [
@@ -1980,7 +1980,7 @@ fn user_level_folders(lab: &Lab, rules: &Path) -> Folders {
     let codex_config = lab.home.join(".codex/config.toml");
     let own_codex = format!(
         "default_permissions = \"mine\"\n\n[permissions.mine.filesystem]\n\"{}\" = \"read\"\n\n\
-         [permissions.repo.filesystem]\n\"/run/user/1000/ssh-agent.socket\" = \"deny\"\n",
+         [permissions.repo.filesystem]\n\"/run/user/1000/ssh-agent.socket\" = \"deny\"\n\"{git_dir}\" = \"write\"\n",
         roots[0]
     );
     write(&codex_config, &own_codex);
@@ -2000,9 +2000,10 @@ fn user_level_folders(lab: &Lab, rules: &Path) -> Folders {
 }
 
 impl Folders {
-    /// The user's Claude Code settings `own` with legionctl's entries after them.
+    /// The user's Claude Code settings `own` with legionctl's entries after them, and none of its workspace git and rm
+    /// rules (no repository opts in).
     fn claude_settings(&self, own: &Value) -> Value {
-        let (roots, written, read) = (&self.roots, &self.written, &self.read);
+        let (written, read) = (&self.written, &self.read);
         let mut merged = own.clone();
         merged["sandbox"]["excludedCommands"] = json!(["git status *", "legionctl *"]);
         let mut allow_read = vec![json!("~/.cargo"), json!("~/.gitconfig")];
@@ -2010,27 +2011,19 @@ impl Folders {
         allow_read.push(json!(read));
         merged["sandbox"]["filesystem"]["allowRead"] = json!(allow_read);
         merged["sandbox"]["filesystem"]["allowWrite"] = json!(written);
-        let root = &roots[1];
         merged["permissions"]["allow"] = json!([
             "Bash(ls *)",
             "Bash(legionctl dossier *)",
             "Bash(legionctl status *)",
-            format!("Bash(git -C {root}/*)"),
-            format!("Bash(rm {root}/*)"),
-            format!("Bash(rm -r {root}/*)"),
-            format!("Bash(rm -rf {root}/*)"),
-            format!("Bash(rmdir {root}/*)"),
         ]);
         merged
     }
 
-    /// The folders in the user's profile `mine` with the repository's .git, and in the repository's profile `repo`;
-    /// the user's own entries stay.
-    fn assert_codex_profiles(&self) {
+    /// The folders in the user's profile `mine` and in the repository's profile `repo`, each with the repository's
+    /// .git when it opts in (`git`); the user's own entries stay.
+    fn assert_codex_profiles(&self, git: bool) {
         let (roots, written, read, git_dir) =
             (&self.roots, &self.written, &self.read, &self.git_dir);
-        // Codex: the folders in the user's profile with each repository's .git, and in the repository's profile; the
-        // user's own entries stay
         let codex: toml::Table = std::fs::read_to_string(&self.codex_config)
             .unwrap()
             .parse()
@@ -2046,7 +2039,8 @@ impl Folders {
         let entries = |first: (&str, &str)| -> Vec<(String, String)> {
             let mut all: Vec<(String, String)> = std::iter::once(first)
                 .chain(written[1..].iter().map(|f| (f.as_str(), "write")))
-                .chain([(read.as_str(), "read"), (git_dir.as_str(), "write")])
+                .chain([(read.as_str(), "read")])
+                .chain(git.then_some((git_dir.as_str(), "write")))
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();
             all.sort();
@@ -2101,10 +2095,10 @@ fn assert_codex_rules_cover_the_client(lab: &Lab, rules: &Path) {
 /// overwritten. AOS-9 (feedbacks/0011, plan#todo-229): the user-level entries that agency-os committed in its own
 /// settings come from setup, from the resolved settings: legionctl dossier and status with no prompt (Claude Code
 /// permissions.allow; a Codex allow rule, and a prompt rule for every other command of `legionctl --help`, because the
-/// strictest Codex rule wins), git and rm in the workspaces, and legionctl's folders open to both sandboxes; Codex
-/// gets them in the user's custom profile with each repository's `.git` (a workspace commits there) and in the profile
-/// that a repository with workspaces names (Codex merges the user's entries into it); an entry that the user set
-/// stays. The rule file of r466 is legionctl's: setup replaces it.
+/// strictest Codex rule wins), and legionctl's folders open to both sandboxes; Codex gets them in the user's custom
+/// profile and in the profile that a repository with workspaces names (Codex merges the user's entries into it); an
+/// entry that the user set stays. The rule file of r466 is legionctl's: setup replaces it. feedbacks/0014: the git and
+/// rm rules in all workspaces and the `.git` write that r471-r473 wrote go away (no repository opted in).
 #[test]
 fn setup_apply_lets_sandboxed_agents_run_legionctl_and_keeps_the_users_own_sandbox_entries() {
     let lab = Lab::new("sandbox", &shipped_plugin());
@@ -2118,7 +2112,8 @@ fn setup_apply_lets_sandboxed_agents_run_legionctl_and_keeps_the_users_own_sandb
             "excludedCommands": ["git status *"],
             "filesystem": {"denyRead": ["~/.*"], "allowRead": ["~/.cargo"]}
         },
-        "permissions": {"allow": ["Bash(ls *)"]}
+        "permissions": {"allow": ["Bash(ls *)", format!("Bash(git -C {}/*)", folders.roots[1]),
+            format!("Bash(rm -rf {}/*)", folders.roots[1])]}
     });
     write(&settings, &serde_json::to_string_pretty(&own).unwrap());
     let rows = || sandbox_rows(&lab);
@@ -2155,7 +2150,8 @@ fn setup_apply_lets_sandboxed_agents_run_legionctl_and_keeps_the_users_own_sandb
     let done = apply();
     for said in [
         format!(
-            "sandbox access: legionctl runs outside Claude Code's sandbox, its folders and workspaces are open to it ({})",
+            "sandbox access: legionctl runs outside Claude Code's sandbox, its folders and workspaces are open to it; git \
+             and rm run there with no prompt only for a repository that opts in ({})",
             settings.display()
         ),
         format!(
@@ -2163,7 +2159,8 @@ fn setup_apply_lets_sandboxed_agents_run_legionctl_and_keeps_the_users_own_sandb
             rules.display()
         ),
         format!(
-            "sandbox access: legionctl's folders and workspaces are open to Codex's sandbox ({})",
+            "sandbox access: legionctl's folders and workspaces are open to Codex's sandbox; it writes the .git only \
+             of a repository that opts in ({})",
             folders.codex_config.display()
         ),
     ] {
@@ -2175,7 +2172,7 @@ fn setup_apply_lets_sandboxed_agents_run_legionctl_and_keeps_the_users_own_sandb
         merged
     );
     assert_codex_rules_cover_the_client(&lab, &rules);
-    folders.assert_codex_profiles();
+    folders.assert_codex_profiles(false);
     // one write, so one backup: the file as the user had it
     assert_eq!(only_backup(&settings), own);
     assert_eq!(rows(), want("current", "current"));
@@ -2211,4 +2208,116 @@ fn setup_apply_lets_sandboxed_agents_run_legionctl_and_keeps_the_users_own_sandb
         std::fs::read_to_string(&settings).unwrap(),
         "{ \"sandbox\": "
     );
+}
+
+/// feedbacks/0014: Claude Code's git and rm rules in a repository's workspaces and Codex's write of its `.git` come only
+/// from the user's own layer for that repository (`~/.config/legionctl/repos/<repo>`): a repository's `.legionctl`,
+/// allowed or not, cannot grant them to itself; turned on, setup writes rules for this repository's workspaces only
+/// (Claude's `*` matches every subcommand, `git push` too) and the `.git` write in both Codex profiles; turned off, the
+/// rows are outdated, doctor gives the fix and setup takes them out again.
+#[test]
+fn the_git_and_rm_rules_and_codex_git_write_are_opt_in_per_repository() {
+    let lab = Lab::new("sandbox-opt-in", &shipped_plugin());
+    lab.stand_in_ctx();
+    let settings = lab.home.join(".claude/settings.json");
+    let folders = user_level_folders(&lab, &lab.home.join(".codex/rules/legionctl.rules"));
+    let own = json!({"permissions": {"allow": ["Bash(ls *)"]}});
+    write(&settings, &own.to_string());
+    let apply = || {
+        let out = lab.op.cli_in(&lab.home, &["setup", "apply"]);
+        assert!(out.status.success(), "{out:?}");
+    };
+    let states = || -> Vec<String> { sandbox_rows(&lab).into_iter().map(|r| r.1).collect() };
+    apply();
+    let both = r#"{"workspace": {"claude_allows_git_rm": true, "codex_writes_git": true}}"#;
+    let project = lab.repo.join(".legionctl/config.jsonc");
+    write(&project, both);
+    trust::allow(&lab.home, &project);
+    let shown = lab.op.cli_in(&lab.repo, &["config", "show", "--json"]);
+    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert!(
+        shown["problems"].to_string().contains(&format!(
+            "{}: workspace.claude_allows_git_rm is set only in your own layer for one repository \
+             (~/.config/legionctl/repos/<repo>); ignored",
+            project.display()
+        )),
+        "{shown:#}"
+    );
+    assert_eq!(
+        states(),
+        ["current", "current"],
+        "a repository grants itself nothing"
+    );
+    std::fs::remove_file(&project).unwrap();
+
+    // only `--scope user-repo` sets them, the way a person does
+    let set = |key: &str, value: &str, scope: &str| {
+        let out = lab
+            .op
+            .cli_in(&lab.repo, &["config", "set", key, value, "--scope", scope]);
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    for scope in ["user", "project"] {
+        let (done, said) = set("workspace.claude_allows_git_rm", "true", scope);
+        assert!(!done && said.contains("is set only for"), "{scope}: {said}");
+    }
+    for key in [
+        "workspace.claude_allows_git_rm",
+        "workspace.codex_writes_git",
+    ] {
+        let (done, said) = set(key, "true", "user-repo");
+        assert!(done, "{key}: {said}");
+    }
+    assert_eq!(states(), ["missing", "missing"]);
+    apply();
+    let allow = |settings: &Path| -> Vec<String> {
+        let now: Value = serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
+        now["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap().into())
+            .collect()
+    };
+    let (root, name) = (
+        &folders.roots[1],
+        lab.repo.file_name().unwrap().to_string_lossy(),
+    );
+    let rules: Vec<String> = ["git -C", "rm", "rm -r", "rm -rf", "rmdir"]
+        .iter()
+        .map(|command| format!("Bash({command} {root}/{name}/*)"))
+        .collect();
+    assert_eq!(
+        allow(&settings)[3..],
+        rules[..],
+        "this repository's workspaces only"
+    );
+    folders.assert_codex_profiles(true);
+    assert_eq!(states(), ["current", "current"]);
+
+    for key in [
+        "workspace.claude_allows_git_rm",
+        "workspace.codex_writes_git",
+    ] {
+        let (done, said) = set(key, "false", "user-repo");
+        assert!(done, "{key}: {said}");
+    }
+    assert_eq!(states(), ["outdated", "outdated"]);
+    let doctor = String::from_utf8_lossy(&lab.op.cli(&["doctor"]).stdout).into_owned();
+    assert!(
+        doctor.contains(
+            "setup: sandbox access for claude-code is outdated (fix: legionctl setup apply)"
+        ),
+        "{doctor}"
+    );
+    apply();
+    assert_eq!(
+        json!(allow(&settings)),
+        folders.claude_settings(&own)["permissions"]["allow"]
+    );
+    folders.assert_codex_profiles(false);
+    assert_eq!(states(), ["current", "current"]);
 }

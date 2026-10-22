@@ -14,6 +14,8 @@
 
   "workspace.root": {"label": "Working copies folder", "help": "The folder where legionctl makes the working copies of your projects.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["workspace"], "check": "folder"},
   "workspace.nudge": {"label": "Remind agents to use a working copy", "help": "When agents get a reminder to work in their own working copy.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["workspace"]},
+  "workspace.claude_allows_git_rm": {"label": "Claude Code runs git and rm in working copies without asking", "help": "Claude Code runs git -C, rm and rmdir in this project's working copies with no question, also outside its sandbox. The rule allows every git command there, git push too.", "scope": ["user-repo"], "class": "powerful", "restart": "none", "affects": ["setup"]},
+  "workspace.codex_writes_git": {"label": "Codex commits in working copies by itself", "help": "Codex's sandbox can write this project's .git folder, so Codex commits in a working copy with no question.", "scope": ["user-repo"], "class": "powerful", "restart": "none", "affects": ["setup"]},
 
   "reminders": {"label": "Reminders for agents", "help": "Short notes that agents get at the start of a session or with each prompt.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["reminders"]},
 
