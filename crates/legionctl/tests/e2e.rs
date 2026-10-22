@@ -10635,7 +10635,7 @@ fn every_plugin_hook_runs_on_this_build_and_blocks_only_by_its_rule() {
                 .to_string()
         })
         .collect();
-    assert_eq!(events.len(), 10, "{events:?}");
+    assert_eq!(events.len(), 11, "{events:?}");
     let ok = |args: &[&str]| {
         let out = op.run(&repo, &[("LEGIONCTL_SESSION", "s-bound")], args, "");
         assert!(out.status.success(), "{args:?}: {out:?}");
