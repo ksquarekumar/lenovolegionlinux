@@ -1818,10 +1818,15 @@ fn setup_apply_gives_codex_the_legionctl_plugin_with_its_mcp_server_hooks_and_sk
         "pre_compact",
         "stop",
         "session_end",
+        "subagent_stop",
     ]
     .iter()
     .map(|e| format!("legionctl@lenovolegionlinux:hooks/hooks.json:{e}:0:0"))
     .collect();
+    // a hook that this build adds (subagent_stop) waits for its own trust
+    let earlier = &keys[..keys.len() - 1];
+    write(&lab.home.join("codex-trusted"), &earlier.join("\n"));
+    assert_eq!(rows()[2], row("legionctl hooks", waiting));
     write(&lab.home.join("codex-trusted"), &keys.join("\n"));
     assert_eq!(rows()[2], row("legionctl hooks", "current"));
     let skills: Value = serde_json::from_str(&lab.op.ok(&["skills", "--json"])).unwrap();

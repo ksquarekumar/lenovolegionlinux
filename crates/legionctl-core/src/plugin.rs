@@ -9,11 +9,12 @@ use serde_json::Value;
 use crate::setup::plugin_root;
 
 /// The events of `legionctl hook <event>` in this build.
-pub const HOOK_EVENTS: [&str; 10] = [
+pub const HOOK_EVENTS: [&str; 11] = [
     "session-start",
     "prompt",
     "pre-tool",
     "subagent-start",
+    "subagent-stop",
     "pre-compact",
     "post-tool",
     "stop",

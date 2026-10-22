@@ -1169,6 +1169,8 @@ operations! {
     /// Record one tool call of an agent (the post-tool hook): the thread log takes each `SendMessage`, and the watch
     /// rules count the call.
     agent_tool / AgentTool = "internal.agent.tool", Session, AgentToolIn => HookReply;
+    /// Record that a subagent finished (the subagent-stop hook): `thread peers` shows it ended until its next tool call.
+    agent_end / AgentEnd = "internal.agent.end", Session, AgentEndIn => Empty;
     /// Why an open hard-block refuses this tool call of the session (the pre-tool hook).
     thread_gate / ThreadGate = "internal.thread.gate", Read, ThreadGateIn => Guard;
     /// A new thread from a thread's log up to one row: the same members and rules, this session as main0, and a git

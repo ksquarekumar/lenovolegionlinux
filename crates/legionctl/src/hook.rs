@@ -10,6 +10,7 @@
 //! | pre-tool | `internal.thread.gate`, `internal.dossier.guard` | `permissionDecision: deny` for a tool that a thread hard-block holds, or a file tool's write (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) into a dossier: another one, or the session's own, which the dossier commands write with their checks |
 //! | subagent-start | `internal.hooks.delegate` | `additionalContext` for the subagent: the delegation rule of the session's dossier (none without a dossier) |
 //! | pre-compact | `internal.hooks.compact` | nothing (Claude Code takes no instructions for the summary from a `PreCompact` hook): the session's dossier gets an immutable JOURNAL entry and HEALTH note, and the session start after the compaction (`source: compact`) points to them |
+//! | subagent-stop | `internal.agent.end` | nothing (an answer keeps the subagent running): `thread peers` shows the subagent (`agent_id`) ended until its next tool call |
 //! | post-tool | `internal.agent.tool` | the call is recorded (thread log, watch rules, presence) per peer: a subagent (`agent_id`) is a peer of its own and gets its messages as `additionalContext` |
 //! | stop | `internal.hooks.run` | `{"decision":"block","reason":...}` to the agent when the session is not set up (once per reply), or for a thread block |
 //! | session-end | `dossier.release` | nothing; its `reason` `clear` or `resume` keeps the pool that the session leads |
@@ -22,8 +23,8 @@
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    AgentToolIn, CompactIn, DossierReleaseIn, Event, Guard, GuardIn, HookReply, HookRunIn,
-    SessionId, SessionIn, TeammateIn, ThreadGateIn, op,
+    AgentEndIn, AgentToolIn, CompactIn, DossierReleaseIn, Event, Guard, GuardIn, HookReply,
+    HookRunIn, SessionId, SessionIn, TeammateIn, ThreadGateIn, op,
 };
 use serde_json::{Value, json};
 
@@ -112,31 +113,25 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
             };
             pre_tool(&client, session, input, path).await?
         }
-        // additionalContext of SubagentStart reaches the subagent before its first prompt; PreToolUse's updatedInput
-        // would need permissionDecision allow (it skips the permission prompt) to be documented
         "subagent-start" => match session {
-            Some(session) => {
-                let text = client
-                    .call::<op::HooksDelegate>(&SessionIn { session })
-                    .await?
-                    .text;
-                (!text.is_empty()).then(|| {
-                    json!({"hookSpecificOutput": {
-                        "hookEventName": "SubagentStart",
-                        "additionalContext": text,
-                    }})
-                    .to_string()
-                })
-            }
+            Some(session) => subagent_start(&client, session).await?,
             None => None,
         },
+        "subagent-stop" => {
+            if let (Some(session), Some(agent)) = (session, input["agent_id"].as_str()) {
+                let end = AgentEndIn {
+                    session,
+                    agent: agent.into(),
+                };
+                client.call::<op::AgentEnd>(&end).await?;
+            }
+            None
+        }
         "pre-compact" => {
             if let Some(session) = session {
+                let trigger = input["trigger"].as_str().map(String::from);
                 client
-                    .call::<op::HooksCompact>(&CompactIn {
-                        trigger: input["trigger"].as_str().map(String::from),
-                        session,
-                    })
+                    .call::<op::HooksCompact>(&CompactIn { trigger, session })
                     .await?;
             }
             None
@@ -202,6 +197,23 @@ fn tool_of(input: &Value) -> String {
         _ => name,
     }
     .to_string()
+}
+
+/// The delegation rule for a new subagent. `additionalContext` of `SubagentStart` reaches the subagent before its
+/// first prompt; `updatedInput` of `PreToolUse` would need `permissionDecision` allow (it skips the permission prompt)
+/// to be documented.
+async fn subagent_start(client: &Client, session: SessionId) -> Result<Option<String>> {
+    let text = client
+        .call::<op::HooksDelegate>(&SessionIn { session })
+        .await?
+        .text;
+    Ok((!text.is_empty()).then(|| {
+        json!({"hookSpecificOutput": {
+            "hookEventName": "SubagentStart",
+            "additionalContext": text,
+        }})
+        .to_string()
+    }))
 }
 
 /// The pre-tool hook: a thread hard-block that holds the tool, else the dossier write guard, as a deny.

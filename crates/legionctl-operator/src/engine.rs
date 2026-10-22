@@ -5425,6 +5425,11 @@ impl Engine for Operator {
         crate::thread::tool(&input)
     }
 
+    // the event of this call is the record that `thread peers` reads
+    fn agent_end(&self, _: &Ctx, _: legionctl_api::AgentEndIn) -> Result<Empty> {
+        Ok(Empty {})
+    }
+
     fn thread_gate(&self, _: &Ctx, input: legionctl_api::ThreadGateIn) -> Result<Guard> {
         crate::thread::gate(&input)
     }

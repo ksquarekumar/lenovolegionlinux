@@ -741,8 +741,8 @@ fn the_outbox_survives_a_restart_and_peers_on_one_dossier_see_each_other_with_th
 
 /// Session `lead` on dossier port with the topic workspaces a and b, and thread 1 where the member `worker-b` is its
 /// subagent `sub-b` and `observer0` watches worker-b: a reminder after 2 edits without `make lint`.
-fn subagents_lab() -> (Lab, PathBuf, PathBuf) {
-    let lab = Lab::new("subagents");
+fn subagents_lab(name: &str) -> (Lab, PathBuf, PathBuf) {
+    let lab = Lab::new(name);
     lab.ok("lead", &lab.repo, &["dossier", "use", "port"]);
     lab.ok("lead", &lab.repo, &["workspace", "open", "--topic", "a"]);
     lab.ok("lead", &lab.repo, &["workspace", "open", "--topic", "b"]);
@@ -787,7 +787,7 @@ fn added_context(out: &str) -> String {
 /// lead. `thread observe` of one subagent gives only its events.
 #[test]
 fn the_subagents_of_one_session_are_peers_with_their_own_workspace_tool_calls_and_messages() {
-    let (lab, ws_a, ws_b) = subagents_lab();
+    let (lab, ws_a, ws_b) = subagents_lab("subagents");
     // the post-tool hook of an Edit by sub-a (Explore, in a) or sub-b (general-purpose, in b): what it gives back
     let sub = |agent: &str| -> String {
         let (kind, ws, file) = match agent {
@@ -889,6 +889,74 @@ fn the_subagents_of_one_session_are_peers_with_their_own_workspace_tool_calls_an
     assert_eq!(agents, [&json!("sub-a"); 4], "{observed}");
     let by_name = lab.json("lead", &["thread", "observe", "worker-b"]);
     assert_eq!(by_name["peer"]["session"], "lead/sub-b");
+}
+
+/// F10 (feedbacks/0002): a subagent that finished stays `running` in `thread peers`, because its last event is a tool
+/// call and nothing records its end. The subagent-stop hook (Claude Code and Codex `SubagentStop`, the documented
+/// payload, run as the shipped plugin's hooks.json names it) ends it; its next tool call (a resumed subagent) makes it
+/// running again. Claude Code's own internal agents (prompt suggestions, /btw) send `SubagentStop` too, with no tool
+/// call before it: they are no peers. The hook gives nothing back, because any answer of `SubagentStop` keeps the
+/// subagent running.
+#[test]
+fn a_subagent_that_stops_is_ended_until_it_is_resumed_and_internal_agents_are_no_peers() {
+    let (lab, ws_a, ws_b) = subagents_lab("subagent-stop");
+    let edit = |agent: &str, ws: &Path| {
+        let fields = json!({"agent_id": agent, "agent_type": "general-purpose", "tool_name": "Edit",
+            "tool_input": {"file_path": ws.join("src/x.rs"), "old_string": "a", "new_string": "b"}});
+        assert_eq!(lab.hook("lead", ws, "post-tool", fields), "");
+    };
+    // the event that the shipped plugin's SubagentStop hook runs, as Claude Code and Codex run it
+    let plugin: Value = serde_json::from_str(include_str!(
+        "../../../integrations/agent-plugin/hooks/hooks.json"
+    ))
+    .unwrap();
+    let command = plugin["hooks"]["SubagentStop"][0]["hooks"][0]["command"].as_str();
+    let event = command
+        .and_then(|c| c.strip_prefix("legionctl hook "))
+        .unwrap();
+    let stop = |agent: &str, kind: &str| {
+        let fields = json!({"agent_id": agent, "agent_type": kind});
+        assert_eq!(
+            lab.hook("lead", &lab.repo, event, fields),
+            "",
+            "an answer keeps the subagent running"
+        );
+    };
+    let states = || -> Vec<(String, String)> {
+        let v: Value = serde_json::from_str(&lab.ok(
+            "obs",
+            &lab.repo,
+            &["thread", "peers", "--json", "--dossier", "port"],
+        ))
+        .unwrap();
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                (
+                    p["session"].as_str().unwrap().into(),
+                    p["state"].as_str().unwrap().into(),
+                )
+            })
+            .collect()
+    };
+    let row = |s: &str, st: &str| (s.to_string(), st.to_string());
+    lab.hook("lead", &lab.repo, "prompt", json!({"prompt": "go on"}));
+    edit("sub-a", &ws_a);
+    edit("sub-b", &ws_b);
+    stop("sub-a", "general-purpose");
+    // an internal agent of Claude Code: empty type, no tool call
+    stop("prompt-suggestion-1", "");
+    assert_eq!(
+        states(),
+        [
+            row("lead", "running"),
+            row("lead/sub-a", "ended"),
+            row("lead/sub-b", "running")
+        ]
+    );
+    edit("sub-a", &ws_a);
+    assert_eq!(states()[1], row("lead/sub-a", "running"), "resumed");
 }
 
 /// The fields `fields` of each item of the array `key` of `v`.

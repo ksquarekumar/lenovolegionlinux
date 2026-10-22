@@ -2595,6 +2595,14 @@ pub struct AgentToolIn {
     pub skill: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AgentEndIn {
+    #[serde(default)]
+    pub session: SessionId,
+    /// The subagent that finished (the `agent_id` of `SubagentStop`).
+    pub agent: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ThreadGateIn {
     #[serde(default)]

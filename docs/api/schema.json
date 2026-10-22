@@ -21372,6 +21372,35 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "internal.agent.end": {
+    "class": "session",
+    "internal": true,
+    "input": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        },
+        "agent": {
+          "type": "string",
+          "description": "The subagent that finished (the `agent_id` of `SubagentStop`)."
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "title": "AgentEndIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "internal.thread.gate": {
     "class": "read",
     "internal": true,

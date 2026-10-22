@@ -523,7 +523,7 @@ pub(crate) struct Presence {
 type Started = (String, Option<String>, bool, String);
 
 /// running, idle, ended or unknown: ended when the sandbox of a session that legionctl started ended
-/// ([`crate::session::liveness`]), else from the session's last hook call, tool call or release.
+/// ([`crate::session::liveness`]), else from the session's last hook call, tool call, release or subagent end.
 ///
 /// # Errors
 /// The session's lock, scope or container cannot be read.
@@ -539,7 +539,7 @@ pub(crate) fn live_state(p: &Presence, session: &str) -> Result<&'static str> {
     }
     Ok(match p.seen.get(session) {
         Some(e) => match (e.kind.as_str(), e.payload["input"]["event"].as_str()) {
-            ("dossier.release", _) => "ended",
+            ("dossier.release" | "internal.agent.end", _) => "ended",
             ("internal.agent.tool", _) | (_, Some("prompt")) => "running",
             _ => "idle",
         },
@@ -1722,7 +1722,12 @@ impl Dossiers {
         };
         Ok(Presence {
             seen: by_peer(events.newest_per_peer(
-                &["internal.hooks.run", "internal.agent.tool", "dossier.release"],
+                &[
+                    "internal.hooks.run",
+                    "internal.agent.tool",
+                    "internal.agent.end",
+                    "dossier.release",
+                ],
                 since,
             )?),
             tools: by_peer(events.newest_per_peer(&["internal.agent.tool"], since)?),
@@ -1797,6 +1802,13 @@ impl Dossiers {
             .chain(p.bound.iter().map(|(s, _)| s))
             .chain(p.members.iter().map(|(s, _, _)| s))
             .filter(|s| *s != me && !s.is_empty())
+            // an agent that ended with no tool call: one of Claude Code's own (prompt suggestions, /btw)
+            .filter(|s| {
+                p.tools.contains_key(*s)
+                    || p.seen
+                        .get(*s)
+                        .is_none_or(|e| e.kind != "internal.agent.end")
+            })
             .collect();
         let mut peers = Vec::new();
         for session in candidates {
