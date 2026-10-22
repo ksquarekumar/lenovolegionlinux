@@ -230,12 +230,9 @@ pub fn languages() -> Result<Vec<Language>> {
         .collect()
 }
 
-/// The checks of the repository that contains `dir`, with its repository layer.
-///
-/// # Errors
-/// The config does not resolve, a file of the repository layer has a problem (it would drop the gates), a `deploy` or
-/// `install` check has a gate (the user runs them), or `keep_runs` is 0.
-pub fn config_at(dir: &Path) -> Result<ChecksConfig> {
+/// The config of `dir`, refused when a file of its repository layer has a problem: the gates and the list would
+/// drop that file's checks with no word (feedbacks/0012).
+fn resolve_checks(dir: &Path) -> Result<crate::config::Resolved> {
     let resolved = resolve(&Dirs::from_env(), Some(dir))?;
     if let Some(layer) = crate::config::repo_root(dir).map(|r| r.join(".legionctl")) {
         let layer = format!("{}/", layer.display());
@@ -251,7 +248,16 @@ pub fn config_at(dir: &Path) -> Result<ChecksConfig> {
             broken.join("; ")
         );
     }
-    let checks = resolved.config.checks;
+    Ok(resolved)
+}
+
+/// The checks of the repository that contains `dir`, with its repository layer.
+///
+/// # Errors
+/// The config does not resolve, a file of the repository layer has a problem (it would drop the gates), a `deploy` or
+/// `install` check has a gate (the user runs them), or `keep_runs` is 0.
+pub fn config_at(dir: &Path) -> Result<ChecksConfig> {
+    let checks = resolve_checks(dir)?.config.checks;
     for (name, check) in &checks.defs {
         ensure!(
             check.gate.is_none() || ![Kind::Deploy, Kind::Install].contains(&check.kind),
@@ -841,9 +847,9 @@ impl Dossiers {
     /// The checks of `dir` with the file that set each and its last run (`code checks list`).
     ///
     /// # Errors
-    /// The config does not resolve, or a database read fails.
+    /// The config does not resolve, a file of the repository layer has a problem, or a database read fails.
     pub fn checks_list(&self, dir: &Path) -> Result<Vec<String>> {
-        let resolved = resolve(&Dirs::from_env(), Some(dir))?;
+        let resolved = resolve_checks(dir)?;
         let facts = self.facts(dir)?;
         let repo = repo_key(dir)?;
         let mut lines = Vec::new();

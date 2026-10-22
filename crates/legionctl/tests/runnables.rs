@@ -802,6 +802,30 @@ fn a_session_reaches_its_granted_connections_through_the_gateway_tunnel_and_noth
     );
 }
 
+/// A check added in a worktree waits for the user's answer: the list says why and names the file, as the gate does
+/// (feedbacks/0012, 0013: it printed nothing with exit 0, and an agent read that as no checks).
+fn a_changed_checks_file_is_named_in_the_list(lab: &Lab, checks: &Path) {
+    let approved = std::fs::read_to_string(checks).unwrap();
+    let added = r#""build2": { "kind": "build", "run": "bazel build //..." }, "lint": {"#;
+    write(checks, &approved.replace(r#""lint": {"#, added));
+    for args in [
+        &["code", "checks", "list"][..],
+        &["code", "checks", "list", "--json"],
+    ] {
+        let out = lab.op.cli_in(&lab.repo, args);
+        let said = text(&out);
+        assert!(
+            !out.status.success()
+                && said.contains(&format!("{}: checks", checks.display()))
+                && said.contains("is not used until you allow this file"),
+            "{args:?}: {said}"
+        );
+    }
+    trust::allow(&lab.home, checks);
+    let listed = text(&lab.op.cli_in(&lab.repo, &["code", "checks", "list"]));
+    assert!(listed.contains("build2 (build)"), "{listed}");
+}
+
 /// A repository's settings files and capability sets may name their JSON Schema (`$schema`): checks, config and a
 /// session start with the set work with it, `legionctl config schema` gives a schema that a copy of agency-os's checks
 /// file passes, and a key that is not a setting is one sentence with the nearest one (feedbacks/0007); a change of the
@@ -831,6 +855,7 @@ fn a_repository_settings_file_may_name_its_schema() {
         let out = lab.op.cli_in(&lab.repo, args);
         assert!(out.status.success(), "{args:?}: {}", text(&out));
     }
+    a_changed_checks_file_is_named_in_the_list(&lab, &checks);
     // a capability set that names its schema loads, and the answer to its content holds
     let started = launch(&lab.start("probe", "schema", &["--capability", "mirror"]));
     let grant = lab.show(started["id"].as_str().unwrap());
