@@ -706,8 +706,9 @@ fn private_bus(tag: &str) -> ((common::process::Kill, Scratch), String) {
 }
 
 /// An agent asks the user to merge a branch that rewrites its own gate (`workspace merge-request`, feedbacks/0001
-/// item 1). Only an agent session asks. The gate runs at the rebased head, then the main checkout must be clean and on
-/// the base before any dialog: a dirty main checkout is refused with no question. A workspace switched to another
+/// item 1). Only an agent session asks. The gate runs at the rebased head, then the main checkout must be on the base
+/// with no change that the merge touches before any dialog: a change of the gate file there is refused with no
+/// question. A workspace switched to another
 /// branch is refused (its commits are not the dossier's branch). The dialog shows the `.legionctl/` diff; Deny keeps
 /// main. A commit that lands on the base while the dialog waits refuses the merge after Allow, and main keeps that
 /// commit. Allow lands the commit that the gate tested.
@@ -751,7 +752,10 @@ async fn an_agents_merge_request_shows_the_gate_diff_and_lands_only_the_tested_c
         "{user:?}"
     );
 
-    write(&repo.join(".gitignore"), "/agentWorkspaces\nedited\n");
+    write(
+        &repo.join(".legionctl/checks.jsonc"),
+        "{ \"checks\": {} }\n",
+    );
     let runs = lab.count("unit-runs");
     let dirty = lab.run(&ws, &["workspace", "merge-request"]);
     assert!(
@@ -759,8 +763,15 @@ async fn an_agents_merge_request_shows_the_gate_diff_and_lands_only_the_tested_c
         "{dirty:?}"
     );
     assert_eq!(lab.count("unit-runs"), runs + 1, "the gate ran first");
-    assert_eq!(questions().len(), 1, "no dialog for a dirty main checkout");
-    lab.git(&repo, &["checkout", "--quiet", "--", ".gitignore"]);
+    assert_eq!(
+        questions().len(),
+        1,
+        "no dialog for a main checkout change that the merge touches"
+    );
+    lab.git(
+        &repo,
+        &["checkout", "--quiet", "--", ".legionctl/checks.jsonc"],
+    );
 
     lab.git(&ws, &["switch", "--quiet", "-c", "elsewhere"]);
     write(&ws.join("other.txt"), "not the dossier's branch\n");
