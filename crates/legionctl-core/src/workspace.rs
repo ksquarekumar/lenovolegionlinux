@@ -71,9 +71,10 @@ fn gates_diff(ws: &Workspace, (base, tested): (&str, &str), files: &str) -> Resu
     })
 }
 
-/// The main checkout can take the fast-forward: on the base branch, clean, and the base still at `base`. Checked
-/// before the user's answer (no dialog for a merge that cannot land) and again after it.
-fn main_ready(ws: &Workspace, base: &str) -> Result<()> {
+/// The main checkout can take the fast-forward to `tested`: on the base branch, no uncommitted change that the
+/// fast-forward touches, and the base still at `base`. Checked before the user's answer (no dialog for a merge that
+/// cannot land) and again after it.
+fn main_ready(ws: &Workspace, (base, tested): (&str, &str)) -> Result<()> {
     let main_head =
         git(&ws.repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]).unwrap_or_default();
     ensure!(
@@ -82,7 +83,7 @@ fn main_ready(ws: &Workspace, base: &str) -> Result<()> {
         ws.repo.display(),
         ws.base
     );
-    refuse_dirty_main(&ws.repo)?;
+    refuse_dirty_main(&ws.repo, (base, tested))?;
     let now = git(&ws.repo, &["rev-parse", &ws.base])?;
     ensure!(
         now == base,
@@ -285,14 +286,25 @@ fn changes(path: &Path, workspace: bool) -> Result<(u32, u32, u32, u32)> {
     Ok(counts)
 }
 
-/// Refuse a merge while the main checkout has a tracked change, which the fast-forward would touch: name each file,
-/// and for Claude Code's `.claude/settings.json` (the permissions that the user allows at a prompt go there) say where
-/// they can go instead. Nothing is changed (F5, feedbacks/0001 item 5).
-fn refuse_dirty_main(repo: &Path) -> Result<()> {
+/// Refuse a merge while the main checkout has a tracked change in a path that the fast-forward from `base` to `tested`
+/// changes (a file, or a submodule that the branch moves): name each file, and for Claude Code's
+/// `.claude/settings.json` (the permissions that the user allows at a prompt go there) say where they can go instead.
+/// Other changes stay through the fast-forward. Nothing is changed (F5, feedbacks/0001 item 5).
+fn refuse_dirty_main(repo: &Path, (base, tested): (&str, &str)) -> Result<()> {
+    // git keeps a change of a path that the fast-forward does not change (F5: the user's own .claude/settings.json);
+    // a submodule's own `ignore = all` hides its move from the diff too
+    let range = ["--name-only", "--no-renames", "--ignore-submodules=none"];
+    let changed = git(repo, &[&["diff"][..], &range, &[base, tested]].concat())?;
+    let touched = |file: &str| {
+        changed
+            .lines()
+            .any(|path| file == path || file.starts_with(&format!("{path}/")))
+    };
     let files: Vec<String> = status(repo, false)?
         .iter()
         .filter(|line| !line.starts_with("??"))
         .filter_map(|line| line.get(3..).map(String::from))
+        .filter(|file| file.split(" -> ").any(touched))
         .collect();
     if files.is_empty() {
         return Ok(());
@@ -852,7 +864,7 @@ impl Dossiers {
                     &e,
                 )
             })?;
-        main_ready(ws, &base)?;
+        main_ready(ws, (&base, &tested))?;
         if !own_gates.is_empty() {
             ensure!(
                 confirm(&gates_diff(ws, (&base, &tested), &own_gates)?)?,
@@ -861,7 +873,7 @@ impl Dossiers {
                 ws.base
             );
             // the dialog can wait long: check again after the user's answer
-            main_ready(ws, &base)?;
+            main_ready(ws, (&base, &tested))?;
         }
         // the tested commit, not the branch: a checkpoint after the gate is not tested
         git(&ws.repo, &["merge", "--quiet", "--ff-only", &tested])?;

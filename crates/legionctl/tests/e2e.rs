@@ -2931,7 +2931,8 @@ fn a_helper_file_that_git_hides_in_the_workspace_refuses_the_merge() {
 }
 
 /// F4 (feedbacks/0001 item 4, Codex EVIDENCE/16 #3): in the main checkout a submodule's untracked file does not refuse
-/// the merge (a fast-forward cannot touch it), and a tracked change in a nested submodule that hides itself does.
+/// the merge (a fast-forward cannot touch it), and a tracked change in a nested submodule that hides itself does when
+/// the branch moves that submodule.
 #[test]
 fn the_main_checkout_check_skips_untracked_submodule_files_and_sees_hidden_tracked_changes() {
     let (op, home) = operator("merge-main-submodule");
@@ -2966,13 +2967,18 @@ fn the_main_checkout_check_skips_untracked_submodule_files_and_sees_hidden_track
     );
     assert_eq!(subject(), "add one");
 
+    // the branch moves the submodule, whose nested change git hides
     hide_submodules(&home, &repo);
-    write(&ws.join("two.txt"), "the dossier's work\n");
-    assert!(
-        run(&["workspace", "checkpoint", "add two"])
-            .status
-            .success()
+    let lib = home.join("lib");
+    git(
+        &home,
+        &lib,
+        &["commit", "--quiet", "--allow-empty", "-m", "next"],
     );
+    let next = git(&home, &lib, &["rev-parse", "HEAD"]);
+    let link = format!("160000,{next},vendor/lib");
+    git(&home, &ws, &["update-index", "--cacheinfo", &link]);
+    git(&home, &ws, &["commit", "--quiet", "-m", "move the lib"]);
     write(&repo.join("vendor/lib/in/lib.rs"), "pub fn changed() {}\n");
     let refused = run(&["workspace", "merge"]);
     assert!(
@@ -2985,12 +2991,13 @@ fn the_main_checkout_check_skips_untracked_submodule_files_and_sees_hidden_track
 }
 
 /// F5 (feedbacks/0001 item 5): Claude Code writes the permissions that the user allows at a prompt into the main
-/// checkout's tracked `.claude/settings.json`, and the merge is refused for it. The refusal names each changed file
-/// (also one in a submodule, one with a name outside ASCII, an unstaged one first in git's list), says where such
-/// permissions can go instead, and gives no command that drops the user's change; the file's bytes and the index stay
-/// as they were.
+/// checkout's tracked `.claude/settings.json`. A fast-forward keeps a change of a path that the branch does not change,
+/// so the merge lands and the user's changes stay as they were (the settings file unstaged, a staged file, a change in
+/// a submodule). A branch that changes those files is refused: the refusal names each one that it touches (one with a
+/// name outside ASCII, an unstaged one first in git's list) and not the others, says where such permissions can go
+/// instead, and gives no command that drops the user's change; the file's bytes and the index stay as they were.
 #[test]
-fn a_merge_refused_for_the_main_checkout_names_its_changed_files() {
+fn a_merge_keeps_the_main_checkouts_own_changes_and_refuses_only_those_it_touches() {
     let (op, home) = operator("merge-dirty-main");
     let repo = repository(&home);
     submodules(&home, &repo);
@@ -3007,17 +3014,18 @@ fn a_merge_refused_for_the_main_checkout_names_its_changed_files() {
         ("LEGIONCTL_SESSION", "s1"),
     ];
     let run = |args: &[&str]| op.run(&repo, &env, args, "");
+    let subject = || git(&home, &repo, &["log", "-1", "--format=%s"]);
     assert!(run(&["dossier", "use", "port"]).status.success());
     assert!(run(&["workspace", "open"]).status.success());
-    write(
-        &home.join("worktrees/repo/port/one.txt"),
-        "the dossier's work\n",
-    );
-    assert!(
-        run(&["workspace", "checkpoint", "add one"])
-            .status
-            .success()
-    );
+    let ws = home.join("worktrees/repo/port");
+    let checkpoint = |files: &[&str], message: &str| {
+        for file in files {
+            write(&ws.join(file), &format!("the dossier's {file}\n"));
+        }
+        let out = run(&["workspace", "checkpoint", message]);
+        assert!(out.status.success(), "{out:?}");
+    };
+    checkpoint(&["one.txt"], "add one");
 
     let granted = "{\"permissions\": {\"allow\": [\"Bash(make test)\"]}}\n";
     write(&settings, granted);
@@ -3025,12 +3033,18 @@ fn a_merge_refused_for_the_main_checkout_names_its_changed_files() {
     git(&home, &repo, &["add", "notes-é.txt"]);
     write(&repo.join("vendor/lib/in/lib.rs"), "pub fn changed() {}\n");
     let before = git(&home, &repo, &["status", "--porcelain"]);
+    let merged = run(&["workspace", "merge"]);
+    assert!(merged.status.success(), "{merged:?}");
+    assert_eq!(subject(), "add one");
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), granted);
+    assert_eq!(git(&home, &repo, &["status", "--porcelain"]), before);
+
+    checkpoint(&[".claude/settings.json", "notes-é.txt"], "touch both");
     let refused = run(&["workspace", "merge"]);
     let why = String::from_utf8_lossy(&refused.stderr);
     assert!(
         !refused.status.success()
-            && why.contains("would touch: .claude/settings.json, notes-é.txt, ")
-            && why.contains("vendor/lib/in/lib.rs")
+            && why.contains("would touch: .claude/settings.json, notes-é.txt. ")
             && why.contains(".claude/settings.local.json"),
         "{why}"
     );
@@ -3039,7 +3053,7 @@ fn a_merge_refused_for_the_main_checkout_names_its_changed_files() {
     }
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), granted);
     assert_eq!(git(&home, &repo, &["status", "--porcelain"]), before);
-    assert_eq!(git(&home, &repo, &["log", "-1", "--format=%s"]), "settings");
+    assert_eq!(subject(), "add one");
 }
 
 #[test]
