@@ -11840,3 +11840,86 @@ fn records_of_gone_worktrees_are_forgotten_when_merged_and_doctor_offers_forget_
     let doctor = String::from_utf8_lossy(&op.run(&repo, &env, &["doctor"], "").stdout).into_owned();
     assert!(!doctor.contains("port--unmerged"), "{doctor}");
 }
+
+/// feedbacks/0015: after an in-app `/resume`, Claude Code's hooks and shell name the resumed session, but its MCP
+/// server keeps the id of the process start in its environment. Each MCP call carries Claude Code's tool use id
+/// (`_meta` `claudecode/toolUseId`), which the pre-tool hook named with the resumed session: the MCP call binds the
+/// dossier for the resumed session, so the shell's dossier write works. A call whose tool use no hook named acts for the
+/// MCP server's own session, as before (no guess).
+#[test]
+fn after_a_resume_the_mcp_server_acts_for_the_session_that_its_hooks_name() {
+    let home = home("mcp-resume");
+    let op = operator_in("mcp-resume", &home);
+    let home_env = ("HOME", home.to_str().unwrap());
+    let (before, resumed) = ("cc-before-resume", "cc-resumed");
+    // as in feedbacks/0015's events: the start of the process, then the /resume
+    for (session, source) in [(before, "startup"), (resumed, "resume")] {
+        let start = op.run_bare(
+            &home,
+            &[home_env, ("CLAUDE_CODE_SESSION_ID", session)],
+            &["hook", "session-start"],
+            &claude_hook(
+                "session-start",
+                &json!({"session_id": session, "source": source, "cwd": home.to_str()}),
+            ),
+        );
+        assert!(
+            start.status.success(),
+            "{}",
+            String::from_utf8_lossy(&start.stderr)
+        );
+    }
+    let mut mcp = Mcp::start(
+        &op,
+        Some(&home),
+        &[home_env, ("CLAUDE_CODE_SESSION_ID", before)],
+        &[],
+    );
+    let mut pre_tool: Value = serde_json::from_str(&claude_hook(
+        "pre-tool",
+        &json!({"session_id": resumed, "tool_use_id": "toolu_resumed", "tool_name": "Read", "cwd": home.to_str()}),
+    ))
+    .unwrap();
+    pre_tool["tool_name"] = "mcp__plugin_legionctl_legionctl__legionctl_run".into();
+    let hook = op.run_bare(
+        &home,
+        &[home_env, ("CLAUDE_CODE_SESSION_ID", resumed)],
+        &["hook", "pre-tool"],
+        &pre_tool.to_string(),
+    );
+    assert!(
+        hook.status.success(),
+        "{}",
+        String::from_utf8_lossy(&hook.stderr)
+    );
+    let bind = |mcp: &mut Mcp, name: &str, tool_use: &str| {
+        let result = mcp.call(
+            "tools/call",
+            &json!({"name": "legionctl_run", "arguments": {"op": "dossier.use", "input": {"name": name}},
+                    "_meta": {"claudecode/toolUseId": tool_use}}),
+        );
+        assert_ne!(result["isError"], true, "{result}");
+    };
+    bind(&mut mcp, "resumed-work", "toolu_resumed");
+    bind(&mut mcp, "old-work", "toolu_no_hook_named");
+    let locks = op.ok(&["dossier", "locks"]);
+    for (dossier, session) in [("resumed-work", resumed), ("old-work", before)] {
+        assert!(
+            locks.lines().any(|l| l.starts_with(&format!("{dossier} "))
+                && l.contains(&format!("session={session} "))),
+            "{dossier} for {session}: {locks}"
+        );
+    }
+    // the agency-os symptom: the resumed session's shell writes its dossier
+    let append = op.run_bare(
+        &home,
+        &[home_env, ("CLAUDE_CODE_SESSION_ID", resumed)],
+        &["dossier", "append", "resumed-work/plan.md"],
+        "after the resume\n",
+    );
+    assert!(
+        append.status.success(),
+        "{}",
+        String::from_utf8_lossy(&append.stderr)
+    );
+}

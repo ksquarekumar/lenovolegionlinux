@@ -28,6 +28,8 @@ user-invocable: true
    agents and scripts read its views with `views render` (text or `--json`).
 7a. Each call works in one folder: the CLI's working folder (or `legionctl -C <folder> ...`), the folder that your
    newest hook call names for your MCP server (the folder you work in), a sandboxed session's own workspace. Its repository, config layer, dossier and code graph come from it.
+   Your MCP calls act for the session that your hooks name, also after a `/resume`: a dossier that you bind with
+   MCP is the one that your shell's `legionctl dossier ...` writes.
    No command takes a repository path: run it in the folder, or give `-C`.
 7b. In a sandboxed Claude Code session, use `legionctl -C <dir> ...`, not `cd <dir> && legionctl ...`. Claude Code
    runs a command outside its sandbox only when the command starts with `legionctl` (`setup apply` sets this up); the

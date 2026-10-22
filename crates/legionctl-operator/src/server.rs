@@ -20,7 +20,35 @@ use serde_json::{Value, json};
 
 use crate::calls::{self, Start};
 use crate::engine::Operator;
-use legionctl_api::CALL_HEADER;
+use legionctl_api::{CALL_HEADER, TOOL_USE_HEADER};
+
+/// Claude Code's tool use ids of the newest tool calls, each with the session whose pre-tool hook named it
+/// (`thread.gate`): an MCP call with that id acts for that session. After a `/resume` the MCP server's environment
+/// still names the session from before, while the hooks and the shell name the resumed one (feedbacks/0015).
+static TOOL_USES: std::sync::Mutex<std::collections::VecDeque<(String, String)>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// Remember that `session`'s agent is about to make the tool call `tool_use`; the newest 1024 stay.
+pub fn note_tool_use(tool_use: String, session: String) {
+    let mut kept = TOOL_USES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if kept.len() == 1024 {
+        kept.pop_front();
+    }
+    kept.push_back((tool_use, session));
+}
+
+/// The session whose pre-tool hook named the tool call `tool_use`.
+fn session_of_tool_use(tool_use: &str) -> Option<String> {
+    TOOL_USES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .rev()
+        .find(|(id, _)| id == tool_use)
+        .map(|(_, session)| session.clone())
+}
 
 /// The listening socket from systemd socket activation; there is no other way to start the API.
 pub fn activated_listener() -> Result<tokio::net::UnixListener> {
@@ -87,7 +115,13 @@ fn principal(headers: &HeaderMap) -> Result<Principal, ApiError> {
     if legionctl_core::db::token_hash(token) == legionctl_core::db::token_hash(&user) {
         return Ok(
             match headers.get(AGENT_HEADER).and_then(|v| v.to_str().ok()) {
-                Some(agent) => Principal::Agent(agent.to_string()),
+                Some(agent) => Principal::Agent(
+                    headers
+                        .get(TOOL_USE_HEADER)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(session_of_tool_use)
+                        .unwrap_or_else(|| agent.to_string()),
+                ),
                 None => Principal::User,
             },
         );
@@ -244,16 +278,42 @@ pub(crate) fn own_session(op: &OpInfo, principal: &Principal, input: &mut Value)
     let (Principal::Session(id), Some(map)) = (principal, input.as_object_mut()) else {
         return;
     };
-    let schema = (op.input)();
-    for (field, prop) in schema["properties"].as_object().into_iter().flatten() {
-        let is_session = prop["format"] == "session"
-            || prop["anyOf"]
-                .as_array()
-                .is_some_and(|a| a.iter().any(|s| s["format"] == "session"));
-        if is_session {
-            map.insert(field.clone(), Value::String(id.clone()));
+    for field in session_fields(op) {
+        map.insert(field, Value::String(id.clone()));
+    }
+}
+
+/// For an agent's call whose tool use names another session than its client ([`session_of_tool_use`]: a resumed
+/// session's MCP server), that session's id in each session field of the input that holds the client's id.
+fn resumed_session(op: &OpInfo, (principal, headers): (&Principal, &HeaderMap), input: &mut Value) {
+    let client = headers.get(AGENT_HEADER).and_then(|v| v.to_str().ok());
+    let (Principal::Agent(id), Some(client), Some(map)) =
+        (principal, client, input.as_object_mut())
+    else {
+        return;
+    };
+    for field in session_fields(op) {
+        if map.get(&field).and_then(Value::as_str) == Some(client) {
+            map.insert(field, Value::String(id.clone()));
         }
     }
+}
+
+/// The input fields of `op` that name a session.
+fn session_fields(op: &OpInfo) -> Vec<String> {
+    let schema = (op.input)();
+    schema["properties"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, prop)| {
+            prop["format"] == "session"
+                || prop["anyOf"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|s| s["format"] == "session"))
+        })
+        .map(|(field, _)| field.clone())
+        .collect()
 }
 
 /// An agent's call of a public operation outside its toolsets asks the user for the toolset (DESIGN/22 rule 2); the
@@ -544,6 +604,7 @@ async fn run(
             return refusal(&e);
         }
         own_session(op, &principal, &mut input);
+        resumed_session(op, (&principal, headers), &mut input);
         match admit(op, (&principal, folder.as_deref()), headers, &input, reply).await {
             Ok(call) => recording = call,
             Err(answer) => return answer,

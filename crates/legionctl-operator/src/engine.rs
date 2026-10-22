@@ -5435,6 +5435,9 @@ impl Engine for Operator {
     }
 
     fn thread_gate(&self, _: &Ctx, input: legionctl_api::ThreadGateIn) -> Result<Guard> {
+        if let Some(tool_use) = &input.tool_use {
+            crate::server::note_tool_use(tool_use.clone(), input.session.0.clone());
+        }
         crate::thread::gate(&input)
     }
 

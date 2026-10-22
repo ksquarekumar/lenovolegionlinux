@@ -227,6 +227,7 @@ async fn pre_tool(
         .call::<op::ThreadGate>(&ThreadGateIn {
             session: session.clone(),
             tool: tool_of(input),
+            tool_use: input["tool_use_id"].as_str().map(String::from),
         })
         .await?;
     // the guard is on writes: every dossier can be read

@@ -21416,6 +21416,14 @@
         "tool": {
           "type": "string",
           "description": "The tool that the agent is about to call."
+        },
+        "tool_use": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Claude Code's `tool_use_id` of the call: an MCP call that names it acts for this session.",
+          "default": null
         }
       },
       "required": [

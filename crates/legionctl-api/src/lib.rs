@@ -113,6 +113,10 @@ pub const HARNESS_HEADER: &str = "x-legionctl-harness";
 /// HTTP header with which a client that runs for an agent (its MCP server, its hooks, the CLI in its shell) names
 /// that agent's session; the user token then acts as [`Principal::Agent`].
 pub const AGENT_HEADER: &str = "x-legionctl-agent";
+/// The HTTP header with which an agent's MCP server names Claude Code's tool use id of the call (`_meta`
+/// `claudecode/toolUseId`): the operator acts for the session whose pre-tool hook named that id, because after a
+/// `/resume` the MCP server's environment still names the session from before (feedbacks/0015).
+pub const TOOL_USE_HEADER: &str = "x-legionctl-tool-use";
 /// The HTTP header with which a caller retries a call by its id, and the operator answers with the id of a call it
 /// keeps in its call record.
 pub const CALL_HEADER: &str = "x-legionctl-call";

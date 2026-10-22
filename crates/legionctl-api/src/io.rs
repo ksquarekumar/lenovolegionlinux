@@ -2611,6 +2611,9 @@ pub struct ThreadGateIn {
     pub session: SessionId,
     /// The tool that the agent is about to call.
     pub tool: String,
+    /// Claude Code's `tool_use_id` of the call: an MCP call that names it acts for this session.
+    #[serde(default)]
+    pub tool_use: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     ACTOR_HEADER, AGENT_HEADER, API_HEADER, ApiError, CALL_HEADER, Code, FOLDER_HEADER,
-    HARNESS_HEADER, Op, SOCKET, TOKEN_ENV, api_fingerprint, coded, user_token,
+    HARNESS_HEADER, Op, SOCKET, TOKEN_ENV, TOOL_USE_HEADER, api_fingerprint, coded, user_token,
 };
 use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full};
@@ -88,16 +88,18 @@ impl Client {
     /// # Errors
     /// An [`ApiError`]: `unavailable` when the operator does not answer, else the operator's answer.
     pub async fn call_value(&self, name: &str, input: &Value) -> Result<Value> {
-        self.call_recorded(name, input, None).await.0
+        self.call_recorded(name, input, None, None).await.0
     }
 
     /// Run the operation `name` as the call `call` (a retry of it: the operator answers with the recorded result) or
-    /// as a new call: the answer, and the call id when the operator keeps the call in its record.
+    /// as a new call, for the agent tool call `tool_use` (an MCP server's: [`TOOL_USE_HEADER`]): the answer, and the
+    /// call id when the operator keeps the call in its record.
     pub async fn call_recorded(
         &self,
         name: &str,
         input: &Value,
         call: Option<&str>,
+        tool_use: Option<&str>,
     ) -> (Result<Value>, Option<String>) {
         let mut id = None;
         let answer = async {
@@ -105,6 +107,9 @@ impl Client {
                 .header("content-type", "application/json");
             if let Some(call) = call {
                 request = request.header(CALL_HEADER, call);
+            }
+            if let Some(tool_use) = tool_use {
+                request = request.header(TOOL_USE_HEADER, tool_use);
             }
             let request = request.body(Full::new(Bytes::from(serde_json::to_vec(input)?)))?;
             let response = self.send(request).await?;

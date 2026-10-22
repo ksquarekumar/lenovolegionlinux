@@ -374,9 +374,13 @@ impl Legion {
         ))
     }
 
-    /// Run an operation or a brokered tool as the call `call_id` (a retry gets the recorded result) or as a new call:
-    /// the answer, and the call id of the record.
-    async fn run(&self, args: &Value) -> (Result<CallToolResult, ApiError>, Option<String>) {
+    /// Run an operation or a brokered tool as the call `call_id` (a retry gets the recorded result) or as a new call,
+    /// for the agent's tool call `tool_use`: the answer, and the call id of the record.
+    async fn run(
+        &self,
+        args: &Value,
+        tool_use: Option<&str>,
+    ) -> (Result<CallToolResult, ApiError>, Option<String>) {
         let name = args["op"].as_str().unwrap_or_default();
         let given = args["call_id"].as_str();
         let mut input = match &args["input"] {
@@ -422,7 +426,10 @@ impl Legion {
         if let Err(e) = fill_client_fields(op, &mut input, false) {
             return (Err(fail(e)), None);
         }
-        let (output, id) = self.client.call_recorded(op.name, &input, given).await;
+        let (output, id) = self
+            .client
+            .call_recorded(op.name, &input, given, tool_use)
+            .await;
         let answer = output
             .and_then(|o| Ok(serde_json::to_string_pretty(&o)?))
             .map(|text| CallToolResult::success(vec![ContentBlock::text(text)]))
@@ -477,8 +484,17 @@ impl ServerHandler for Legion {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        // Claude Code's id of this tool call, which its pre-tool hook named with the current session (feedbacks/0015);
+        // rmcp moves the call's _meta into the context
+        let tool_use = context
+            .meta
+            .0
+            .0
+            .get("claudecode/toolUseId")
+            .and_then(Value::as_str)
+            .map(String::from);
         let args = Value::Object(request.arguments.unwrap_or_default());
         let text = |text: String| CallToolResult::success(vec![ContentBlock::text(text)]);
         let answer = match request.name.as_ref() {
@@ -488,7 +504,7 @@ impl ServerHandler for Legion {
                 .await
                 .map(text),
             "legionctl_run" => {
-                let (answer, id) = self.run(&args).await;
+                let (answer, id) = self.run(&args, tool_use.as_deref()).await;
                 // the call id goes with the answer: a retry of a dropped answer sends it as call_id
                 let answer = answer.unwrap_or_else(|e| {
                     CallToolResult::error(vec![ContentBlock::text(json!({"error": e}).to_string())])
