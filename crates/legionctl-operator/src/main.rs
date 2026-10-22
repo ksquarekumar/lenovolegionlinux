@@ -102,6 +102,12 @@ async fn gateway_bind() -> Result<Option<gateway::Bound>> {
 }
 
 fn main() -> Result<()> {
+    legionctl_core::setup::set_commands(
+        legionctl_api::cli::command(Vec::new())
+            .get_subcommands()
+            .map(|c| c.get_name().to_string())
+            .collect(),
+    );
     let runtime = tokio::runtime::Runtime::new()?;
     let ended = runtime.block_on(run());
     // a stop waits for no blocking work (a job, an ACP run, a wake): a restart resumes what it cut off (todo-125)

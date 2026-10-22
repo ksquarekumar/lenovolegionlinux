@@ -1282,7 +1282,7 @@ fn sample_findings(op: &Operator) -> Result<Vec<legionctl_api::Finding>> {
 fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
     let report = setup::check(
         &Sources::resolve(&Dirs::from_env(), None)?,
-        &config(None)?.config.session,
+        &config(None)?.config,
     )?;
     report
         .needs_attention()
@@ -1301,7 +1301,8 @@ fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
             // sandbox file it cannot read or that is the user's own
             if i.status == legionctl_machine::system::OSD_BROKEN
                 || i.status == legionctl_core::plugin::CODEX_HOOKS_UNTRUSTED
-                || (i.what == setup::SANDBOX_ACCESS && i.status != "missing")
+                || (i.what == setup::SANDBOX_ACCESS
+                    && !matches!(i.status.as_str(), "missing" | "not of this build"))
             {
                 return Ok(state(text));
             }
@@ -3087,7 +3088,7 @@ impl Engine for Operator {
     fn setup_check(&self, _: &Ctx, _: Empty) -> Result<SetupReport> {
         Ok(setup::check(
             &Sources::resolve(&Dirs::from_env(), None)?,
-            &config(None)?.config.session,
+            &config(None)?.config,
         )?
         .into_wire())
     }
@@ -3097,7 +3098,7 @@ impl Engine for Operator {
             lines: setup::apply(
                 input.install_ctx,
                 &Sources::resolve(&Dirs::from_env(), None)?,
-                &config(None)?.config.session,
+                &config(None)?.config,
             )?,
             dry_run: false,
         })

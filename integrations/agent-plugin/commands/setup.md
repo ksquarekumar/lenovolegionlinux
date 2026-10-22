@@ -11,9 +11,14 @@ description: Set up ctx and legionctl for Claude Code and Codex (plugins, skills
    `session.acp_packages`, into ~/.bun; bun runs them), and ~/.config/environment.d/99-legionctl.conf (~/.local/bin,
    ~/.cargo/bin and bun's global folder ~/.bun/bin before the PATH of the systemd user manager, so the operator's
    checks find the user's tools after the next login; headless runs get these folders at once), the legionctl plugin
-   of Claude Code from the package folder, the sandbox access of the agents (in ~/.claude/settings.json
-   `sandbox.excludedCommands` gets `legionctl *` and `sandbox.filesystem.allowRead` gets `~/.gitconfig`, with a backup
-   of the file; ~/.codex/rules/legionctl.rules lets Codex run `legionctl` outside its sandbox), the OSD extension of
+   of Claude Code from the package folder, the sandbox access of the agents at user level, so that no repository
+   commits it (in ~/.claude/settings.json, with one backup of the file: `sandbox.excludedCommands` gets `legionctl *`,
+   `permissions.allow` gets `legionctl dossier` and `status` and git and rm in `workspace.root`, `sandbox.filesystem`
+   gets `~/.gitconfig` and legionctl's folders (`dossier.root`, `workspace.root`, its data, state and cache to write,
+   its config to read); ~/.codex/rules/legionctl.rules lets Codex run `legionctl dossier` and `status` outside its
+   sandbox with no prompt and asks the user before each other legionctl command; ~/.codex/config.toml gets the same
+   folders, and each repository's `.git` that has legionctl workspaces, in the custom permission profile that the
+   user or that repository names), the OSD extension of
    GNOME Shell, and clauth (the account engine: `cargo install clauth --version ~0.17 --locked` when missing, its
    daemon as the user unit `legionctl-clauth.service`, its MCP server in Claude Code). Then run `setup.apply`.
 3. If ctx is not installed, tell the user to run `legionctl setup apply --install-ctx` in a terminal.

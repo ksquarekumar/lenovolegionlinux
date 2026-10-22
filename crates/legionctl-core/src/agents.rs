@@ -162,6 +162,8 @@ const CODEX_KEYS: &[&str] = &[
     "features",
     "tui",
     "sandbox_workspace_write",
+    "permissions",
+    "default_permissions",
 ];
 
 /// What an edit did (or would do).
@@ -257,21 +259,37 @@ pub fn set(
         parts.iter().all(|p| !p.is_empty()),
         "the key {key} has an empty part"
     );
+    set_all(path, &[(parts, value)], dry_run)
+}
+
+/// [`set`] of several keys in one write, so with one backup; each key is given by its parts, so a part can hold a dot
+/// (a path as a key of Codex's `permissions.<profile>.filesystem`).
+///
+/// # Errors
+/// As [`set`].
+pub fn set_all(
+    path: &Path,
+    entries: &[(Vec<&str>, serde_json::Value)],
+    dry_run: bool,
+) -> anyhow::Result<Edit> {
     let before = legionctl_machine::sysroot::read_file(path)?.unwrap_or_default();
     let toml = path.extension().is_some_and(|e| e == "toml");
-    let after = if toml {
-        toml_set(&before, &parts, &value)
-    } else {
-        json_set(&before, &parts, value)
-    }
-    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
     let known = if toml { CODEX_KEYS } else { CLAUDE_KEYS };
+    let mut after = before.clone();
     let mut warnings = Vec::new();
-    if !known.contains(&parts[0]) {
-        warnings.push(format!(
-            "{} is not a top-level key legionctl knows; check the spelling",
-            parts[0]
-        ));
+    for (parts, value) in entries {
+        after = if toml {
+            toml_set(&after, parts, value)
+        } else {
+            json_set(&after, parts, value.clone())
+        }
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        if !known.contains(&parts[0]) {
+            warnings.push(format!(
+                "{} is not a top-level key legionctl knows; check the spelling",
+                parts[0]
+            ));
+        }
     }
     let changes = similar::TextDiff::from_lines(&before, &after)
         .iter_all_changes()

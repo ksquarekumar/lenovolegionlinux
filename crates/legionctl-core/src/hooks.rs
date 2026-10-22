@@ -282,7 +282,7 @@ fn run_action(
         }),
         "setup-check" => {
             crate::archetypes::Sources::resolve(&crate::config::Dirs::from_env(), None)
-                .and_then(|agents| setup::check(&agents, &config.config.session))
+                .and_then(|agents| setup::check(&agents, &config.config))
                 .map(|report| {
                     // the rows in setup check's words, so the two give one answer at one time; a row that a start
                     // of Claude Code changes for a moment (its plugin files) shows which it was
