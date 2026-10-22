@@ -578,7 +578,8 @@ operations! {
     /// Claude Code and Codex settings files (user and project): present, valid, which top-level sections.
     agents_list / AgentsList = "agents.list", Read, Empty => ConfigFiles;
     /// Set one key of an agent's settings file (dotted: `permissions.defaultMode`, `mcp_servers.ctx.command`): the
-    /// changed lines, a backup of the file, then the write; with `--dry-run` only the changed lines.
+    /// changed lines, a backup of the file, then the write (the value `null` removes the key); with `--dry-run` only
+    /// the changed lines.
     agents_set / AgentsSet = "agents.set", Workspace, AgentSetIn => Edit;
     /// The accounts (the current login and clauth's profiles: clauth is the only store of the logins) and which
     /// agents are logged in to each.
@@ -639,7 +640,8 @@ operations! {
     /// Propose a `.legionctl/checks.jsonc` for the repository from the language files (Rust, Node with bun, Python
     /// with uv) whose manifest is in its top folder, with each language's tools. It writes nothing.
     code_checks_detect / CodeChecksDetect = "code.checks.detect", Read, Empty => Lines;
-    /// The repository's checks: kind, gate, command, the file that set it, and its last run.
+    /// The repository's checks: kind, gate, command, the file that set it, and its last run. Refused with the reason
+    /// and the file when a file of the repository's settings is not used (a changed checks file waits for your answer).
     code_checks_list / CodeChecksList = "code.checks.list", Read, Empty => Lines;
     /// Run checks (none named: each but deploy and install) as a job in the workspace; each run keeps its log and
     /// profile (wall and CPU time, memory peak, IO) in the dossier home, `.state/runs/<run>/`.
@@ -658,7 +660,8 @@ operations! {
     /// Run cargo-mutants as a job on the Rust source files the workspace's branch changed, and record each mutant with
     /// the tests that killed it.
     code_tests_mutant_run / CodeTestsMutantRun = "code.tests.mutant.run", Session, WorkspaceIn => Lines;
-    /// Rebase the branch onto the base, then fast-forward the base in the main checkout (which must be clean).
+    /// Rebase the branch onto the base, then fast-forward the base in the main checkout. Its own changes stay; the merge
+    /// refuses only when it has changes in files that the branch also changes.
     workspace_merge / WorkspaceMerge = "workspace.merge", Workspace, MergeIn => Lines;
     /// An agent asks the user to merge its branch that changes `.legionctl/` (the repository's own gates): the same
     /// gate and checks as the merge, then a desktop dialog with the `.legionctl/` diff before the fast-forward.
@@ -1021,8 +1024,8 @@ operations! {
     /// Every setting: what it does, its value, where the value comes from, its built-in default, who may change it,
     /// and what it affects; search, by module, by view, or only what you changed.
     config_settings / ConfigSettings = "config.settings", Read, SettingsIn => SettingsView;
-    /// Change a setting: the value is checked against the setting, then written for you (or for the project, or for
-    /// this computer), and kept in the history.
+    /// Change a setting: the value is checked against the setting, then written for you (or for the project, for you in
+    /// this repository only, or for this computer), and kept in the history.
     config_set / ConfigSet = "config.set", Workspace, ConfigSetIn => SettingChanged;
     /// Remove a setting's value from one layer (you, the project or this computer): the value below it applies again.
     config_unset / ConfigUnset = "config.unset", Workspace, ConfigUnsetIn => SettingChanged;
@@ -1175,7 +1178,8 @@ operations! {
     agent_tool / AgentTool = "internal.agent.tool", Session, AgentToolIn => HookReply;
     /// Record that a subagent finished (the subagent-stop hook): `thread peers` shows it ended until its next tool call.
     agent_end / AgentEnd = "internal.agent.end", Session, AgentEndIn => Empty;
-    /// Why an open hard-block refuses this tool call of the session (the pre-tool hook).
+    /// Why an open hard-block refuses this tool call of the session (the pre-tool hook). It also keeps the call's tool
+    /// use id: the MCP call with that id acts for this session, also after a `/resume`.
     thread_gate / ThreadGate = "internal.thread.gate", Read, ThreadGateIn => Guard;
     /// A new thread from a thread's log up to one row: the same members and rules, this session as main0, and a git
     /// branch at the newest checkpoint up to that row. The parent stays as it is.

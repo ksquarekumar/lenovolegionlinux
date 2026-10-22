@@ -32,7 +32,8 @@ user-invocable: true
     happened and propose the fix (switch the branch back, or open the workspace again).
 13. `workspace merge` rebases the branch onto the base, runs each `gate: merge` check that has no passing run at the
     rebased head (a failure refuses the merge; the branch stays rebased; no file, no check), then fast-forwards the base in the main
-    checkout, which must be clean. It is class workspace, so it asks the user. Ask the user before you call it; if a
+    checkout. The main checkout's own changes stay; the merge refuses only for its changes in files that the branch
+    also changes, and names them. It is class workspace, so it asks the user. Ask the user before you call it; if a
     lead agent merges, do not merge. An agent cannot merge a branch that changes `.legionctl/`. Ask the user with
     `workspace merge-request`: the same gate and checks, then a desktop dialog shows the `.legionctl/` diff, and the
     user allows or denies. It refuses a branch that does not change `.legionctl/`.

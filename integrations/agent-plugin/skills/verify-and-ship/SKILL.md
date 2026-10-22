@@ -12,7 +12,9 @@ user-invocable: true
 2. Run each check in the workspace path (skill workspace-practice), never in the main checkout. A repository can
    declare its checks in `.legionctl/checks.jsonc`: `code checks list` shows them, `code checks run [<check>...]` runs
    them as a job and keeps each log and profile (`code checks show <run>`), and checkpoint and merge run their gates.
-   The file is optional. Without it, checkpoint and merge run no check (only the test gate), `dossier check` reports
+   A changed checks file waits for the user's answer before legionctl uses it: until then `code checks list` and
+   the gates refuse and name the file; tell the user. The file is optional. Without it, checkpoint and merge run no
+   check (only the test gate), `dossier check` reports
    the missing kinds, and you run the checks of this skill by hand. `code checks detect` proposes a file; review it,
    then write it. legionctl's own file waits for the user's merge of topic repo-checks: until then, run
    rules 3-7 by hand. Never run a binary of a workspace build with the real HOME, XDG folders, sockets or state: use
