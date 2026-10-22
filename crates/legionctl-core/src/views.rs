@@ -1150,12 +1150,11 @@ fn ago(seconds: i64) -> String {
 /// Seconds since the epoch as a date and time in this computer's time zone: 2026-10-16 17:18.
 #[must_use]
 pub fn local(at: i64) -> String {
-    let t: libc::time_t = at;
     // SAFETY: tm is plain integers and a pointer that localtime_r sets, so all zeros is a valid value; localtime_r
-    // writes only into tm and is thread-safe
+    // writes only into tm and is thread-safe. time_t is i64 on glibc and musl (libc deprecates the alias on musl)
     let tm = unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
-        if libc::localtime_r(&raw const t, &raw mut tm).is_null() {
+        if libc::localtime_r(&raw const at, &raw mut tm).is_null() {
             return format!("{at} s after 1970");
         }
         tm
