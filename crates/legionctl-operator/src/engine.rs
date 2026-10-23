@@ -5785,7 +5785,7 @@ impl Engine for Operator {
         ctx: &Ctx,
         input: legionctl_api::ConfigSetIn,
     ) -> Result<legionctl_api::SettingChanged> {
-        self.settings_set(ctx, &input)
+        self.settings_set(ctx, &input, Self::change_setting)
     }
 
     fn config_unset(
@@ -5793,7 +5793,7 @@ impl Engine for Operator {
         ctx: &Ctx,
         input: legionctl_api::ConfigUnsetIn,
     ) -> Result<legionctl_api::SettingChanged> {
-        self.settings_unset(ctx, &input)
+        self.settings_unset(ctx, &input, Self::change_setting)
     }
 
     fn config_add(
@@ -5801,7 +5801,7 @@ impl Engine for Operator {
         ctx: &Ctx,
         input: legionctl_api::ConfigItemIn,
     ) -> Result<legionctl_api::SettingChanged> {
-        self.settings_add(ctx, &input)
+        self.settings_add(ctx, &input, Self::change_setting)
     }
 
     fn config_remove(
@@ -5809,7 +5809,7 @@ impl Engine for Operator {
         ctx: &Ctx,
         input: legionctl_api::ConfigItemIn,
     ) -> Result<legionctl_api::SettingChanged> {
-        self.settings_remove(ctx, &input)
+        self.settings_remove(ctx, &input, Self::change_setting)
     }
 
     fn config_revert(
@@ -5817,7 +5817,7 @@ impl Engine for Operator {
         ctx: &Ctx,
         input: legionctl_api::ConfigRevertIn,
     ) -> Result<legionctl_api::SettingChanged> {
-        self.settings_revert(ctx, &input)
+        self.settings_revert(ctx, &input, Self::change_setting)
     }
 
     fn config_history(

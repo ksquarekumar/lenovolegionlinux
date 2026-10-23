@@ -304,6 +304,8 @@ More rules:
   allow them once. legionctl asks on the desktop the first time, and again when a file changes. A repository never
   chooses the account that pays, and never hides your teams or views.
 - An agent outside a sandbox cannot answer a question. Its change of your hooks or reminders asks you.
+- An agent's settings change that legionctl would refuse (a wrong key, value or scope) is refused before the
+  question, so you get no question for it.
 - A button of a built-in view or of your own view runs at once when it reads or changes only your own choices. A
   button of a project's view or of a view that the composer made asks you first for every change.
 

@@ -413,6 +413,7 @@ async fn a_first_start_writes_nothing_and_each_change_is_checked_kept_and_undone
         "No keeps the value"
     );
     assert_eq!(row(&lab.op, "dossier.message_chars")["value"], 900);
+    an_agents_wrong_change_asks_nobody(&lab, &mut agent);
 
     a_broken_value_is_a_health_finding(&lab);
 
@@ -439,6 +440,31 @@ async fn a_first_start_writes_nothing_and_each_change_is_checked_kept_and_undone
     assert_eq!(lab.history().len(), 3);
 
     a_removed_map_entry_comes_back_and_goes_again(&lab);
+}
+
+/// An agent's change of a powerful setting that the setting refuses (a layer outside its scope, a value of another
+/// type) fails with its own reason and asks the user nothing (plan#todo-234: the user got a desktop question for a
+/// call that failed anyway).
+fn an_agents_wrong_change_asks_nobody(lab: &Lab, agent: &mut Mcp) {
+    let before = lab.asked.lock().unwrap().len();
+    for (input, why) in [
+        (
+            json!({"key": "workspace.claude_allows_git_rm", "value": true, "scope": "project"}),
+            "is set only for you in this repository",
+        ),
+        (
+            json!({"key": "dossier.gate", "value": "maybe"}),
+            "dossier.gate",
+        ),
+    ] {
+        let (out, failed) = agent.run("config.set", &input);
+        let said = out["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            failed && said.contains(why) && !said.contains("did not allow"),
+            "{input}: {out}"
+        );
+    }
+    assert_eq!(lab.asked.lock().unwrap().len(), before, "no question");
 }
 
 /// One list of forbidden and one of allowed actions, each entry with its reason and where it comes from: a

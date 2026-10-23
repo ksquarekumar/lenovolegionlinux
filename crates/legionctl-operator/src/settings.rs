@@ -265,26 +265,66 @@ fn lines(setting: &Setting, resolved_after: &Resolved, edit: &Edit) -> Vec<Strin
     out
 }
 
+/// What a settings operation does with its edit: [`Operator::change_setting`] writes it, [`Operator::check_setting`]
+/// only checks it (before the user is asked, plan#todo-234).
+type Then<T> = fn(&Operator, &std::path::Path, &Edit, Option<&settings::Entry>) -> Result<T>;
+
+/// The config of `project` and the setting of `edit`, when `edit` passes: the key is a setting, its layer is in the
+/// scope and not locked, the value fits, and a new value passes its deep check (else the old one stays in force).
+fn checked(project: &std::path::Path, edit: &Edit) -> Result<(Resolved, &'static Setting)> {
+    let resolved = config(Some(project))?;
+    let setting = settings::validate(&resolved, edit)?;
+    if let Some(value) = &edit.value {
+        let (now, _) = value_and_source(&resolved, edit.key);
+        if edit.key == setting.key
+            && *value != now
+            && let Some(why) = settings::deep_check(setting, value)
+        {
+            bail!("{why}");
+        }
+    }
+    Ok((resolved, setting))
+}
+
 impl Operator {
+    /// The checks of a settings operation that change nothing (plan#todo-234): the server runs them before it asks
+    /// the user, so a call that would fail asks nobody. Other operations: nothing to check here.
+    ///
+    /// # Errors
+    /// The operation would refuse `input`.
+    pub(crate) fn precheck(&self, ctx: &Ctx, op: &str, input: &Value) -> Result<()> {
+        fn parsed<In: serde::de::DeserializeOwned>(input: &Value) -> Result<In> {
+            Ok(serde_json::from_value(input.clone())?)
+        }
+        match op {
+            "config.set" => self.settings_set(ctx, &parsed(input)?, Self::check_setting),
+            "config.unset" => self.settings_unset(ctx, &parsed(input)?, Self::check_setting),
+            "config.add" => self.settings_add(ctx, &parsed(input)?, Self::check_setting),
+            "config.remove" => self.settings_remove(ctx, &parsed(input)?, Self::check_setting),
+            "config.revert" => self.settings_revert(ctx, &parsed(input)?, Self::check_setting),
+            _ => Ok(()),
+        }
+    }
+
+    /// [`checked`] as a [`Then`]: nothing is written.
+    fn check_setting(
+        _: &Self,
+        project: &std::path::Path,
+        edit: &Edit,
+        _: Option<&settings::Entry>,
+    ) -> Result<()> {
+        checked(project, edit).map(drop)
+    }
+
     /// Write `edit` in the layer of its scope: the computer's through the system service (polkit asks), the others
-    /// through the one writer; a deep check that fails refuses the value, so the old one stays in force.
-    fn change_setting(
+    /// through the one writer, after [`checked`].
+    pub(crate) fn change_setting(
         &self,
         project: &std::path::Path,
         edit: &Edit,
         entry: Option<&settings::Entry>,
     ) -> Result<SettingChanged> {
-        let resolved = config(Some(project))?;
-        let setting = settings::validate(&resolved, edit)?;
-        if let Some(value) = &edit.value {
-            let (now, _) = value_and_source(&resolved, edit.key);
-            if edit.key == setting.key
-                && *value != now
-                && let Some(why) = settings::deep_check(setting, value)
-            {
-                bail!("{why}");
-            }
-        }
+        let (resolved, setting) = checked(project, edit)?;
         let change = if edit.scope == Scope::Computer {
             let value = edit
                 .value
@@ -309,7 +349,12 @@ impl Operator {
         })
     }
 
-    pub(crate) fn settings_set(&self, ctx: &Ctx, input: &ConfigSetIn) -> Result<SettingChanged> {
+    pub(crate) fn settings_set<T>(
+        &self,
+        ctx: &Ctx,
+        input: &ConfigSetIn,
+        then: Then<T>,
+    ) -> Result<T> {
         let kind = settings::kind_of(&input.key);
         // the CLI gives text: a setting that does not take text reads it as JSON
         let value = match (&input.value, &kind) {
@@ -319,7 +364,8 @@ impl Operator {
             _ => input.value.clone(),
         };
         let by = crate::calls::principal_key(&ctx.principal);
-        self.change_setting(
+        then(
+            self,
             ctx.folder()?,
             &Edit {
                 key: &input.key,
@@ -331,13 +377,15 @@ impl Operator {
         )
     }
 
-    pub(crate) fn settings_unset(
+    pub(crate) fn settings_unset<T>(
         &self,
         ctx: &Ctx,
         input: &ConfigUnsetIn,
-    ) -> Result<SettingChanged> {
+        then: Then<T>,
+    ) -> Result<T> {
         let by = crate::calls::principal_key(&ctx.principal);
-        self.change_setting(
+        then(
+            self,
             ctx.folder()?,
             &Edit {
                 key: &input.key,
@@ -411,7 +459,12 @@ impl Operator {
         })
     }
 
-    pub(crate) fn settings_add(&self, ctx: &Ctx, input: &ConfigItemIn) -> Result<SettingChanged> {
+    pub(crate) fn settings_add<T>(
+        &self,
+        ctx: &Ctx,
+        input: &ConfigItemIn,
+        then: Then<T>,
+    ) -> Result<T> {
         let (setting, mut items) = Self::base_list(ctx, input)?;
         let item = Self::item(setting, input)?;
         if items
@@ -426,7 +479,8 @@ impl Operator {
         }
         items.push(item.clone());
         let by = crate::calls::principal_key(&ctx.principal);
-        self.change_setting(
+        then(
+            self,
             ctx.folder()?,
             &Edit {
                 key: &input.key,
@@ -442,11 +496,12 @@ impl Operator {
         )
     }
 
-    pub(crate) fn settings_remove(
+    pub(crate) fn settings_remove<T>(
         &self,
         ctx: &Ctx,
         input: &ConfigItemIn,
-    ) -> Result<SettingChanged> {
+        then: Then<T>,
+    ) -> Result<T> {
         let by = crate::calls::principal_key(&ctx.principal);
         // an entry of a map: null at its key removes it, also from the layers below
         if let Some(map) = settings::setting_of(&input.key)
@@ -458,7 +513,8 @@ impl Operator {
             if value.get(&name).is_none() {
                 bail!("{}: there is no {name}", map.label);
             }
-            return self.change_setting(
+            return then(
+                self,
                 ctx.folder()?,
                 &Edit {
                     key: &format!("{}.{name}", input.key),
@@ -500,7 +556,8 @@ impl Operator {
                 text(&input.value)
             );
         }
-        self.change_setting(
+        then(
+            self,
             ctx.folder()?,
             &Edit {
                 key: &input.key,
@@ -516,11 +573,12 @@ impl Operator {
         )
     }
 
-    pub(crate) fn settings_revert(
+    pub(crate) fn settings_revert<T>(
         &self,
         ctx: &Ctx,
         input: &ConfigRevertIn,
-    ) -> Result<SettingChanged> {
+        then: Then<T>,
+    ) -> Result<T> {
         let change = Db::open_default()?
             .settings_change(input.id)?
             .with_context(|| {
@@ -552,7 +610,8 @@ impl Operator {
             Scope::User | Scope::Computer => std::path::PathBuf::from("/"),
         };
         let by = crate::calls::principal_key(&ctx.principal);
-        self.change_setting(
+        then(
+            self,
             &project,
             &Edit {
                 key: &change.key,

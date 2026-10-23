@@ -15,7 +15,8 @@ user-invocable: true
 4. `workspace` changes your files, settings, containers or other sessions. A sandboxed agent's call waits for the user:
    a desktop notification with Allow and Deny, 120 s. No answer is a refusal. Outside a sandbox, an agent's change of
    a powerful setting (`config set`, hooks, reminders) waits the same way, and only the user answers a question
-   (`approval answer`). `actions.forbid` names what an agent never runs; `config settings` shows both action lists.
+   (`approval answer`). A settings change that legionctl would refuse (wrong key, value or scope) is refused first,
+   with its reason and no question. `actions.forbid` names what an agent never runs; `config settings` shows both action lists.
 5. A repository's `.legionctl` files and its compose file are used only after the user allows their content once
    (the same desktop question). Until then the call says the file "is not used until" the user allows it; tell the user.
    Change the user's settings and answers with legionctl, not with a file write: the pre-tool hook denies it.

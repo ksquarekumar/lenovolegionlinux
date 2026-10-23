@@ -597,19 +597,6 @@ async fn run(
     let op = OPS.iter().find(|op| op.name == name);
     let folder = folder(&principal, headers);
     agent_seen((&name, &input), &principal, headers, folder.as_deref());
-    let mut recording: Option<calls::OpCall> = None;
-    if let Some(op) = op {
-        if let Err(mut e) = known_fields(op, &input) {
-            e.op.clone_from(&name);
-            return refusal(&e);
-        }
-        own_session(op, &principal, &mut input);
-        resumed_session(op, (&principal, headers), &mut input);
-        match admit(op, (&principal, folder.as_deref()), headers, &input, reply).await {
-            Ok(call) => recording = call,
-            Err(answer) => return answer,
-        }
-    }
     let ctx = Ctx {
         actor: headers
             .get(ACTOR_HEADER)
@@ -620,6 +607,13 @@ async fn run(
         principal,
         caller,
     };
+    let mut recording: Option<calls::OpCall> = None;
+    if let Some(op) = op {
+        match prepare(&operator, (&ctx, op), headers, &mut input, reply).await {
+            Ok(call) => recording = call,
+            Err(answer) => return answer,
+        }
+    }
     // the call record is the record of its own begin and end
     let audit = op
         .filter(|op| op.class != Class::Read && !op.name.starts_with("internal.calls."))
@@ -679,6 +673,52 @@ async fn run(
         }
         Ok(output) => (StatusCode::OK, Json(output)),
         Err(error) => refusal(&error),
+    }
+}
+
+/// A known operation's input before it runs: its fields, its session fields (a sandboxed session's own, a resumed
+/// session's), its own checks that change nothing, then [`admit`]. `Err`: the answer to give instead.
+async fn prepare(
+    operator: &Arc<Operator>,
+    (ctx, op): (&Ctx, &OpInfo),
+    headers: &HeaderMap,
+    input: &mut Value,
+    reply: &mut HeaderMap,
+) -> Result<Option<calls::OpCall>, (StatusCode, Json<Value>)> {
+    if let Err(mut e) = known_fields(op, input) {
+        e.op = op.name.to_string();
+        return Err(refusal(&e));
+    }
+    own_session(op, &ctx.principal, input);
+    resumed_session(op, (&ctx.principal, headers), input);
+    checked_first(operator, ctx, op, input).await?;
+    admit(
+        op,
+        (&ctx.principal, ctx.folder.as_deref()),
+        headers,
+        input,
+        reply,
+    )
+    .await
+}
+
+/// The operation's own checks that change nothing, before the question of [`admit`]: a call that would fail asks
+/// nobody (plan#todo-234). `Err`: its refusal.
+async fn checked_first(
+    operator: &Arc<Operator>,
+    ctx: &Ctx,
+    op: &OpInfo,
+    input: &Value,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let (engine, checked, given) = (operator.clone(), ctx.clone(), input.clone());
+    let name = op.name;
+    match tokio::task::spawn_blocking(move || engine.precheck(&checked, name, &given)).await {
+        Ok(Err(e)) => Err(refusal(&ApiError {
+            code: legionctl_api::code_of(&e),
+            message: format!("{e:#}"),
+            op: name.to_string(),
+        })),
+        _ => Ok(()),
     }
 }
 
